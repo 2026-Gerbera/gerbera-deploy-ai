@@ -40,18 +40,22 @@ SoftBank Hackathon 2026 Term1 팀 저장소입니다. 저장소 이름은 `gerbe
 ```sh
 make setup-local # lock 기준 의존성 설치. Git·계정 설정 변경 없음
 make ci          # lint·type·경계·스키마·테스트. Git 작성자 검사는 별도
-make run-fake    # 127.0.0.1:8765 관리 API 골격. 전체 배포는 아직 미구현
+make run-fake    # 127.0.0.1:8765 관리 API 골격 + O1 실행 서비스
+make demo        # 승인 후 fixture 전체 흐름. AWS·AI 실호출은 없음
+make demo-local  # 실제 Docker 테스트 앱 배포/복구 (이미지 다운로드·빌드)
 ```
 
 저장소 루트의 `.github/workflows/ci.yml`이 main push와 PR 생성·수정 때 `harness/`를 검사합니다. 일반 브랜치 push만으로는 실행되지 않습니다. `make setup`은 로컬 훅 설치용입니다. 이메일 등록·커밋 형식·main push 금지·필수 PR 승인은 없습니다. CI는 코드 검사이며 실제 배포는 하지 않습니다.
 
-현재 계약은 [O1 착수 결정](docs/decisions/2026-09-30-o1-start-contracts.md)과 [계약 인덱스](docs/contracts/README.md)에서 시작합니다. 관리 웹 프레임워크는 미정이며 설치된 FastAPI는 기존 골격을 검사하기 위한 것입니다.
+현재 계약은 [O1 착수 결정](docs/decisions/2026-09-30-o1-start-contracts.md)과 [계약 인덱스](docs/contracts/README.md)에서 시작합니다. 기존 FastAPI 골격을 유지하며 실행 코어는 웹과 분리했습니다. 팀원 연결 방법은 [O1 가이드](docs/guides/O1.md)를 봅니다.
 
 전체 명령은 `make help`로 봅니다. 기여 방법은 [CONTRIBUTING.md](CONTRIBUTING.md), AI 코딩 도구 규칙은 [AGENTS.md](AGENTS.md), 사용법 요약은 [하네스 안내](docs/harness/README.md)에 있습니다.
 
 ## 현행 로컬 검증 (2026-09-30)
 
-Python 3.13.15·uv 0.12.20 환경에서 `make ci` 통과: lint, 타입 검사, import 경계 7개, 스키마 일치, 테스트 **220개 통과**(`harness/` 이동 후 전체 검사 약 7초). `uv.lock`을 생성했으며 `make setup-local`은 이후 `--locked`로 동기화합니다. 승인·스냅샷·이미지 계약과 데모 패치 ON을 반영했습니다. `make setup-local`과 관리 API `/healthz`의 HTTP 200 응답도 확인했습니다. 실제 Docker/AWS 배포와 승인 UI 연결은 아직 구현 대상입니다.
+O1의 승인·SQLite 잠금/상태·패치 스냅샷·실행기·온프렘 provider를 구현했습니다. 실제 Docker 테스트 앱의 HTTP v1→v2→v1, 시크릿 재사용, 마이그레이션 러너 멱등성, 서비스 경유 반복 업데이트와 실패 복구를 검사합니다. 증거는 `var/validation/onprem-runtime.json`에 생성됩니다. 이 테스트는 실제 flaskr/MySQL·CodeBuild·AWS·AI 통합이나 3분 전체 데모의 증거가 아닙니다.
+
+`make ci`는 lint, 타입, import 경계 7개, 계약 스키마와 외부 서비스 없는 테스트를 실행합니다. 실제 Docker 검사는 `DDAK_TEST_DOCKER=1 make test-docker`로 별도 실행합니다. `make preflight`는 Docker와 구현 등록 상태를 확인하며 팀 기능이 아직 없으면 종료 코드 3을 반환합니다. `make clean`은 캐시만 지우고 실행 DB·잠금을 보존합니다.
 
 ## 디렉토리
 

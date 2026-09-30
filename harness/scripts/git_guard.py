@@ -226,15 +226,16 @@ def _staged_python_files(root: Path) -> list[str]:
     )
     project = Path(__file__).resolve().parents[1]
     prefix = "" if project == root else project.relative_to(root).as_posix() + "/"
-    files = [f for f in out.split("\x00") if f and f.startswith(prefix)]
+    files = [f for f in out.split("\x00") if f and f.startswith((prefix, "src/"))]
     return [f for f in files if not f.removeprefix(prefix).startswith(RUFF_EXCLUDED)]
 
 
 def _ruff_command(root: Path) -> list[str] | None:
     # uv.lock에 고정된 ruff(.venv)만 쓴다. `uv run`으로 대체하면 커밋 중에 동기화가 일어난다.
-    for candidate in (root / ".venv" / "bin" / "ruff", root / ".venv" / "Scripts" / "ruff.exe"):
-        if candidate.is_file():
-            return [str(candidate)]
+    for project in (root.parent, root) if root.name == "harness" else (root,):
+        for candidate in (project / ".venv/bin/ruff", project / ".venv/Scripts/ruff.exe"):
+            if candidate.is_file():
+                return [str(candidate)]
     return None
 
 
@@ -247,6 +248,8 @@ def cmd_pre_commit() -> int:
         if ruff is None:
             print("git_guard: .venv에 ruff가 없다. `make setup` 후 다시 커밋한다.", file=sys.stderr)
             return 1
+        if (root / "pyproject.toml").is_file():
+            ruff += ["--config", str(root / "pyproject.toml")]
         # 참고: 작업 트리 파일을 검사한다(부분 스테이징은 구분하지 않는다).
         for args in (["format", "--check", "--force-exclude"], ["check", "--force-exclude"]):
             proc = subprocess.run([*ruff, *args, *files], cwd=root, check=False)

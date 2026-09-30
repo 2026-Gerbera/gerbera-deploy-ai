@@ -29,7 +29,7 @@ BAD_HASHES = (
 
 
 def _model(name: str) -> Any:
-    path = REPO_ROOT / "src/ddak/core/contracts/release.py"
+    path = REPO_ROOT.parent / "src/ddak/core/contracts/release.py"
     assert path.is_file(), "release.py 릴리스 계약이 아직 구현되지 않았다"
     model = getattr(importlib.import_module("ddak.core.contracts.release"), name, None)
     assert isinstance(model, type), f"릴리스 계약 {name}이 아직 구현되지 않았다"

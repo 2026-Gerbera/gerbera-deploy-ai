@@ -251,7 +251,7 @@ def test_hooks_work_from_nested_harness_and_ignore_reference_code(
     assert _run(["git", "config", "core.hooksPath", "harness/.githooks"], repo, env).returncode == 0
     bindir = project / ".venv/bin"
     bindir.mkdir(parents=True)
-    (bindir / "ruff").symlink_to(REPO_ROOT / ".venv/bin/ruff")
+    (bindir / "ruff").symlink_to(REPO_ROOT.parent / ".venv/bin/ruff")
     (project / "example.py").write_text("x = 1\n")
     (repo / "reference.py").write_text("not python !!!\n")
     sample = project / "apps/sample-app/example.py"
@@ -265,3 +265,10 @@ def test_hooks_work_from_nested_harness_and_ignore_reference_code(
     )
     result = _run(["git", "commit", "-q", "-m", "nested harness"], repo, env)
     assert result.returncode == 0, result.stderr
+    # 앱을 루트 src/로 옮겨도 같은 pre-commit 검사를 거친다.
+    app = repo / "src/example.py"
+    app.parent.mkdir()
+    app.write_text("not python !!!\n")
+    assert _run(["git", "add", "src/example.py"], repo, env).returncode == 0
+    rejected = _run(["git", "commit", "-q", "-m", "invalid source"], repo, env)
+    assert rejected.returncode != 0

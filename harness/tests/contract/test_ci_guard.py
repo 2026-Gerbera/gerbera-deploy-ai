@@ -75,7 +75,7 @@ def test_pytest_is_not_narrowed_in_ci_or_dev_script() -> None:
 
 
 def test_pytest_addopts_only_excludes_manual_markers() -> None:
-    config = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    config = tomllib.loads((REPO_ROOT.parent / "pyproject.toml").read_text(encoding="utf-8"))
     addopts = config["tool"]["pytest"]["ini_options"]["addopts"]
     assert addopts == [
         "-ra",
@@ -107,7 +107,7 @@ def test_ci_targets_nested_harness_and_keeps_secrets_at_repository_root() -> Non
     assert quality["defaults"]["run"]["working-directory"] == "harness"
     setup = next(s for s in quality["steps"] if s.get("uses", "").startswith("astral-sh/setup-uv@"))
     assert setup["with"]["python-version-file"] == "harness/.python-version"
-    assert setup["with"]["cache-dependency-glob"] == "harness/uv.lock"
+    assert setup["with"]["cache-dependency-glob"] == "uv.lock"
     assert all(
         "harness/scripts/git_guard.py" in s["run"]
         for s in ci["jobs"]["attribution"]["steps"]

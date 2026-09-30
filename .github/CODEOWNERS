@@ -1,0 +1,94 @@
+# CODEOWNERS 초안(💭). 기준: 앱 1개 구조(✅ 9/30 최신 개발자 문서 기준). 규칙:
+# 1. 마지막으로 매칭된 줄이 이긴다. 그래서 일반 규칙을 위에, 구체 규칙을 아래에 둔다.
+# 2. 한 줄에 여러 명을 적으면 그중 1명 승인으로 충족된다.
+# 3. PR 작성자 본인의 승인은 인정되지 않는다. 그래서 줄마다 주 담당과 짝(buddy)을 함께 적는다.
+#    짝(💭): C1<->C2, C3<->O3, O1<->O2. 하네스·계약 파일은 @TL과 O1이 짝.
+#
+# 자리표시자 -> 실명(✅ 장부 18). 자리표시자를 실제 GitHub ID로 바꾼다.
+#   @C1 = 유상준   클라우드 인프라: AI Terraform 툴·정책 검사·권한 경계·IAM 승인·HTTPS
+#   @C2 = 안승환   클라우드 빌드·배포(CodeBuild·Docker Hub 푸시·ECS·RDS·Secrets Manager)
+#   @C3 = 양서윤   클라우드 검증 + 관리 페이지(승인 화면, 💭 Slack 알림)
+#   @O1 = 정준우   온프렘 런타임 + 실행기 (문서 정리)
+#   @O2 = 김준석   입구·분석 + 계획·계획 검증 + 온프렘 인프라 프로비저닝
+#   @O3 = 장민영   샘플 앱 + 교차 검증 + (토글) AI 패치 + 💭 Dockerfile 생성·검사
+#   @TL = 하네스·계약 승인자. 테크 리드는 공식 지정 없음 -> 누구로 둘지 팀 결정 필요(docs/harness/06 I-30).
+#         정하기 전까지는 이 줄들이 @O1 한 명에게 몰리므로, 정해지면 @TL을 그 사람 ID로 바꾼다.
+#         @TL이 겸하는 역할이 짝과 겹치면(예: @TL=@O1) 그 줄의 짝을 다른 사람으로 바꾼다.
+#
+# 자리표시자를 실제 GitHub ID로 바꾸기 전에는 main 보호를 켜지 않는다.
+# 쓰기 권한이 없는 사람이 적힌 줄은 조용히 무시된다. push 후 GitHub 파일 화면에서 오류 표시
+# (특히 ** 패턴)가 없는지 확인한다.
+
+# ---- 기본 ----
+*                                                   @TL @O1
+# ---- 하네스·공유 파일 ----
+/AGENTS.md                                          @TL @O1
+/CLAUDE.md                                          @TL @O1
+/harness/CONTRIBUTING.md                                    @TL @O1
+/pyproject.toml                                     @TL @O1
+/uv.lock                                            @TL @O1
+/.github/                                           @TL @O1
+/harness/.githooks/                                         @TL @O1
+/.claude/                                           @TL @O1
+/harness/scripts/dev.py                                     @TL @O1
+/harness/scripts/git_guard.py                               @TL @O1
+/harness/scripts/export_schemas.py                          @TL @O1
+/harness/tests/contract/                                    @TL @O1
+/harness/docs/harness/                                      @TL @O1
+/harness/docs/contracts/                                    @TL @O1
+# ---- 공용 코어(계약·레지스트리·조립 진입점) ----
+/src/ddak/core/                                     @TL @O1
+/src/ddak/core/contracts/                           @TL @O1
+/src/ddak/core/registry.py                          @TL @O1
+/src/ddak/core/store.py                             @O1 @O2
+/src/ddak/core/snapshots.py                         @O1 @O2
+/src/ddak/app.py                                    @TL @O1
+/harness/contracts/schemas/                         @TL @O1
+# ---- AI 관문 (김준석) ----
+/src/ddak/core/ai/                                  @O2 @TL
+/src/ddak/core/redact.py                            @TL @O2
+# ---- plan: 계획·계획 검증 (김준석), 패치·Dockerfile (장민영) ----
+/src/ddak/plan/                                     @O2 @O1
+/src/ddak/plan/patch/                               @O3 @O2
+/src/ddak/plan/dockerfile/                          @O3 @C2
+# ---- 실행기 (정준우) ----
+/src/ddak/executor/                                 @O1 @O2
+# ---- cd: 공통 계약(interface·dispatch·fake) + 환경 무관 툴 (정준우) ----
+/src/ddak/cd/                                       @O1 @C2
+/src/ddak/cd/interface.py                           @TL @O1
+# ---- cloud: 인프라·TLS (유상준), 빌드·배포 (안승환), 헬스·TLS 검증 (양서윤) ----
+/src/ddak/cloud/                                    @C1 @C2
+/src/ddak/cloud/infra/                              @C1 @C2
+/src/ddak/cloud/build/                              @C2 @C1
+/src/ddak/cloud/build/**/local.py                   @O1 @O2
+/src/ddak/cloud/deploy/                             @C2 @C1
+/src/ddak/cloud/tls/                                @C1 @C2
+/src/ddak/cloud/health/                             @C3 @O3
+# ---- onprem: 배포 (정준우), 프로비저닝·인벤토리 (김준석) ----
+/src/ddak/onprem/                                   @O1 @O2
+/src/ddak/onprem/deploy/                            @O1 @O2
+/src/ddak/onprem/provision/                         @O2 @O1
+/src/ddak/onprem/inventory/                         @O2 @O1
+# ---- verify: smoke·compare·diagnose (장민영), report (양서윤) ----
+/src/ddak/verify/                                   @O3 @C3
+/src/ddak/verify/report/                            @C3 @O3
+# ---- 관리 웹 (양서윤), 알림 (담당 미정 -> 기본 규칙), 운영 (정준우, cleanup 유상준) ----
+/src/ddak/web/                                      @C3 @O1
+/src/ddak/ops/                                      @O1 @O2
+/src/ddak/ops/tools/cleanup/                        @C1 @O1
+# ---- 샘플 앱·AI 패치 평가 (장민영) ----
+/harness/apps/sample-app/                                   @O3 @O2
+/harness/fixtures/patch_cases/                              @O3 @O2
+/harness/scripts/patch_eval.py                              @O3 @O2
+/harness/fixtures/ai_replay/                                @O2 @O3
+# ---- 인프라 (유상준), 온프렘 스택 (김준석) ----
+/harness/infra/terraform/                                   @C1 @C2
+/harness/compose/                                           @O2 @O1
+# ---- 역할 가이드 ----
+/harness/docs/guides/c1.md                                  @C1 @TL
+/harness/docs/guides/c2.md                                  @C2 @TL
+/harness/docs/guides/c3.md                                  @C3 @TL
+/harness/docs/guides/o1.md                                  @O1 @TL
+/harness/docs/guides/o2.md                                  @O2 @TL
+/harness/docs/guides/o3.md                                  @O3 @TL
+# docs/ai-usage/<역할>.md는 사람별 파일이라 충돌이 나지 않는다. 기본 규칙(*)을 따른다.

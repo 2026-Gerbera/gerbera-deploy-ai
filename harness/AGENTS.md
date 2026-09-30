@@ -24,7 +24,7 @@
 |---|---|
 | 개발 언어 | 파이썬(앱, 툴, 실행기, 스크립트). 관리 웹은 FastAPI/Django 미정. 기존 FastAPI 골격은 임시 구현이며 코어는 프레임워크와 분리한다. |
 | AI 컨트리뷰터 금지 | AI가 GitHub 컨트리뷰터로 잡히면 안 된다. AI 공동 작성자 트레일러, AI 봇 author, AI 생성 표시 문구를 모두 금지한다. |
-| 구조 (✅) | MCP 서버 없이 파이썬 앱 1개(`src/ddak`, 한 프로세스). 모듈은 💭 레지스트리 트리(9/30) `plan` / `infra` / `ci` / `cd` / `verify` + 공용 `core`(+ `ops`, `executor`, `web`). CD는 공통 인터페이스 + provider 모듈(`cd/interface.py` + `cd/providers/aws.py`·`onprem.py`, ✅ 9/30). 툴은 코드 안 레지스트리(`@tool`, pydantic). 툴 40개(옛 33개 + 인프라 툴 5개로 `ensure_infra` 대체 + `generate_dockerfile`·`validate_dockerfile`·`push_image`, 💭 이름). |
+| 구조 (✅) | MCP 서버 없이 파이썬 앱 1개(`src/ddak`, 한 프로세스). 디렉토리는 아래 "디렉토리와 담당" 트리(9/30 정리): `plan/*` · `cloud/*` · `onprem/*` · `cd` · `verify/*` + 공용 `core`(+ `ops`, `executor`, `web`, `integrations`). CD는 공통 인터페이스(`cd/interface.py`, `cd/dispatch.py`) + 환경별 provider(`cloud/deploy`의 AwsProvider, `onprem/deploy`의 OnPremProvider, ✅ 9/30). 툴은 코드 안 레지스트리(`@tool`, pydantic). 툴 40개(옛 33개 + 인프라 툴 5개로 `ensure_infra` 대체 + `generate_dockerfile`·`validate_dockerfile`·`push_image`, 💭 이름). |
 | 파이프라인 | ① 플랜 → ② 계획 검증 → ③ 빌드 → ④ 배포 → ⑤ 검증 및 보고. 단위·통합 테스트 단계 없음. 로컬·클라우드 트랙은 동시에 시작하고 로컬 검증(`local_verified`)이 필요한 지점에서만 대기한다. |
 | AI 경계 | AI는 제안만 만든다: JSON(채팅 의도, 분석 분류, step 선택, 실패 원인 설명, 보고 요약), Terraform HCL·IAM 정책 초안(`generate_infra`), Dockerfile 초안(`generate_dockerfile`, Dockerfile이 없을 때만). 실행은 검증과 사람 승인을 거친 뒤 코드가 한다(IAM 생성은 사람 승인 필수). 빌드·배포·검증 실행·롤백·잠금에는 AI가 없다. LLM은 툴을 직접 호출하지 않는다. AI는 비밀값을 보지 않는다. 코드·diff·로그는 신뢰하지 않는 입력이다. |
 | 계획 | 단계 순서 고정. 단계 안 step은 AI가 넣고 뺀다. step 층(내장/필수/조건부/선택)은 계획 검증(코드)이 강제한다. 불합격 → 재지시 1회 → 규칙 계획. |
@@ -34,6 +34,49 @@
 | TLS | 클라우드 HTTPS 필수(`ensure_tls`·`verify_tls`는 cloud만). 로컬 HTTPS는 ⏸ 보류(`http://localhost:8080`). 도메인은 사람이 관리 페이지에 입력하는 설정값이고 AI는 바꾸지 못한다. |
 | DB·샘플 앱 | MySQL(두 환경). flaskr 기반(v1 익명 게시판 → 라이브 v2 로그인). 디렉토리 `apps/sample-app`은 가칭. |
 | 코드 수정 토글 | AI 설정 패치 P0. 일반 실행 기본 OFF 유지, 골든 데모 ON. 지원 패턴 2~3종만 승인 후 빌드 사본에 적용한다. |
+
+## 디렉토리와 담당 (2026-09-30 정리)
+
+각자 자기 디렉토리 아래에서 개발한다. 디렉토리마다 `README.md`(담당·할 일)와 `__init__.py`(공개 함수, 빈 구현은 `NotImplementedError`)가 있다. 테스트는 `harness/tests/unit/<같은 경로>/`.
+
+```
+src/ddak/
+├─ core/                 ★ 공용: contracts, registry, config, redact, logging
+│   ├─ ai/               김준석: call_ai(cli/api/replay), Jev
+│   └─ store.py, snapshots.py   정준우
+├─ plan/
+│   ├─ intake/           김준석: 요청 접수·스냅샷 (receive_deploy_request)
+│   ├─ detect/           김준석: 변경 탐지·스냅샷 해시 (detect_changed_tiers)
+│   ├─ analyze/          김준석: 분석·키 분류·Jev (analyze_project)            [AI 허용]
+│   ├─ planner/          김준석: 계획 생성 (generate_plan)                      [AI 허용]
+│   ├─ validate/         김준석: 계획 검증 (validate_plan)                      [AI·생성기 금지]
+│   ├─ patch/            장민영: AI 코드 수정 P0 (patch_config 등)               [AI 허용]
+│   └─ dockerfile/       장민영: generate.py(AI) · validate.py(AI 금지)
+├─ executor/             정준우
+├─ cd/                   ★ 공통 계약: interface.py, dispatch.py, fake.py, tools/(환경 무관 툴)
+├─ cloud/
+│   ├─ infra/            유상준: AI Terraform·탐지 (tools/generate_infra만 AI 허용, 옛 ddak/infra)
+│   ├─ build/            안승환: CodeBuild, registries/(dockerhub 기본, ecr 옵션) (옛 ddak/ci)
+│   ├─ deploy/           안승환: provider.py(AwsProvider), ecs.py, secrets.py, database.py
+│   ├─ tls/              유상준: HTTPS 연결 (ensure_tls)
+│   └─ health/           양서윤: 클라우드 헬스·TLS 검증 (health_check cloud, verify_tls)
+├─ onprem/
+│   ├─ deploy/           정준우: provider.py(OnPremProvider), containers.py, config.py, migrate.py
+│   ├─ provision/        김준석: 온프렘 서버·컨테이너 준비, 앱 DB·계정
+│   └─ inventory/        김준석: 인벤토리(tier별 주소) 읽기
+├─ verify/
+│   ├─ smoke/            장민영: smoke_test
+│   ├─ compare/          장민영: compare_env_results
+│   ├─ diagnose/         장민영: 원인 분석 (diagnose_parity_gap)                 [AI 허용]
+│   └─ report/           양서윤: 결과 카드·보고 (post_report)                    [AI 허용]
+├─ web/                  양서윤: FastAPI (app.py, routes/, templates/, static/)
+├─ integrations/slack/   담당 미정: Webhook 알림
+└─ ops/                  정준우 (클라우드 정리 cleanup은 유상준)
+```
+
+- 다른 디렉토리 안쪽 파일을 직접 import하지 않고 그 디렉토리 `__init__.py`의 공개 이름만 쓴다.
+- 툴 구현이 끝나면 자기 디렉토리에 `tool.py`를 만들고 `@tool("<이름>")`으로 등록한다(`ddak.app`이 자동 탐색, `cd/tools`·`cloud/infra/tools`·`cloud/build/tools`·`ops/tools`는 `tools/<이름>/tool.py`). 빈 구현은 등록하지 않는다.
+- 카탈로그 모듈 값은 패키지 경로다: `plan`, `cloud.infra`, `cloud.build`, `cd`, `cloud.health`(verify_tls), `verify`, `core`, `ops`.
 
 ## 최신 실행 전제
 
@@ -51,8 +94,8 @@
 - `--no-verify`와 `GIT_AUTHOR_*`/`GIT_COMMITTER_*`로 검사·신원을 우회하지 않는다. main 직접 push는 허용한다.
 - AI 에이전트는 force push, `git config` 변경, PR merge, 태그, `terraform apply/destroy`, AWS 리소스 삭제, 콘솔 수동 변경을 하지 않는다(사람만 한다). 에이전트는 `make tf-plan`까지만 한다. 제품의 `apply_infra`(사람 승인 뒤 코드가 실행)와는 별개 규칙이다.
 - 제품이 만든 AI Terraform 생성물(`var/infra/`)을 AI 에이전트가 팀 저장소에 커밋하지 않는다. 리뷰용으로 남길 때는 사람이 자기 이름으로 커밋한다.
-- `ci`, `cd`, `executor`, `ops`, `web`, 그리고 `infra`의 검사·apply 툴(`discover_existing`, `validate_infra`, `plan_infra`, `apply_infra`)과 `infra/providers`에서 LLM·Jev SDK나 `ddak.core.ai`를 import하지 않는다. AI 툴 9개 밖에서 `call_ai`를 부르지 않는다.
-- 툴 모듈(`plan`, `infra`, `ci`, `cd`, `verify`, `ops`)끼리 import하지 않는다. 실행기·웹·코어는 툴 모듈을 import하지 않는다(레지스트리 이름으로만 부른다).
+- AI(`ddak.core.ai`, LLM·Jev SDK) import는 `plan/analyze`, `plan/planner`, `plan/patch`, `plan/dockerfile`(generate.py), `cloud/infra/tools/generate_infra`, `verify/diagnose`, `verify/report`와 `core/ai` 자신만 한다. `executor`, `cd`, `cloud/deploy`·`tls`·`health`·`build`, `onprem/*`, `ops`, `web`, `integrations`, 검사기(`plan/validate`, `plan/dockerfile/validate.py`, `cloud/infra`의 탐지·검사·plan·apply·providers)는 금지다(import-linter 계약 1·2·5·7). AI 툴 9개 밖에서 `call_ai`를 부르지 않는다.
+- 툴 디렉토리(`plan`, `cloud`, `onprem`, `cd`, `verify`, `ops`)끼리 import하지 않는다(예외: `cd/dispatch.py` → `cloud.deploy`·`onprem.deploy` 공개 이름, provider 구현 → `cd/interface.py`). 실행기·웹·코어는 툴 디렉토리를 import하지 않는다(레지스트리 이름으로만 부른다, 계약 3·4).
 - Terraform state 원문을 읽거나 파싱하지 않는다(`terraform output -json`만). state·plan 파일·출력 원문을 AI 입력에 넣지 않는다.
 - 앱 코드에서 `print`를 쓰지 않는다(`ddak.core.logging`을 쓴다).
 - 로컬 검증을 건너뛰는 플래그를 만들지 않는다. 클라우드의 상태 변경 step을 `local_verified` 대기 앞에 두지 않는다.

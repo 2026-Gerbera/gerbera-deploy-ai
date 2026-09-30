@@ -1,0 +1,132 @@
+{
+  "$defs": {
+    "ImageObservation": {
+      "additionalProperties": false,
+      "properties": {
+        "platform": {
+          "enum": [
+            "linux/amd64",
+            "linux/arm64"
+          ],
+          "title": "Platform",
+          "type": "string"
+        },
+        "platform_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Platform Digest",
+          "type": "string"
+        }
+      },
+      "required": [
+        "platform",
+        "platform_digest"
+      ],
+      "title": "ImageObservation",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "applicable": {
+      "default": true,
+      "title": "Applicable",
+      "type": "boolean"
+    },
+    "changed": {
+      "default": false,
+      "title": "Changed",
+      "type": "boolean"
+    },
+    "config_ref": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Config Ref"
+    },
+    "detail": {
+      "default": "",
+      "title": "Detail",
+      "type": "string"
+    },
+    "function": {
+      "title": "Function",
+      "type": "string"
+    },
+    "image_ref": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Image Ref"
+    },
+    "keys": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Keys",
+      "type": "array"
+    },
+    "migration": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Migration"
+    },
+    "observation": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ImageObservation"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "passed": {
+      "default": true,
+      "title": "Passed",
+      "type": "boolean"
+    },
+    "previous_image": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Previous Image"
+    },
+    "provider": {
+      "title": "Provider",
+      "type": "string"
+    }
+  },
+  "required": [
+    "provider",
+    "function"
+  ],
+  "title": "RollbackTierOutput",
+  "type": "object"
+}

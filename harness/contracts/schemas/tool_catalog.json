@@ -43,7 +43,7 @@
     "effect": "state_change",
     "kind": "tool_fn",
     "layer": "conditional",
-    "module": "infra",
+    "module": "cloud.infra",
     "name": "apply_infra",
     "owners": {
       "cloud": "C1",
@@ -66,7 +66,7 @@
     "effect": "additive_prep",
     "kind": "tool_fn",
     "layer": "conditional",
-    "module": "ci",
+    "module": "cloud.build",
     "name": "build_image",
     "owners": {
       "cloud": "C2",
@@ -238,7 +238,7 @@
     "effect": "read",
     "kind": "tool_fn",
     "layer": "outside",
-    "module": "infra",
+    "module": "cloud.infra",
     "name": "discover_existing",
     "owners": {
       "logic": "C1"
@@ -300,7 +300,7 @@
     "effect": "read",
     "kind": "tool_fn",
     "layer": "outside",
-    "module": "infra",
+    "module": "cloud.infra",
     "name": "generate_infra",
     "owners": {
       "logic": "C1"
@@ -467,7 +467,7 @@
     "effect": "read",
     "kind": "tool_fn",
     "layer": "outside",
-    "module": "infra",
+    "module": "cloud.infra",
     "name": "plan_infra",
     "owners": {
       "cloud": "C1",
@@ -581,7 +581,7 @@
     "effect": "additive_prep",
     "kind": "tool_fn",
     "layer": "builtin",
-    "module": "ci",
+    "module": "cloud.build",
     "name": "push_image",
     "owners": {
       "logic": "C2"
@@ -793,7 +793,7 @@
     "effect": "read",
     "kind": "tool_fn",
     "layer": "outside",
-    "module": "infra",
+    "module": "cloud.infra",
     "name": "validate_infra",
     "owners": {
       "logic": "C1"
@@ -833,7 +833,7 @@
     "effect": "read",
     "kind": "tool_fn",
     "layer": "mandatory",
-    "module": "verify",
+    "module": "cloud.health",
     "name": "verify_tls",
     "owners": {
       "cloud": "C3",

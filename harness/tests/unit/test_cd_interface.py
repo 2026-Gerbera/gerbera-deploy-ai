@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
+import importlib.util
 import inspect
-import pkgutil
 from collections.abc import Callable
 
 import pytest
 
-import ddak.cd.providers as providers_pkg
+from ddak.cd.dispatch import AwsProvider, FakeProvider, OnPremProvider, select_provider
 from ddak.cd.interface import INTERFACE_FUNCTIONS, CdProvider, ProviderName
-from ddak.cd.providers import AwsProvider, FakeProvider, OnPremProvider, select_provider
 from ddak.core.config import AdapterMode
 from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.enums import Target
@@ -59,5 +58,9 @@ def test_select_provider_uses_target_and_mode_only() -> None:
 
 def test_gcp_and_azure_have_no_provider_code_yet() -> None:
     # CSP 우선순위 AWS 1순위, GCP·Azure는 후순위(인터페이스만, 코드 없음, ✅ 9/30).
-    names = {m.name for m in pkgutil.iter_modules(providers_pkg.__path__)}
-    assert names == {"aws", "onprem", "fake"}
+    # provider는 환경별 팀 디렉토리(cloud/deploy, onprem/deploy)와 cd/fake.py에만 있다.
+    assert AwsProvider.__module__ == "ddak.cloud.deploy.provider"
+    assert OnPremProvider.__module__ == "ddak.onprem.deploy.provider"
+    assert FakeProvider.__module__ == "ddak.cd.fake"
+    for name in ("ddak.cd.providers", "ddak.cloud.gcp", "ddak.cloud.azure"):
+        assert importlib.util.find_spec(name) is None, name

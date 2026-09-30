@@ -1,0 +1,11 @@
+diff --git a/app.json b/app.json
+--- a/app.json
++++ b/app.json
+@@ -1,5 +1,5 @@
+ {
+-  "version": "v1",
+-  "login_enabled": false,
++  "version": "v2",
++  "login_enabled": true,
+   "source": "fixture"
+ }

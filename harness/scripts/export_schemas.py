@@ -31,8 +31,8 @@ TOP_LEVEL = (
     ("release_artifacts.json", "ddak.core.contracts.release", "ReleaseArtifacts"),
 )
 
-if str(ROOT / "src") not in sys.path:  # 설치 전(스크래치·CI 첫 실행)에도 import되게
-    sys.path.insert(0, str(ROOT / "src"))
+if str(ROOT.parent / "src") not in sys.path:  # 설치 전(스크래치·CI 첫 실행)에도 import되게
+    sys.path.insert(0, str(ROOT.parent / "src"))
 
 
 def _dump(obj: Any) -> str:

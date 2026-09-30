@@ -1,0 +1,24 @@
+# 커밋 scope 목록. 훅(scripts/git_guard.py)과 CI가 같이 읽는 단일 출처다. 한 줄에 하나.
+# 바꾸려면 harness scope로 별도 PR을 연다(하네스 소유자 승인).
+# 기준: 앱 1개 구조(🟡 팀 합의 대기, docs/18). 모듈 이름(💭 레지스트리 트리 9/30)에 맞춘 19개.
+# 모듈 ci(③ 빌드)의 scope는 build다. ci scope는 GitHub Actions(.github/workflows)용이다.
+# infra scope는 src/ddak/infra와 infra/terraform(둘 다 C1)을 함께 쓴다.
+core
+contracts
+ai
+plan
+infra
+build
+cd
+verify
+executor
+web
+ops
+sample-app
+compose
+fixtures
+scripts
+harness
+ci
+docs
+deps

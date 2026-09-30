@@ -1,0 +1,9 @@
+* text=auto eol=lf
+harness/.githooks/* text eol=lf
+*.sh text eol=lf
+Makefile text eol=lf
+*.png binary
+*.jpg binary
+*.pdf binary
+harness/uv.lock linguist-generated=true
+harness/contracts/schemas/** linguist-generated=true

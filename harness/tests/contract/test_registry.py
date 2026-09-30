@@ -1,7 +1,8 @@
 """레지스트리 카탈로그 계약 테스트.
 
 배치·플래그·층을 바꾸면 이 스냅샷도 같은 계약 변경 PR에서 고친다.
-모듈 배치는 9/30 레지스트리 트리 고려안(💭): plan / infra / ci / cd / verify + core + ops.
+모듈 배치(9/30 디렉토리 정리): plan / cloud.infra / cloud.build / cd / cloud.health / verify
++ core + ops. 등록 위치는 ddak.<모듈 값>. 아래다.
 """
 
 from __future__ import annotations
@@ -111,12 +112,28 @@ def test_module_counts() -> None:
     assert counts == {
         Module.PLAN: 10,
         Module.INFRA: 5,
-        Module.CI: 2,
+        Module.BUILD: 2,
         Module.CD: 9,
-        Module.VERIFY: 8,
+        Module.CLOUD_HEALTH: 1,
+        Module.VERIFY: 7,
         Module.CORE: 3,
         Module.OPS: 3,
     }
+
+
+def test_module_values_are_package_paths() -> None:
+    # 모듈 값 = ddak 아래 패키지 경로(레지스트리가 @tool 등록 위치를 이것으로 검사한다).
+    assert {m.value for m in Module} == {
+        "plan",
+        "cloud.infra",
+        "cloud.build",
+        "cd",
+        "cloud.health",
+        "verify",
+        "core",
+        "ops",
+    }
+    assert spec_for("verify_tls").module is Module.CLOUD_HEALTH
 
 
 def test_ai_tools_snapshot() -> None:
@@ -126,7 +143,8 @@ def test_ai_tools_snapshot() -> None:
 
 def test_execution_path_has_no_ai() -> None:
     # ③ 빌드, ④ 배포, 운영, 실행기 기능에는 AI가 없다(✅ 장부 4).
-    assert not any(s.uses_ai for s in tools_in(Module.CI))
+    assert not any(s.uses_ai for s in tools_in(Module.BUILD))
+    assert not any(s.uses_ai for s in tools_in(Module.CLOUD_HEALTH))
     assert not any(s.uses_ai for s in tools_in(Module.CD))
     assert not any(s.uses_ai for s in tools_in(Module.OPS))
     assert not any(s.uses_ai for s in CATALOG if s.kind is ToolKind.EXECUTOR_FN)
@@ -194,8 +212,8 @@ def test_dockerfile_tools_split_generator_from_checker() -> None:
     assert not (gen.destructive or val.destructive)
 
 
-def test_ci_has_build_and_push_without_ai() -> None:
-    assert {s.name for s in tools_in(Module.CI)} == {"build_image", "push_image"}
+def test_build_has_build_and_push_without_ai() -> None:
+    assert {s.name for s in tools_in(Module.BUILD)} == {"build_image", "push_image"}
     assert spec_for("push_image").stage is Stage.BUILD
 
 

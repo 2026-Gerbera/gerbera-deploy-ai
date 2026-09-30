@@ -80,17 +80,21 @@ def py(*args: str) -> list[str]:
 # 품질
 # ---------------------------------------------------------------------------
 def task_fmt() -> int:
-    return run_all([[tool("ruff"), "format", "."], [tool("ruff"), "check", "--fix", "."]])
+    return run_all(
+        [[tool("ruff"), "format", ".", "../src"], [tool("ruff"), "check", "--fix", ".", "../src"]]
+    )
 
 
 def task_lint() -> int:
-    return run_all([[tool("ruff"), "format", "--check", "."], [tool("ruff"), "check", "."]])
+    return run_all(
+        [[tool("ruff"), "format", "--check", ".", "../src"], [tool("ruff"), "check", ".", "../src"]]
+    )
 
 
 def task_type(all_packages: bool = False) -> int:
-    code = run([tool("pyright")])  # pyproject: src/ddak/core만 (CI 차단)
+    code = run([tool("pyright"), "--project", ".."])  # 루트 pyproject: src/ddak/core
     if all_packages:
-        extra = run([tool("pyright"), "src"])
+        extra = run([tool("pyright"), "--project", "..", "../src"])
         if extra != 0:
             print("dev: 경고: src 전체 pyright 경고가 있다(차단하지 않음)")
     return code
@@ -112,7 +116,7 @@ def task_contracts(update: bool = False) -> int:
 def task_boundary() -> int:
     return run_all(
         [
-            [tool("lint-imports")],
+            [tool("lint-imports"), "--config", "../pyproject.toml"],
             py(
                 "-m",
                 "pytest",
@@ -165,18 +169,14 @@ def task_check(with_attribution: bool = True) -> int:
 # ---------------------------------------------------------------------------
 def task_run(mode: str) -> int:
     # 앱 1개(관리 웹 + 실행기 + 레지스트리)를 127.0.0.1에 띄운다. 호스트 실행(✅ 장부 11).
-    print("dev: 앱을 띄운다(관리 웹 골격 + 레지스트리). 실행기 배선은 TODO(O1).")
+    print("dev: 앱을 띄운다(관리 웹 골격 + 레지스트리 + 실행 서비스 연결, UI/C3 별도).")
     return run(py("-m", "ddak"), env={"DDAK_ADAPTER_MODE": mode})
 
 
-def task_demo_reset(cloud: bool) -> int:
+def task_demo_reset(cloud: bool, containers: bool = False) -> int:
     if cloud:
-        answer = input("클라우드 데모 상태를 초기화한다. 계속하려면 reset-cloud 입력: ")
-        if answer.strip() != "reset-cloud":
-            print("dev: 취소했다")
-            return 1
-        return not_implemented("C2", "demo-reset --cloud")
-    return not_implemented("O1", "demo-reset (데모 작업 사본, 로컬 스택, var/runs 초기화)")
+        return not_implemented("C2", "클라우드 reset은 지원하지 않으며 리소스를 변경하지 않는다")
+    return run(py("scripts/o1_demo.py", "--reset", *(["--containers"] if containers else [])))
 
 
 def task_secrets_scan() -> int:
@@ -204,16 +204,16 @@ def task_tf_plan() -> int:
 
 def task_clean() -> int:
     removed = 0
-    targets = [ROOT / "var", ROOT / ".pytest_cache", ROOT / ".ruff_cache"]
-    skip = {".venv", ".git", "node_modules"}
+    targets = [ROOT / ".pytest_cache", ROOT / ".ruff_cache"]
+    skip = {".venv", ".git", "node_modules", "var"}
     for path in ROOT.rglob("__pycache__"):
         if not skip.intersection(path.relative_to(ROOT).parts):
             targets.append(path)
     for path in targets:
-        if path.is_dir():
+        if path.is_dir() and not path.is_symlink():
             shutil.rmtree(path)
             removed += 1
-    print(f"dev: {removed}개 디렉토리를 지웠다")
+    print(f"dev: 캐시 {removed}개 디렉토리를 지웠다. var/ 런타임 상태·DB·잠금은 보존했다.")
     return 0
 
 
@@ -254,7 +254,7 @@ def task_setup_local(no_sync: bool = False) -> int:
         return 1
     if no_sync:
         return 0
-    locked = ["--locked"] if (ROOT / "uv.lock").is_file() else []
+    locked = ["--locked"] if any((p / "uv.lock").is_file() for p in (ROOT, ROOT.parent)) else []
     return run(["uv", "sync", *locked])
 
 
@@ -279,7 +279,7 @@ def task_setup(no_sync: bool) -> int:
         problems.append(f"uv {shown}는 범위 밖(>=0.12.20,<0.13). 설치한 방식으로 업데이트한다.")
     elif not no_sync:
         # uv.lock이 있으면 --locked로 lock을 건드리지 않는다(첫 생성은 하네스 소유자만).
-        locked = ["--locked"] if (ROOT / "uv.lock").is_file() else []
+        locked = ["--locked"] if any((p / "uv.lock").is_file() for p in (ROOT, ROOT.parent)) else []
         if run(["uv", "sync", *locked]) != 0:
             problems.append("uv sync 실패. 출력 확인 후 다시 실행한다.")
 
@@ -342,18 +342,26 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("run", help="앱 1개(관리 웹 + 실행기 + 레지스트리), real 어댑터")
     sub.add_parser("run-fake", help="같은 기동, 모든 어댑터 Fake")
     sub.add_parser("contract-smoke", help="레지스트리 구현 현황(등록/미구현) + Fake 1회 호출")
-    p = sub.add_parser("demo-reset", help="데모 상태 초기화(--cloud는 확인 입력 필요)")
+    p = sub.add_parser("demo-reset", help="O1 fixture 전용 상태 초기화(클라우드 미지원)")
     p.add_argument("--cloud", action="store_true")
+    p.add_argument("--containers", action="store_true", help="이중 소유 라벨의 데모 컨테이너 정리")
+    p = sub.add_parser("demo", help="명시적 fixture 시나리오 리허설(실제 클라우드 아님)")
+    p.add_argument("--mode", choices=("fixture", "local", "real"), default="fixture")
+    p.add_argument(
+        "--scenario",
+        choices=("success", "local_fail", "cloud_fail", "parity_fail"),
+        default="success",
+    )
+    p.add_argument("--yes", action="store_true", help="fixture 테스트만 자동 승인")
     for name, help_text in (
-        ("demo-local", "로컬 트랙만 끝까지(Fake 또는 real)"),
-        ("demo", "로컬 ∥ 클라우드 전체 경로(리허설)"),
+        ("demo-local", "실제 Docker provider 통합 테스트(전체 서비스 데모 아님)"),
         ("smoke-local", "로컬 스모크 시나리오"),
         ("smoke-cloud", "클라우드 스모크 시나리오"),
         ("patch-eval", "AI 설정 패치 P0 평가(일반 기본 OFF, 데모 ON)"),
-        ("preflight", "AWS 프로필, Docker, 포트, 인증서, LLM 연결 상태"),
+        ("preflight", "Docker 제한 시간 조회 + 팀 도구 등록/누락 현황(자격증명 미조회)"),
         ("secrets-scan", "gitleaks 전체 이력 스캔"),
         ("tf-plan", "terraform fmt/validate/plan (apply 없음)"),
-        ("clean", "var/와 캐시 삭제"),
+        ("clean", "캐시만 삭제(var/ 런타임 상태·DB·잠금 보존)"),
     ):
         sub.add_parser(name, help=help_text)
     return parser
@@ -373,11 +381,10 @@ def dispatch(args: argparse.Namespace) -> int:
         "run-fake": lambda: task_run("fake"),
         "contract-smoke": lambda: run(py("scripts/contract_smoke.py")),
         "patch-eval": lambda: run(py("scripts/patch_eval.py")),
-        "demo-local": lambda: not_implemented("O1", "demo-local"),
-        "demo": lambda: not_implemented("O1", "demo (로컬 -> 클라우드)"),
+        "demo-local": lambda: run(py("scripts/o1_demo.py", "--mode", "local")),
         "smoke-local": lambda: not_implemented("O3", "smoke-local"),
         "smoke-cloud": lambda: not_implemented("C3", "smoke-cloud"),
-        "preflight": lambda: not_implemented("O1, 클라우드 항목 C1", "preflight"),
+        "preflight": lambda: run(py("scripts/o1_demo.py", "--preflight")),
         "secrets-scan": task_secrets_scan,
         "tf-plan": task_tf_plan,
         "clean": task_clean,
@@ -395,7 +402,18 @@ def dispatch(args: argparse.Namespace) -> int:
     if task == "attribution":
         return task_attribution(args.full)
     if task == "demo-reset":
-        return task_demo_reset(args.cloud)
+        return task_demo_reset(args.cloud, args.containers)
+    if task == "demo":
+        return run(
+            py(
+                "scripts/o1_demo.py",
+                "--mode",
+                args.mode,
+                "--scenario",
+                args.scenario,
+                *(["--yes"] if args.yes else []),
+            )
+        )
     return simple[task]()
 
 

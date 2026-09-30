@@ -94,5 +94,5 @@ secrets-scan: ## gitleaks 전체 이력 스캔
 tf-plan: ## terraform fmt/validate/plan (apply 타깃 없음)
 	$(DEV) tf-plan
 
-clean: ## var/와 캐시 삭제
+clean: ## 개발 캐시만 삭제(실행 기록·잠금 보존)
 	$(DEV) clean

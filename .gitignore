@@ -1,0 +1,56 @@
+# ---- 비밀값: 저장소에는 키 이름만(env.example) 둔다 ----
+.env
+.env.*
+*.pem
+*.key
+*.tfvars
+!*.tfvars.example
+# 컨테이너 패키징·로컬 DB용 비밀 파일(자격증명, 토큰, SSH 키, MySQL 비밀번호). 모든 깊이에 적용
+.secrets/
+# RDS CA 번들(global-bundle.pem)을 커밋할지는 결정 필요(docs/harness/06 I-33).
+# 커밋하기로 하면 아래 예외를 풀고, .claude/settings.json의 Read(*.pem) deny와 함께 정리한다.
+# !apps/sample-app/certs/global-bundle.pem
+
+# ---- Terraform 상태: 커밋도 읽기도 하지 않는다(RDS 비밀번호가 평문으로 들어갈 수 있음) ----
+*.tfstate
+*.tfstate.*
+.terraform/
+# terraform plan 파일에는 민감값이 평문으로 들어간다(plan 문서). apply 뒤 삭제, 커밋 금지
+*.tfplan
+tfplan
+# .terraform.lock.hcl은 커밋한다(제외하지 않음)
+
+# ---- 실행 산출물·작업 사본 ----
+var/
+harness/var/
+.worktrees/
+# 샘플 앱 개발 PC의 SQLite(개발값 DATABASE_URL=sqlite:///instance/..., 장부 12·13)
+instance/
+*.sqlite
+
+# ---- 개인 설정 ----
+.claude/settings.local.json
+
+# ---- 파이썬 ----
+.venv/
+**/.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.import_linter_cache/
+build/
+# 패키지 디렉토리 이름이 build인 곳은 소스다(cloud/build = 옛 ci). 위 build/ 규칙에서 뺀다
+!src/ddak/cloud/build/
+!harness/tests/unit/cloud/build/
+dist/
+
+# ---- 프런트·기타 ----
+node_modules/
+.DS_Store
+
+# 로컬 진행 관리 및 개인 작업 상태
+.orchestrator/
+.claude/scheduled_tasks.lock

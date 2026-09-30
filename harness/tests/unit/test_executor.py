@@ -198,8 +198,14 @@ async def test_check_failure_is_a_failure_and_rollback_missing_needs_human() -> 
 
 
 async def test_compare_failure_is_parity_failed() -> None:
-    result = await Executor(REG).run(plan(compare_mode="check_fail"), RunContext("run-1"))
+    rollbacks = Rollbacks()
+    result = await Executor(REG, rollback=rollbacks).run(
+        plan(compare_mode="check_fail"), RunContext("run-1")
+    )
     assert result.status is RunStatus.PARITY_FAILED
+    assert result.tracks["local"] is TrackStatus.DONE
+    assert result.tracks["cloud"] is TrackStatus.ROLLED_BACK
+    assert rollbacks.targets == [Target.CLOUD]
 
 
 async def test_finally_report_runs_after_local_failure_and_keeps_status() -> None:

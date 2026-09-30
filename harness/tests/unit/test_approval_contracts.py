@@ -18,7 +18,7 @@ KINDS = ("deploy", "patch", "infra", "dockerfile", "foundation")
 
 
 def _model(module: str, name: str) -> Any:
-    path = REPO_ROOT / "src/ddak/core/contracts" / f"{module}.py"
+    path = REPO_ROOT.parent / "src/ddak/core/contracts" / f"{module}.py"
     assert path.is_file(), f"{module}.py 계약이 아직 구현되지 않았다"
     model = getattr(importlib.import_module(f"ddak.core.contracts.{module}"), name, None)
     assert isinstance(model, type), f"계약 {name}이 아직 구현되지 않았다"

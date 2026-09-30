@@ -46,6 +46,25 @@ def test_tool_must_live_in_its_module() -> None:
             return _Out(ok=True)
 
 
+def test_tool_location_accepts_dotted_module_path() -> None:
+    # 모듈 값에 점이 있으면 하위 패키지다: verify_tls(cloud.health) -> ddak.cloud.health. 아래.
+    registry = _fresh(package="ddak")
+
+    def verify_tls(inp: _In, ctx: RunContext) -> _Out:
+        return _Out(ok=True)
+
+    verify_tls.__module__ = "ddak.cloud.health.tool"
+    registry.tool("verify_tls")(verify_tls)
+    assert "verify_tls" in registry.registered()
+
+    def build_image(inp: _In, ctx: RunContext) -> _Out:
+        return _Out(ok=True)
+
+    build_image.__module__ = "ddak.ci.tools.build_image.tool"  # 옛 위치
+    with pytest.raises(RegistryError, match=r"cloud\.build 모듈 소속"):
+        registry.tool("build_image")(build_image)
+
+
 def test_signature_must_be_inp_ctx() -> None:
     registry = _fresh()
     with pytest.raises(RegistryError, match=r"\(inp, ctx\)"):
