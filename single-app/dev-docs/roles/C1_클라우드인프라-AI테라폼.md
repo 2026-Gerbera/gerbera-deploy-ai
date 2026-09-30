@@ -1,0 +1,458 @@
+# C1 유상준 — 클라우드 인프라 · AI Terraform
+
+> **📌 9/30 오후 변경:** 이미지는 1개 + 멀티 아키텍처(amd64·arm64)가 기본입니다. Fargate `runtimePlatform`은 X86_64·ARM64 어느 쪽이든 동작하므로 AI Terraform의 기본값을 정해 주세요(💭 ARM64가 비용 유리, CodeBuild ARM 서울 지원 확인 필요)([01 3-4](../01_공통-계약.md#3-4-이미지-1개--멀티-아키텍처-빌드--9월-30일-오후)).
+
+
+> 대상: 유상준(C1, 클라우드). 기준일 2026-09-30.
+> 표기: ✅ 확정 / 🟡 합의 대기 / 💭 고려안(추천일 뿐, 확정 아님) / ⏸ 보류. [추정] = 실측 전. 확인 필요 = 아직 확인 못 함.
+> 우선순위: 결정 장부([00](../../docs/00_결정-요약.md) 1절) > 이 가이드 > 설계 원본 문서. 이 가이드와 원본 [05 역할과 일정](../../docs/05_역할과-일정.md)이 다르면 05를 따르고 정준우에게 알려 주세요.
+> 코드 템플릿(저장소 뼈대·계약 모델·테스트)은 나중에 따로 공유합니다. 이 가이드는 그것 없이 읽히게 썼습니다. 아래 파일 위치는 전부 💭이고, 템플릿이 오면 그 구조를 따릅니다.
+> 공통 형식은 [공통 계약](../01_공통-계약.md)이 정합니다. 여기의 형식 요약은 초안입니다.
+> 전제: 앱 1개 구조(관리 웹 + 계획 + 계획 검증 + 실행기 + 툴 레지스트리)는 ✅ 9/30 팀 공유([docs/19](../../../docs/19_팀공유-웹앱과-데모시나리오.md) 4절, 준석·서윤 동의 기록) 기준입니다. 설계 원본 장부 3에는 아직 🟡로 적혀 있습니다.
+
+---
+
+## 1. 한 줄 요약과 핵심
+
+**한 줄:** AI가 쓴 Terraform이 **검사 → plan → 사람 승인 → apply**를 거쳐서만 AWS에 반영되게 하는 툴 4개와 그 안전장치(정적 게이트·권한 경계·이름 규칙·상태 백엔드)를 만들고, 클라우드 HTTPS(`ensure_tls`)를 맡습니다. **HCL은 손으로 쓰지 않습니다.**
+
+| 왜 중요한가 | 내용 | 상태 |
+|---|---|---|
+| 클라우드 트랙의 출발점 | 초기 배포(v1 부트스트랩)에서 VPC·ALB·ECS·공유 RDS·IAM·시크릿 틀이 전부 이 경로로 생깁니다. 이게 안 되면 안승환(C2)·양서윤(C3)의 클라우드 작업이 실제 AWS에서 돌 곳이 없습니다 | ✅ 장부 21·22 |
+| 라이브 데모의 인프라 장면 | v2(로그인)에서 새 `SECRET_KEY` 때문에 AI가 앱 층에 시크릿 1개 + 실행 역할 읽기 권한을 제안합니다. 화면 문구 "+ 시크릿 1, IAM 정책 1 변경, 삭제 0"이 이 역할의 결과물입니다 | ✅ 장부 32 |
+| 심사 질문의 답 | "AI가 IAM까지 만들면 위험하지 않나?"에 대한 답이 권한 경계 + 정적 게이트 + 사람 승인입니다. 같은 기수 Team Daisy도 "AI Terraform 생성 → 검증 → 승인"을 공개했으므로, 인프라 쪽 차별점 설명은 이 세 가지를 함께 둔 것입니다. 발표의 중심은 환경 차이 흡수·교차 검증이고 AI Terraform은 수단입니다 | IAM 승인 ✅ 장부 23, 게이트 구성·차별점 문구 💭 |
+| HTTPS | 클라우드 HTTPS는 필수입니다. 인증서를 10/1까지 ISSUED로 만들어야 합니다(발급 SLA 없음) | ✅ 장부 17-a, 담당 배치 💭(05) |
+
+- 담당 배치(C1 = AI Terraform 툴 등)는 장부 21~24에서 따라온 💭 고려안입니다([05 1절](../../docs/05_역할과-일정.md#1-역할표)).
+
+---
+
+## 2. 최종 목표와 완료 기준
+
+**최종 목표**
+- 10/3 10:00 제출 때까지: 새 계정에서 파이프라인이 AI Terraform으로 플랫폼을 만들고, 사람은 plan 요약·IAM diff만 보고 승인합니다.
+- 10/4 결선 라이브 데모(약 3분): v2 시크릿 장면이 "+ 시크릿 1, IAM 정책 1 변경, 삭제 0"으로 나오고, 승인 뒤 apply됩니다. 부트스트랩은 10~20분 [추정]이라 녹화로 보여 줍니다.
+- 10/3은 제출·중간보고(7분)이고, 라이브 데모는 10/4 결선입니다(킥오프 자료 기준, [05 4-1](../../docs/05_역할과-일정.md)).
+
+**완료 기준 (10/1 23:59 E2E 기준 💭)**
+- [ ] 새 계정 준비 끝: Paid plan 💭, 관리자 신원(Identity Center 또는 MFA, root 금지), Route 53 영역, Budgets 50%·80%, 할당량 실제 값 기록
+- [ ] 이름 규칙(N44) 확정 → 그 뒤 기반 준비: 상태 버킷 + `ddak-app-boundary`가 [기반 승인] 뒤 생김
+- [ ] 부트스트랩: `generate_infra` → `validate_infra`(수정 3회 안 통과) → `plan_infra` → [IAM·인프라 승인] → `apply_infra`. 두 층 state(플랫폼·앱). VPC·ALB·ECS 서비스(desired 0)·공유 RDS·Docker Hub 토큰 시크릿 틀 2개 존재
+- [ ] `terraform output -json`(허용 목록, sensitive 제외) → `platform.cloud.json` 생성. 안승환·양서윤·정준우가 이것만 읽고 일함
+- [ ] "도메인 연결" run(`ensure_tls` apply → `verify_tls`) → ACM ISSUED, 443·80→301·HSTS
+- [ ] v2: 앱 층 수정안 → plan "+1 ~1 -0" → 승인 → G1 뒤 apply → 새 시크릿 ARN이 환경 정보에 들어감 → (안승환) 값 쓰기 → 두 환경 로그인·세션 유지(스모크 S5~S8)
+- [ ] 시크릿 값·DB 비밀번호가 state·plan 요약·로그·화면·AI 입력 어디에도 없음
+- [ ] 앱 역할(실행·태스크)·DB 계정이 최소 권한이고 경계로 강제됨(경계 없는 `/ddak/app/` 역할은 정적 게이트가 거부)
+- [ ] 오프라인 fixture 테스트(정적 게이트·Checkov)가 AWS 없이 통과, 코드 템플릿의 전체 검사(`make check`) 통과
+- [ ] 성공률·단계별 소요(생성·검증·plan·apply) 기록
+
+**산출물 (05 2-4)**: 부트스트랩 run 로그(AI HCL 해시, 검증 결과, plan 요약, 승인 기록, apply 결과), 인증서 ISSUED 화면, `platform.cloud.json`, 경계 정책 파일, 정책 검사 규칙 파일, 부트스트랩 녹화.
+
+**10/2 추가 목표 (P1 💭)**: 좁은 파이프라인 역할 + 파이프라인 경계로 전환(N30) 후 양성 스모크 재실행, 실측 10회·p95(안승환과). 전환을 못 하면 발표에서 "파이프라인 경계는 설계, 앱 경계는 적용"이라고 사실대로 말합니다.
+
+---
+
+## 3. 파이프라인에서 내 위치
+
+### 3-1. 5단계 중 어디
+
+| 단계 | 내 툴 | 하는 일 |
+|---|---|---|
+| ① 플랜 | `generate_infra`(AI), `discover_existing`(P1) | 인프라 요구 → HCL 초안(초기) / 앱 층 수정안(개선) |
+| ② 계획 검증 | `validate_infra`, `plan_infra` | 정적 게이트·validate·Checkov → plan → 요약·IAM diff·Access Analyzer → plan sha256 |
+| ③ 빌드 | 없음 | 부트스트랩이면 빌드가 내 `infra_ready` 신호를 기다림(CodeBuild 프로젝트가 apply로 생기므로) |
+| ④ 배포 | `apply_infra`(step `deploy.infra.cloud`), `ensure_tls`(step `deploy.tls.cloud`) | 승인된 plan만 apply → 환경 정보 갱신 / TLS 확인(데모) · 발급(도메인 연결 run) |
+| ⑤ 검증 및 보고 | 없음 | 양서윤의 `verify_tls`가 내 출력(ALB·리스너 ARN)과 설정(`cloud_domain`)을 씀 |
+
+- 인프라 step은 클라우드 트랙에만 있습니다. 온프렘 인프라는 김준석(O2)의 프로비저닝입니다.
+- 인프라 step 포함 여부는 인프라 요구 해시로만 정합니다(V22). 해시가 마지막 apply와 같으면 내 툴 4개는 돌지 않습니다.
+
+### 3-2. v2 로그인 데모에서 내 코드가 불리는 순간 (시간순, [추정] 하한 기준)
+
+| 시각 | 무슨 일 | 내 코드 | 앞뒤 사람 |
+|---|---|---|---|
+| 0:14–0:24 | 분석이 새 키 `SECRET_KEY`와 개발값 `dev`를 찾음 → 인프라 요구(시크릿 키 이름 목록)가 바뀌어 해시 변경 | – (트리거 조건) | 김준석(O2) `analyze_project` → `infra_needs`, `infra_inputs_hash` |
+| 0:24–0:38 | 앱 층 수정안 생성 → 검사 → plan | `generate_infra` → `validate_infra` → `plan_infra`: `aws_secretsmanager_secret`(`ddak/flaskr/SECRET_KEY`) + 실행 역할 정책 update → "+ 시크릿 1, IAM 정책 1 변경, 삭제 0", IAM diff(`GetSecretValue`를 새 ARN 하나에만), Access Analyzer 통과 | 김준석 `validate_plan`이 `deploy.infra.cloud`를 G1 뒤에 넣음(위치 N39 💭). 양서윤(C3) 화면에 요약 표시 |
+| 0:38–0:44 | 한 화면·한 번 승인(✅ 결정 9/30, N40). 인프라 기록은 따로 | – | 양서윤 화면 → 정준우(O1) `request_approval`이 인프라 승인 기록(plan sha256)을 대상별로 저장 |
+| 0:44–1:24 | 빌드 ∥ 클라우드 TLS 확인 | `ensure_tls(mode=check)` — G1 전 병렬, 읽기만 | 안승환(C2) 빌드 |
+| 1:24–1:36 | 온프렘 검증 통과 → `local_verified`(G1) | 대기 | 정준우 실행기 |
+| 1:36–1:48 | 인프라 apply → 값 쓰기 → 태스크 정의 등록 | `apply_infra`: 승인 sha256 대조 → `apply <run>.tfplan`(앱 층) → `terraform output -json` → 새 시크릿 ARN을 환경 정보에 기록 → plan 파일 삭제 | 이어서 안승환 `sync_env_to_cloud`(난수 PutSecretValue), `inject_env_config`(`secrets` valueFrom = 새 ARN) |
+| 1:48–2:53 | 마이그레이션·ECS 롤링·검증 | – | 안승환 배포, 양서윤 `verify_tls`·스모크 |
+| finally | 기록 | – | 정준우 `record_deploy_log`가 마지막 인프라 요구 해시를 저장(다음 run의 V22 기준) |
+
+- 합계 추정은 약 158~445초입니다. 3분을 넘을 수 있어 리허설 실측을 봅니다([02 10절](../../docs/02_파이프라인과-계획.md)).
+- 부트스트랩 순서(녹화용): 기반 준비([기반 승인]) → 인프라 요구 → `generate_infra`(플랫폼 층 + 앱 층) → `validate_infra` → `plan_infra`(전부 create) → [IAM·인프라 승인] (관리자 단기 자격 제공) → `apply_infra`(플랫폼 → 앱) → 환경 정보 첫 기록 → `infra_ready` → 빌드 시작 → "도메인 연결" → DB 비밀·앱 DB 생성(안승환). 자세히 [02 9-2](../../docs/02_파이프라인과-계획.md), [03 9-1](../../docs/03_골든패스-시나리오.md).
+
+---
+
+## 4. 만들 것 목록
+
+### 4-1. 툴
+
+| 이름 | 입력 | 출력 | AI | 대상 | 우선 | 파일 위치 💭 |
+|---|---|---|---|---|---|---|
+| `generate_infra` | `infra_needs`·`infra_inputs_hash`(C-17), (개선 배포) 마지막 승인·apply된 앱 층 HCL 참조, 환경 정보 **가린 요약**(C-22), 허용 리소스 타입, 스키마 조각, 정책 규칙 문구, (수정 회차) 직전 첫 오류 1줄 | HCL 묶음(`main.tf`, 리소스 블록만), 리소스 목록, IAM 역할 요약, 가정 목록(표시용), `ai_usage`, `source`(live/cache/replay) | Claude(`call_ai`) | cloud | **P0** | `src/ddak/infra/tools/generate_infra/`(`tool.py`, `prompt.md`) |
+| `validate_infra` | HCL 묶음 해시 | `passed`, 단계별 결과(정적 게이트·init·validate·Checkov), 첫 오류 원문(redact, 되먹임용) | 없음(AI import 금지) | cloud | **P0** | `src/ddak/infra/tools/validate_infra/` |
+| `plan_infra` | 검증 통과한 HCL 해시, 층(`platform`/`app`). plan 자격은 ctx | `plan_sha256`, 동작별 개수, delete·replace 목록, IAM diff, Access Analyzer 결과, Checkov(plan), 종료 코드(0 변경 없음/2 변경) | 없음 | cloud | **P0** | `src/ddak/infra/tools/plan_infra/` |
+| `apply_infra` | `lock_token`. plan 파일·승인 기록·세션은 ctx | 적용 결과, 환경 정보 갱신(Terraform 출력), 소요 초 | 없음 | cloud | **P0** | `src/ddak/infra/tools/apply_infra/` (플래그: 잠금 필요·파괴형·승인 필요) |
+| `apply_infra(stage=foundation)` | `lock_token`. 템플릿·승인 기록·관리자 세션은 ctx | 상태 버킷 이름, 경계 정책 ARN(P1: 파이프라인 역할 ARN), 템플릿 sha256 | 없음(boto3, Terraform 아님) | cloud | **P0** | 같은 툴의 모드 💭 |
+| `ensure_tls`(aws provider) | `target=cloud`, `mode`(check/apply), `lock_token`. 도메인은 ctx | 인증서 ARN, NotAfter, 리스너 ARN, 레코드 상태, `changed` | 없음 | cloud | **P0**(도메인 연결 run) | `src/ddak/cd/tools/ensure_tls/` + `src/ddak/cd/providers/aws.py`의 `ensure_tls` |
+| `discover_existing` | 계정·리전(ctx) | 기존 리소스 목록(data source 후보) | 없음 | cloud | P1(새 계정이라 사실상 빈 결과) | `src/ddak/infra/tools/discover_existing/` |
+| `preflight_check`(cloud 부분) | – | AWS 프로필·인증서·할당량 점검 결과 | 없음 | cloud | P1 | `src/ddak/ops/`(주 담당 정준우) |
+| `cleanup` | – | 정리 결과 | 없음 | both | P2(10/4 이후, 사람만) | `src/ddak/ops/` |
+
+- 모든 입력에 `run_id`가 있습니다. **입력에 도메인·IP·ARN·계정 ID·비밀값은 없습니다.** 코드가 실행 컨텍스트(환경 정보 스냅샷)에서 채웁니다.
+- 검사 불합격은 예외가 아니라 `passed=False`로 정상 반환합니다. 수행 불가는 오류 코드와 함께 실패합니다. 메시지에 비밀값·절대 경로·계정 ID를 넣지 않습니다(관리 페이지·LLM으로 흘러감).
+- 툴별 완료 기준 💭: fake 모드로 정상 1개·실패 1개 테스트, 오프라인 HCL fixture, 스키마 스냅샷.
+
+### 4-2. 코드 소유 틀·규칙 (툴이 아닌 산출물)
+
+| 이름 | 내용 | 우선 | 파일 위치 💭 |
+|---|---|---|---|
+| 코드 소유 틀 | `required_version = ">= 1.11, < 2.0"`, AWS provider `~> 6.66`, `.terraform.lock.hcl`(darwin_arm64·linux_amd64 해시), provider `region`·`allowed_account_ids`·`default_tags`, backend partial config(`use_lockfile = true`, **층별 state 키**), 이름 규칙 변수. AI 파일에는 이 블록들이 없음 | **P0** | `infra/terraform/skeleton/`, `src/ddak/infra/providers/aws.py` |
+| 이름 규칙(N44) | 앱 시크릿 `ddak/<앱>/<KEY>`, 플랫폼 시크릿 `ddak-platform/*`, 앱 역할 경로 `/ddak/app/` + 이름 `ddak-<앱>-<용도>`, 파이프라인 경로 `/ddak/pipeline/` | **P0, 기반 준비 전** | 코드 소유 틀의 변수 |
+| 리소스 타입 허용 목록 | 약 30개 | **P0** | `infra/terraform/policy/` |
+| 정적 게이트 규칙 | 5-2절 G-1 목록. python-hcl2, 허용 목록 방식(모르는 블록·표현은 거부) | **P0** | `src/ddak/infra/tools/validate_infra/` |
+| Checkov 체크 허용 목록 | 5-2절 G-4 목록 | **P0** | `infra/terraform/policy/` |
+| 권한 경계 템플릿 | `ddak-app-boundary`(Docker Hub 반영판, ECR 없음). JSON 초안은 [research/IAM 13-3](../../../research/2026-09-30_IAM-최소권한-설계.md) | **P0** | `infra/terraform/foundation/` |
+| 프롬프트 규칙 | 5-8절 표. 앱 역할 최소 권한 모양, Docker Hub IAM, ECS·ALB·RDS 규칙 | **P0** | `generate_infra/prompt.md` |
+| 앱 DB 계정·권한 설계 | 앱 계정 = `flaskr.*` DML만 + `REQUIRE SSL`. 💭 마이그레이션 계정 DDL 분리. → 안승환의 `prepare_db(mode=init)` SQL 템플릿 | **P0** | 안승환과 합의 |
+| 오프라인 HCL fixture | 정상, `data "external"`, `provisioner`, 파일 함수, 경계 누락 역할, 외부 신뢰 주체, `.arn` 참조 정책, 3306 공개 SG, 태그 누락, `aws_secretsmanager_secret_version`, v2 앱 층 수정안 | **P0** | `tests/fixtures/infra/` |
+| 파이프라인 역할·경계·읽기 세션 | `ddak-pipeline-infra`, `ddak-pipeline-boundary`, plan 읽기 세션 정책. 테스트 계정 CloudTrail로 액션 확정 | P1(N30) | `infra/terraform/foundation/` |
+| Access Analyzer 추가 검사 | `CheckNoNewAccess`(경계 대비), `CheckAccessNotGranted` — 호출당 $0.0020 | P1 | `plan_infra` 안 |
+| 공급망 강화 | provider 미러(`TF_CLI_CONFIG_FILE`), Checkov 커스텀 YAML 3개, 스키마 조각 자동 절단, (여유 시) tflint-aws | P1 | – |
+| 앱 층 되돌리기 스크립트 | 리허설용. 저장한 v1 앱 층 HCL로 plan을 보여 주고 사람이 확인 뒤 apply + 실행기 DB의 인프라 요구 해시를 v1로. 파이프라인 밖, 사람 실행 | 💭 담당 미정 | 안승환 `reset_demo_state`와 협의 |
+
+### 4-3. 사람 작업 (코드 아님)
+
+| 할 일 | 언제 |
+|---|---|
+| 새 계정(Paid plan 💭), 관리자 신원, Route 53 영역(R3), Budgets 50%·80% | 9/30 밤 |
+| 할당량 확인: Fargate On-Demand vCPU(`L-3032A538`, 기본 6, 새 계정은 더 낮을 수 있음), CodeBuild 동시 빌드(컴퓨트 타입별 기본 1) | 9/30 밤 |
+| RDS MySQL 8.4 서울 마이너 목록 조회(온프렘 `mysql:8.4.11`과 맞출 수 있는지) | 9/30 밤 |
+| [기반 승인]·부트스트랩 [IAM·인프라 승인] 때 관리자 단기 세션 로그인(`aws sso login` 등) | 10/1 오후 |
+
+---
+
+## 5. 꼭 있어야 하는 과정 (필수 동작·안전장치)
+
+> 게이트 번호 G-1~G-10은 [06 4-7](../../docs/06_보안-신뢰경계.md#4-7-ai-terraform-게이트-)과 같습니다. 구성은 💭 권고, "자동 apply 없음·IAM 사람 승인"은 ✅ 장부 23.
+
+### 5-1. AI 입력
+
+- [ ] AI에는 **가린 요약만** 줍니다: 키 이름·tier·리소스 종류·개수·"있음/없음". ARN·엔드포인트·IP·도메인·계정 ID·state 원문은 넣지 않습니다(✅ 장부 27).
+- [ ] 생성물(`var/infra/<해시>/`)과 plan 파일은 AI 입력으로 되돌리지 않습니다. 수정 루프에는 **첫 오류 원문 한 줄**(redact 뒤)만 넣습니다.
+- [ ] 도메인은 AI Terraform 입력에도 출력에도 없습니다(✅ 장부 17-a).
+
+### 5-2. 검증 (`validate_infra`)
+
+| 순서 | 게이트 | 막는 것 |
+|---|---|---|
+| G-1 | **init보다 먼저** 정적 게이트(python-hcl2): `provisioner`, `data "external"`·`data "http"`, 로컬 밖 `module source`, AI 파일 안 `terraform`·`backend`·`provider` 블록, 허용 목록 밖 리소스 타입, `aws_iam_user`·`aws_iam_access_key`, `aws_secretsmanager_secret_version`·`password` 인자, 파일·경로 함수(`file*`, `templatefile`, `fileset`, `pathexpand`, `abspath`), `/ddak/app/` 역할의 `permissions_boundary` 누락, 신뢰 주체 허용 목록 밖(`/ddak/app/` = `ecs-tasks` + `aws:SourceAccount`, 플랫폼 = `codebuild` 또는 같은 계정), `/ddak/app/` 관리형 정책을 다른 역할에 부착, `rds!` 참조를 DB 초기화 역할 밖에서, IAM 정책 안 같은 plan 리소스의 `.arn` 참조, 3306 공개, 필수 태그 누락(3306·태그·IAM 경로 규칙은 P1에 Checkov 커스텀 YAML로 옮김) | plan만 돌려도 임의 명령 실행, 자격증명 파일 읽기, 경계 없는 역할, 외부 계정 assume, computed 정책 |
+| G-2 | `terraform init -lockfile=readonly -backend=false` | 잠금 파일 밖 provider·버전 |
+| G-3 | `terraform validate -json` | 없는 인자·타입, provider 버전 불일치 |
+| G-4 | Checkov(3.3.20 고정 💭, `--check` 허용 목록, `--skip-download`): `CKV_AWS_17`, `24`·`25`·`260`·`277`·`382`, `62`·`1`·`63`·`355`, `286`·`289`·`290`·`61`, `293`. ALB SG `CKV_AWS_260`, 퍼블릭 서브넷 Fargate `CKV_AWS_333`은 사유를 적고 그 리소스만 skip | 공개 DB, 전체 공개 SG, `*` IAM, 권한 상승 |
+| G-5 | 수정 루프 **최대 3회**, 매 회차 G-1~G-4 전부 다시 | 수정 중 보안 퇴행 |
+
+- [ ] 3회 안에 실패하면 자동 완화 없이 사람에게 넘깁니다. run은 `FAILED_BEFORE_DEPLOY`(`INFRA_INVALID`). **사람이 HCL을 대신 쓰는 것은 대체안이 아닙니다**(장부 21의 이유).
+- [ ] 캐시(`source=cache`)와 저장 응답(`replay`)은 **AI 호출만** 대체합니다. G-1~G-9와 승인은 매번 다시 합니다.
+
+### 5-3. plan (`plan_infra`)
+
+- [ ] `terraform plan -input=false -out=<run>.tfplan -detailed-exitcode` → `terraform show -json` 요약. 층별로 따로.
+- [ ] G-6: plan에 정책 JSON이 없으면(computed) **실패**(fail-closed).
+- [ ] G-7: Access Analyzer `ValidatePolicy`(무료, `locale=KO`, 신뢰 정책 포함) **ERROR 0개**여야 통과.
+- [ ] 요약에 민감값(`after_sensitive`)은 가립니다. delete·replace는 목록 맨 위에 따로 둡니다.
+- [ ] 개선 배포에서 delete·replace가 하나라도 있거나 `/ddak/app/` 밖 IAM 변경이 있으면 계획 검증이 BLOCK합니다(V23, 김준석 `validate_plan`). 내 요약에 그 판단 재료가 있어야 합니다.
+- [ ] plan 자격: P0 = 테스트 프로필(✅ 장부 24 테스트 때 넓게) / P1 = 파이프라인 역할 읽기 세션 + `-lock=false`.
+
+### 5-4. 승인
+
+- [ ] 승인 기록(승인자·시각·plan sha256)이 없으면 apply하지 않습니다(V24). 클릭은 한 번이지만 인프라 기록(plan sha256)이 대상별로 따로 있어야 apply합니다(✅ 결정 9/30, N40). 배포 계획 기록만으로 IAM 승인을 대신하지 않습니다.
+- [ ] 기반 준비도 IAM 생성이라 [기반 승인]을 거칩니다. 화면에는 템플릿 JSON 전체와 sha256을 보여 줍니다.
+- [ ] 요약은 평문 JSON으로 넘기고, 화면(양서윤)이 전부 이스케이프해서 보여 줍니다. HCL·주석에 인젝션 문장이 있을 수 있습니다.
+
+### 5-5. apply (`apply_infra`)
+
+- [ ] 직전에 저장 plan 파일 sha256 = 승인 기록 sha256 대조(V25). `-target`은 쓰지 않습니다.
+- [ ] Terraform이 "Saved plan is stale"로 거부하면 다시 plan → 다시 승인.
+- [ ] terraform 자식 프로세스 env는 허용 목록만: 단기 키 3개, `AWS_REGION`, `PATH`, `TF_CLI_CONFIG_FILE`, `TF_PLUGIN_CACHE_DIR`, `TF_IN_AUTOMATION`. `HOME`은 빈 임시 디렉토리, cwd는 `var/infra/<해시>/`. **`AWS_PROFILE`·`TF_LOG`는 넘기지 않습니다.** validate 단계는 AWS 키도 없습니다.
+- [ ] 부트스트랩: 사람이 승인 때 준 관리자 단기 세션에서 코드가 **단기 키만** 꺼내 이 한 호출에만 넘깁니다(N29 💭). 다른 툴·AI 입력·로그·상태 DB에는 넣지 않습니다.
+- [ ] 층 순서: 플랫폼 층 → 앱 층. 앱 층 입력은 코드가 플랫폼 층 `terraform output -json`을 읽어 변수로 넘깁니다. `terraform_remote_state`는 쓰지 않습니다(state 원문을 읽음).
+- [ ] 출력은 `terraform output -json`의 **허용 목록 이름만**, `sensitive` 출력은 쓰지 않습니다(`output -json`은 sensitive도 평문으로 냄). **state 원문은 파싱하지 않습니다**(✅ 장부 27).
+- [ ] apply 뒤 plan 파일 삭제. plan 파일은 권한 제한 디렉토리에 둡니다(민감값 평문).
+
+### 5-6. 비밀값
+
+- [ ] 시크릿 **틀**만 Terraform이 만들고, **값**은 파이프라인 코드가 PutSecretValue합니다(안승환 `sync_env_to_cloud`, ✅ 장부 32). 대안 write-only `secret_string_wo`는 N41(버전 확인 뒤에만).
+- [ ] RDS 마스터는 `manage_master_user_password = true`. `password` 인자는 금지.
+- [ ] Docker Hub 토큰 두 개의 값은 사람이 넣습니다(안승환, 💭 절차 확인 필요).
+- [ ] 테스트용 시크릿은 `recovery_window_in_days = 0`(기본 30일이면 같은 이름 재생성 불가).
+
+### 5-7. 실패·롤백
+
+| 상황 | 처리 | run 상태 💭 |
+|---|---|---|
+| 검증 3회 실패, 승인 거절 | 변경 없음 | `FAILED_BEFORE_DEPLOY`(`INFRA_INVALID`/`REJECTED`) |
+| 부트스트랩 apply 실패 | 만들어진 리소스는 state에 남음 → 원인 설명 후 같은 plan 재승인·재apply(멱등). 꼬이면 사람 | `FAILED_BEFORE_DEPLOY`(`INFRA_APPLY_FAILED`) |
+| 개선 배포 apply 실패(G1 뒤) | 서비스는 아직 v1이라 앱 롤백 없음. Terraform은 인프라를 되돌리지 않음 → 재승인·재apply 또는 이전 HCL 캐시로 다시 plan·승인 | `FAILED_CLOUD` → `DIVERGED` |
+
+- [ ] `destroy`와 AWS 삭제는 사람만(`cleanup`, 10/4 이후). 개발 중 코딩 에이전트·CI는 `terraform apply/destroy`를 하지 않고 `*.tfstate`·`*.tfplan`을 읽지 않습니다.
+
+### 5-8. 프롬프트에 넣고 정적 게이트로 다시 확인할 인프라 규칙 (💭)
+
+- 프롬프트에 규칙 문구로 넣고, 빠지면 정적 게이트·Checkov가 거부하게 합니다. 규칙은 AI를 믿지 않고 코드로 다시 봅니다.
+
+| 대상 | 규칙 | 근거 |
+|---|---|---|
+| 리전·태그 | 서울 `ap-northeast-2`만. 태그는 코드 소유 provider의 `default_tags` | ✅ 리전, 01 5-1 |
+| VPC | 2AZ. Fargate는 퍼블릭 서브넷 + `assign_public_ip = true` + SG(인바운드는 ALB SG만). RDS는 프라이빗 서브넷 | D18 💭 |
+| ALB | 80 리스너까지만(`ignore_changes = [default_action]`). 443·HSTS·80→301은 `ensure_tls`. 대상 그룹 HTTP·대상 유형 ip·web 8080, 헬스 값 명시 | ✅ 장부 17-a, 값 💭 |
+| ECS 서비스 | desired 0으로 생성 + `ignore_changes = [task_definition, desired_count]`. 배포는 파이프라인이 소유 | 장부 32 + 💭 |
+| RDS | 공유 인스턴스 1개, MySQL 8.4, 파라미터 그룹 `require_secure_transport = 1`·`sql_mode` 명시·time_zone UTC, 퍼블릭 접근 금지, `manage_master_user_password = true`, 테스트는 `skip_final_snapshot` | ✅ 장부 17-b·22·33, 값 💭 |
+| 시크릿 | 틀만(값 없음). 앱 `ddak/flaskr/*`(v1: `DATABASE_URL`·`DATABASE_URL_MIGRATOR`, v2: +`SECRET_KEY`), 플랫폼 `ddak-platform/dockerhub-push`·`-pull`. 테스트는 `recovery_window_in_days = 0` | ✅ 장부 28·32, 이름 💭 N44 |
+| 앱 실행 역할 | `/ddak/app/` + 경계. `GetSecretValue`는 pull 토큰 시크릿 + 앱 시크릿 **시크릿별 ARN**(`…:secret:ddak/flaskr/<KEY>-??????`, 이름 규칙 변수로 조립). 로그 쓰기. ECR 권한 없음 | ✅ 장부 23·28 |
+| 앱 태스크 역할 | 비움(flaskr은 AWS API를 안 부름) | 💭 |
+| DB 초기화 실행 역할 | `rds!` 마스터 시크릿을 읽는 유일한 역할. 배포 역할 PassRole 목록에 넣지 않음 | research/IAM E29 |
+| CodeBuild 프로젝트 | 플랫폼 인라인 buildspec(소스의 `buildspec.yml` 무시), privileged는 Docker 빌드에만. buildspec 내용은 안승환 | 01 5-1 |
+| CodeBuild 역할 | S3 소스 읽기, 로그, `GetSecretValue`는 `ddak-platform/dockerhub-push` 하나만. 신뢰 정책에 `aws:SourceAccount`. ECR 권한 없음 | ✅ 장부 28 |
+| 배포 역할 `ddak-deployer` | ECS 등록·업데이트·RunTask, S3 소스 PutObject, PassRole은 `role/ddak/app/*` + `ecs-tasks`만, 시크릿은 `ddak/<앱>/*`에 `PutSecretValue`·`DescribeSecret`만(`GetSecretValue`·`CreateSecret` 없음), CodeBuild StartBuild(`buildspecOverride` Deny), `ensure_tls` 권한(허용 호스팅 영역만, 삭제 Deny) | 06 8-1 |
+| ECR | 만들지 않음(ECR 옵션일 때만) | ✅ 장부 28 |
+
+- 역할·정책 JSON 초안은 [research/IAM 4·13·14절](../../../research/2026-09-30_IAM-최소권한-설계.md)에 있습니다. JSON 파싱만 확인했고 실제 동작은 테스트 계정에서 확인해야 합니다.
+
+---
+
+## 6. 인터페이스·약속
+
+> 계약 번호 C-xx는 [05 3절](../../docs/05_역할과-일정.md)과 같습니다. 형식 확정은 [공통 계약](../01_공통-계약.md)의 해당 번호 절입니다. 마감은 전부 💭.
+
+### 6-1. 받는 것
+
+| 계약 | 주는 사람 | 형식 | 마감 💭 | 내가 쓰는 곳 |
+|---|---|---|---|---|
+| C-17 인프라 요구 `infra_needs`(tier·포트·DB 엔진·시크릿 키 **이름**·헬스 경로·desired 규칙) + `infra_inputs_hash` | 김준석(O2) | pydantic + JSON | 10/1 오전 | `generate_infra` 입력, 캐시 키 |
+| C-22 환경 정보 가린 요약 형식 | 김준석(O2) 변환 함수, 정준우(O1) `RunContext` 조립 | pydantic + JSON | 10/1 오전 | 개선 배포 수정안 입력 |
+| C-12 `call_ai` 인터페이스 + HCL 초안 스키마(모양은 내가 제안) | 김준석(O2) | 함수 시그니처 + pydantic | **10/1 오전**(부트스트랩 전에 필요) | `generate_infra`가 부름 |
+| C-19 승인 기록(승인자, 시각, plan sha256, 종류) | 양서윤(C3) 화면 → 정준우(O1) 상태 DB | 상태 DB | 10/1 오전 | `apply_infra` sha256 대조 |
+| C-15 프로젝트 설정(`cloud_domain`, `dns_mode`, `hosted_zone_id`) | 양서윤(C3) → 정준우(O1) 스냅샷 | 상태 DB `project_settings` | 10/1 오전 | `ensure_tls` |
+| C-24 토큰 시크릿 이름·저장소 선택(Docker Hub 기본/ECR 옵션) | 안승환(C2) | 설정 키 | 9/30 밤 | 시크릿 틀·IAM 규칙 |
+| C-07 `RunContext` 필드, C-06 레지스트리 계약, C-21 CD 인터페이스(`ensure_tls(mode, ctx)`, `ProviderResult`) | 정준우(O1)(C-21은 안승환과) | pydantic, Protocol | 9/30 밤~10/1 오전 | 모든 툴 |
+| `lock_token` | 정준우(O1) `acquire_deploy_lock` | 문자열 | – | `apply_infra`, `ensure_tls` |
+
+### 6-2. 넘기는 것
+
+| 계약 | 받는 사람 | 형식 | 마감 💭 |
+|---|---|---|---|
+| C-03 Terraform 출력 = 환경 정보 원본 ① | 안승환(C2)·양서윤(C3)·정준우(O1) | `platform.cloud.json`(허용 목록 캐시) | 10/1 오전(자리표시 값은 9/30) |
+| C-14 IAM 역할·프로필·시크릿 **이름** 목록(값 없음) | 안승환·양서윤·정준우·김준석 | 이름 목록 | 10/1 오전(이름 규칙은 기반 준비 전) |
+| C-18 plan 요약·IAM diff 형식 | 양서윤(C3) | JSON | 10/1 오전 |
+| C-20 코드 소유 틀·이름 규칙 변수·리소스 허용 목록·층별 backend 키 | 전원 | 파일 | 10/1 오전 |
+| 앱 DB 계정·권한 설계(SQL 템플릿 재료) | 안승환(C2) `prepare_db(mode=init)` | SQL 초안 | 10/1 💭 |
+| `infra_ready` 신호, apply 결과 | 정준우(O1) 실행기 | 툴 출력 | – |
+
+### 6-3. 형식 요약 (초안 💭, 확정은 공통 계약)
+
+**C-03 `platform.cloud.json`에 들어갈 출력**
+
+| 출력 | 쓰는 사람 | 비고 |
+|---|---|---|
+| ALB ARN, 리스너 ARN(80), 대상 그룹 ARN, 허용 호스팅 영역 | 양서윤(`verify_tls`), 나(`ensure_tls`) | 443 리스너는 `ensure_tls`가 만듦(Terraform 밖) |
+| RDS 엔드포인트 | 안승환 | 비밀번호 없음 |
+| 앱 시크릿 ARN: `ddak/flaskr/DATABASE_URL`, `…/DATABASE_URL_MIGRATOR`, (v2) `…/SECRET_KEY` | 안승환(값 쓰기·`secrets` valueFrom) | ARN만 |
+| Docker Hub pull 토큰 시크릿 ARN(`ddak-platform/dockerhub-pull`) | 안승환(`repositoryCredentials`) | – |
+| ECS 클러스터·서비스 | 안승환, 양서윤 | – |
+| 역할 ARN(실행·태스크·마이그레이션 실행·DB 초기화 실행·배포·CodeBuild) | 안승환 | – |
+| 💭 추가 제안: CodeBuild 프로젝트 이름, S3 소스 버킷, Fargate용 서브넷·보안 그룹 ID | 안승환(`StartBuild`, `run_task`) | 05의 C-03 목록에 없음. Fargate `run_task`(마이그레이션·DB 초기화)는 awsvpc 네트워크 설정이 필요하므로 넣는 쪽을 제안. 안승환과 확인 |
+| ECR 이름 | – | ECR 옵션일 때만 |
+
+**C-18 plan 요약 (모양 예시)**
+
+```json
+{
+  "layer": "app",
+  "plan_sha256": "sha256:…",
+  "exit_code": 2,
+  "headline": "+ 시크릿 1, IAM 정책 1 변경, 삭제 0",
+  "counts": {"create": 1, "update": 1, "delete": 0, "replace": 0},
+  "destructive": [],
+  "iam_diff": [
+    {"address": "aws_iam_role_policy.exec_secrets", "action": "update",
+     "role_path": "/ddak/app/", "boundary_attached": true, "trust_changed": false,
+     "added": [{"actions": ["secretsmanager:GetSecretValue"],
+                "resources": ["arn:aws:secretsmanager:ap-northeast-2:●●●:secret:ddak/flaskr/SECRET_KEY-??????"]}]}
+  ],
+  "access_analyzer": {"errors": 0, "security_warnings": 0},
+  "checkov": {"passed": true, "failed": []},
+  "sensitive_masked": true
+}
+```
+
+- 계정 ID는 화면용으로 가립니다. 필드 이름은 공통 계약에서 정합니다.
+
+**C-14 이름 목록 (💭 N44 권고)**
+
+| 종류 | 이름 |
+|---|---|
+| 앱 역할(`/ddak/app/`, 경계 `ddak-app-boundary`) | `ddak-flaskr-exec`, `ddak-flaskr-migrate-exec`, `ddak-flaskr-task`, `ddak-flaskr-dbinit-exec` |
+| 플랫폼 역할 | `ddak-deployer`, `ddak-codebuild`, (P1) `ddak-pipeline-infra`(`/ddak/pipeline/`) |
+| 앱 시크릿 | `ddak/flaskr/DATABASE_URL`, `ddak/flaskr/DATABASE_URL_MIGRATOR`, `ddak/flaskr/SECRET_KEY`(v2부터) |
+| 플랫폼 시크릿 | `ddak-platform/dockerhub-push`, `ddak-platform/dockerhub-pull` |
+| 경계 정책 | `policy/ddak/boundary/ddak-app-boundary`, (P1) `…/ddak-pipeline-boundary` |
+
+**`generate_infra` 출력 (AI 초안 모양)**: `{"files": {"main.tf": "<리소스 블록만>"}, "resources": [...], "iam_roles": [{"name", "path", "boundary"}], "assumptions": ["≤200자"]}`. 텍스트 필드는 표시용이고 판정은 `validate_infra`·`plan_infra`(코드)가 합니다.
+
+---
+
+## 7. AI 사용 경계
+
+| AI가 하는 것 | AI가 하지 않는 것 |
+|---|---|
+| 인프라 요구 → HCL 초안(`main.tf` 리소스 블록만, 허용 타입만) | `terraform`/`provider`/`backend` 블록, `provisioner`, `data "external"`·`"http"`, 외부 module |
+| IAM 역할·정책 설계(✅ 장부 23: AI가 설계) | IAM 사용자·액세스 키 만들기 |
+| 개선 배포의 앱 층 수정안(✅ 장부 27) | 시크릿 **값**·비밀번호 다루기(`aws_secretsmanager_secret_version`·`password` 금지) |
+| 가정 목록(표시용 텍스트) | 도메인·IP·ARN·계정 ID 정하기. 이름은 코드 소유 이름 규칙 변수 |
+| – | `init`·`plan`·`apply` 실행, 검사 통과 판정(코드가 함, 검사 툴은 AI import 금지) |
+| – | state·출력 원문 보기(가린 요약만) |
+| – | AWS 자격 보유(AI에는 AWS 자격이 없음) |
+| – | 이름 규칙·경계·허용 목록 바꾸기(코드 소유) |
+
+- AI를 부르는 곳은 `generate_infra` 하나입니다. `validate_infra`·`plan_infra`·`apply_infra`·`ensure_tls`·기반 준비에는 AI가 없습니다.
+- 공급자는 Claude(`call_ai`: 개발 `cli` / 데모 `api` / 테스트 `replay`)입니다. Jev는 step 선택·키 분류용이라 HCL에는 쓰지 않습니다.
+- AI가 실패·지연하면: 같은 입력 해시로 승인된 생성물을 캐시로 씁니다(화면에 `source=cache`). 캐시도 없으면 사람에게 넘기고 그렇다고 말합니다. 규칙 대체 경로는 없습니다.
+- 캐시를 쓴 데모는 목업 고지 대상입니다(`source=cache` 라벨).
+
+---
+
+## 8. 알려진 함정과 주의
+
+| # | 함정 | 대응 | 출처 |
+|---|---|---|---|
+| 1 | AI HCL은 `init`·`plan`만 해도 코드를 실행할 수 있음(`data "external"`은 plan 중 실행, init은 provider 다운로드) | 정적 게이트를 **init 전에**, `init -lockfile=readonly` | 03 12절 #38 |
+| 2 | `file()` 같은 함수로 `~/.aws/sso/cache`를 읽어 태그·오류로 유출 | 파일 함수 금지 + `HOME` 격리 + 단기 키 env만 | research/IAM E30 |
+| 3 | 학습 데이터가 옛 provider 기준(v6에서 `aws_eip.vpc` 제거, `data.aws_region.name` deprecated 등) | 스키마 조각을 프롬프트에, validate 오류 되먹임 | 03 12절 #39 |
+| 4 | 정책이 같은 plan의 `.arn`을 참조하면 부트스트랩 정책이 거의 전부 computed → 검증 불가 | `.arn` 참조 금지, ARN은 이름 규칙 변수·`data.aws_caller_identity`로 조립. 시크릿은 `name-??????` 패턴 | 03 12절 #40 |
+| 5 | v2 문구 "IAM 정책 1 **변경**"은 실행 역할 권한이 제자리 수정되는 정책 리소스 하나(예: 인라인 정책)에 있어야 나옴. AI가 시크릿마다 새 정책을 만들면 `+1`(create)이 되고 step 위치도 바뀜(N39) | 프롬프트 규칙으로 모양을 고정. 어느 쪽으로 할지는 N39 | research/IAM 14-4 |
+| 6 | ECS 서비스에 `ignore_changes`가 없으면 앱 층 apply가 파이프라인이 등록한 태스크 정의·desired를 되돌림 | `ignore_changes = [task_definition]`(장부 32) + 💭 `desired_count`(확인 필요) | 03 12절 #53 |
+| 7 | AI가 다시 생성한 HCL에서 80 리스너 `ignore_changes=[default_action]`이 빠지면 재apply가 301을 되돌림 | 정적 게이트로 강제, 실제 재apply로 확인 | 01 10절 |
+| 8 | 경계는 만든 뒤 수정이 Deny. 이름이 경계 패턴과 다르면 정상 태스크 시작(pull 토큰·로그·시크릿)이 거부됨 | 이름 규칙(N44)과 저장소 선택(Docker Hub/ECR)을 **기반 준비 전에** 확정. ECR로 바꾸면 기반 준비를 다시 해야 함 | research/IAM 13-3·14-5 |
+| 9 | `iam:PassRole`은 경계 조건 키를 지원하지 않음 | 경로 `role/ddak/app/*` + `iam:PassedToService`로 묶고, 그 경로는 경계를 붙여야만 생기게 | 06 8-2 |
+| 10 | 경계에 `kms:*` Deny를 넣으면 Secrets Manager 주입이 깨짐 | 넣지 않음 | 06 8-2 |
+| 11 | 경계가 못 막는 것: 신뢰 정책 주체, `/ddak/app/` 관리형 정책 부착 대상, 경계 안의 `rds!` 읽기, 경계 안의 과한 권한(접두사 와일드카드) | 정적 게이트 + 사람 승인. 실행 역할 시크릿 읽기는 시크릿별 ARN | 06 4-7 |
+| 12 | IAM 최종 일관성: 새 역할을 바로 못 써서 첫 apply 실패 가능, 정책 변경 직후 새 태스크가 새 시크릿을 못 읽을 수 있음 | 재apply(멱등). 전파 시간 리허설 실측, 💭 태스크 정의 등록 전 짧은 대기·재시도(안승환과) | 03 12절 #45·#52 |
+| 13 | 리스너 기본 SslPolicy는 `ELBSecurityPolicy-2016-08`(TLS 1.0 허용) | `ELBSecurityPolicy-TLS13-1-2-Res-PQ-2025-09` 명시 | 01 5-3 |
+| 14 | ACM 신규 발급 SLA 없음, 외부 DNS면 30분 이상 Pending 가능. `*.elb.amazonaws.com`에는 인증서 불가 | "도메인 연결"로 **10/1까지** 사전 발급, 데모 run은 확인만(N9) | 01 5-3·5-9 |
+| 15 | 대상 그룹 `healthy_threshold` 기본값이 provider 3, AWS API 5 | HCL에 값 명시(간격 5초, 임계 2, deregistration 5~10초 💭) | 01 5-1 |
+| 16 | `skip_final_snapshot` 기본 false면 destroy 실패, 시크릿 복구 기간 30일 | 테스트 기본값을 규칙으로 | 03 12절 #41 |
+| 17 | plan 파일·state에 민감값 평문, `output -json`은 sensitive도 평문 | plan 파일 삭제, sensitive 출력 안 씀, state 원문 안 읽음. `*.tfplan` 읽기 금지 규칙은 코드 템플릿에 아직 없음 → 추가 요청 | 07 12절 |
+| 18 | 부트스트랩 plan은 승인 전에 도는데 상태 버킷·plan 자격이 apply 때 생기면 순서가 안 맞음. 파이프라인 역할을 AI Terraform state에 넣으면 자기 수정 금지 때문에 refresh가 깨짐 | 기반 준비를 먼저, 파이프라인 역할은 state 밖 | 01 5-9 |
+| 19 | 리허설 초기화(시크릿 장면 재연습)에 시크릿 delete가 필요 → 파이프라인이 막음(V23) | 사람이 실행하는 앱 층 되돌리기 스크립트(담당 미정) | 03 9-2 |
+| 20 | Docker Hub는 VPC 엔드포인트로 못 닿음 → Fargate에 인터넷 필요 | 💭 퍼블릭 서브넷 + `assign_public_ip` + SG(인바운드는 ALB SG만). "운영은 프라이빗 + NAT, 해커톤은 비용 때문에 퍼블릭"이라고 문서에 적음 | 01 5-11 |
+| 21 | 새 계정 할당량이 낮을 수 있고 Free plan은 서비스 제한·자동 종료 | 첫날 확인, Paid plan 💭 | 03 12절 #44 |
+| 22 | AI Terraform 정답률이 낮음(IaC-Eval GPT-4 pass@1 19.36%, 설정 지식 + 반복 수정 시 62~84% 프리프린트) | 수정 루프·캐시·사람 승인. 숫자를 약속하지 않고 실측 성공률만 말함 | 01 5-8 |
+| 23 | 실행기 잠금은 각자 노트북 SQLite라 공유되지 않음 | 실제 클라우드 대상 run은 한 번에 한 명, 통합 창 시작·끝을 팀 채널에 알림 | 05 5절 T8 |
+| 24 | 부트스트랩 apply 자체는 상한이 없음(관리자 자격) | 정적 게이트·Checkov·Access Analyzer·사람 승인이 유일한 방어. plan 요약·승인 기록·녹화를 남김 | research/IAM 13-7 |
+
+---
+
+## 9. 일정
+
+### 9-1. 날짜별 할 일 (💭 고려안. 10/3·10/4 시각만 킥오프 자료)
+
+| 날짜 | 내 몫 |
+|---|---|
+| **9/30 밤** | AI Terraform 툴 골격(4개), 코드 소유 틀(층별 state), 정책 검사 규칙 착수 / 이름 규칙(N44) 제안 / 새 계정·할당량 확인, RDS 마이너 조회 / 데모 도메인 제공자·DNS 방식(R3) 결정 / D3·D18·D21·D23 제안(D4는 ✅ 멀티 아키텍처 기본으로 결정) / C-03 자리표시 값 공유 |
+| **10/1 오전** | 오프라인으로 P0: 정적 게이트 + Checkov fixture 테스트, plan 요약 파서(`show -json` 샘플로) / C-03·C-14·C-18·C-20 확정 / C-12(`call_ai`)·C-17 받기 |
+| **10/1 정오** | 중간 점검(9-2절) |
+| **10/1 오후** | 첫 AWS 통합: 기반 준비([기반 승인]) → 부트스트랩 run(AI Terraform 플랫폼 + 앱 → 검증 → plan 요약 → [IAM·인프라 승인] → apply, 인프라만 10~20분 [추정]) → (안승환) Docker Hub 토큰 값 입력 → "도메인 연결" → ISSUED → v1 앱 부트스트랩. 녹화 |
+| **10/1 저녁~23:59** | v2 시크릿 장면 반복(앱 층 수정안 → "+1 ~1 -0" → 승인 → G1 뒤 apply → PutSecretValue), 실패 주입 지원, 단계별 초 기록 |
+| **10/2** | P1: 파이프라인 역할·경계·읽기 세션 + CloudTrail로 액션 확정 + 데모 전 전환 + 양성 스모크(N30), `CheckNoNewAccess`·`CheckAccessNotGranted`, provider 미러, Checkov 커스텀 YAML, `preflight_check`(cloud), 실측 10회·p95 / 리허설 2회 이상 → N39 결정 재료 / 앱 층 되돌리기 준비 / 💭 저녁 동결 |
+| **10/3** | 09:00 컨트리뷰터·비밀 스캔 확인 / **10:00 링크 3종 제출** / 14:00~17:00 중간보고 7분 |
+| 10/4(참고) | 15:00~16:30 결선 5분(설계 약 2분 + 라이브 약 3분). 부트스트랩은 녹화로, 녹화라고 밝힘 |
+
+### 9-2. 10/1 정오 확인 항목 (내 몫, 💭)
+
+| # | 항목 | 통과 기준 | 안 되면 |
+|---|---|---|---|
+| 3 | AI Terraform 1차: 생성 → 검증 → plan → 승인 → apply (양서윤 승인 화면은 임시 CLI 허용) | 수정 루프 3회 안 통과, VPC·ALB·ECS(desired 0)·공유 RDS·Docker Hub 토큰 시크릿 틀 존재, 두 층 state, 성공률·소요 기록 | 성공해 승인된 생성물을 캐시로 재사용(`source=cache`). 사람이 HCL을 대신 쓰지 않음. 캐시도 없으면 프롬프트·허용 목록을 줄여 재시도 |
+| 4 | 인증서 발급 진행(양서윤과) | ISSUED 또는 PENDING_VALIDATION + DNS 레코드 확인 | 도메인·DNS 방식 재검토 |
+| 10 | 첫 실측(안승환과) | CodeBuild 프로비저닝, RunTask, ECS 롤링 각 1회 이상 | – |
+| 11 | 결정 완료 | 10절 표에서 "9/30 밤" 마감 항목 | 이 가이드의 가정으로 진행하고 기록 |
+
+- 전체 E2E 합격 기준(10/1 23:59): 부트스트랩 1회 + 업데이트 3회 연속(시크릿 장면 1회 이상) + 실패 주입 1종([05 4-4](../../docs/05_역할과-일정.md)). 앱 층 되돌리기가 준비되지 않았으면 나머지 회차는 인프라 step skipped로 재실행 허용 💭.
+
+---
+
+## 10. 막히면
+
+### 10-1. 누구와 이야기할까
+
+| 주제 | 사람 |
+|---|---|
+| 인프라 요구 형식, 가린 요약, `call_ai`, 인프라 수정 루프를 누가 돌릴지(조정자), V22~V24 | 김준석(O2) |
+| 출력 소비, 태스크 정의, 시크릿 값 쓰기, Docker Hub 토큰, DB 초기화 SQL, `run_task` 네트워크 | 안승환(C2, 짝) |
+| plan 요약·IAM diff 화면, 승인 버튼, 도메인 설정 화면, 인증서 상태 | 양서윤(C3) |
+| 인프라 step 배치(G1 뒤), 승인 기록, `RunContext`, 관리자 단기 키 전달, 잠금, run 상태 | 정준우(O1) |
+| 사용자 확인이 필요한 항목(아래 ⚠️), 문서와 코드 충돌 | 정준우(문서 정리·사용자). 충돌하면 30분 안에 `NEEDS_CONTEXT`로 묻고 계약을 임의로 바꾸지 않음 |
+
+### 10-2. 결정이 필요한 항목 (전부 💭, 담당·마감도 고려안)
+
+| # | 항목 | 고려안 | 마감 💭 |
+|---|---|---|---|
+| N44 | 이름 규칙 | 시크릿 `ddak/<앱>/<KEY>`, 역할 `/ddak/app/` + `ddak-<앱>-<용도>`, 플랫폼 `ddak-platform/*` | **기반 준비 전** |
+| N32 | 새 계정 플랜·할당량 | Paid plan | 9/30 밤 |
+| R3 | 데모 도메인 제공자·DNS 방식 | Route 53(검증 CNAME·별칭 자동화) | 결정 9/30, 발급 10/1 |
+| D3(R9) | ECS web·was 배치 | 한 태스크 2컨테이너(문서 예시) | 첫 AI Terraform 생성 전 |
+| D4(R10) | CPU 아키텍처 | ✅ 결정: 멀티 아키텍처 기본(9/30). Fargate 기본 플랫폼만 정하면 됨(안승환과) | 10/1 |
+| D18 | Fargate 서브넷 | 퍼블릭 서브넷 + SG | 9/30 밤 |
+| D21(R12) | ALB 헬스 경로 | ALB `/health/live`, 실행기 관문 `/health/ready` | 10/1 |
+| D23(R11) | desiredCount | 2(복제본 간 SECRET_KEY 공유) | 10/2 |
+| N25 | 인프라 step을 plan.json에 넣는 방식 | 클라우드 첫 step + `infra_ready` | 10/1 |
+| N26 | 정책 검사 도구 | Checkov 하나 + python-hcl2 정적 게이트 | 10/1 |
+| ⚠️ N27 | 첫 상태 버킷·기반 준비 | 기반 준비(코드 고정 템플릿, boto3). **장부 22는 상태 버킷도 AI 범위 → 사용자 확인 필요** | 10/1 |
+| ⚠️ 장부 34 | 고정 틀(버전·provider·backend·이름 규칙·경계·버킷 템플릿) = 제품 코드 | 권고. **사용자 확인 필요** | 10/1 |
+| ⚠️ 경계 정책 | 경계·파이프라인 역할은 AI가 설계하지 않는 코드 템플릿 IAM. **장부 23 "IAM은 AI 설계"와 다름 → 사용자 확인 필요**. 대안: AI가 설계하고 코드가 템플릿과 `CheckNoNewAccess`로 대조 | 10/1 |
+| N28 | IAM 승인 단위 | IAM만 따로 plan 한 장 / 전체 plan에서 IAM diff 강조(양서윤과) | 10/1 |
+| N29 | 부트스트랩 관리자 자격 제공 | 승인 때 단기 프로필 → 코드가 단기 키만 terraform env로(정준우와) | 10/1 |
+| N30 | 테스트 → 데모 권한 전환 | 10/2 리허설 전 전환 + 양성 스모크 | 10/2 |
+| N33 | DB 초기화 툴 위치 | `prepare_db(mode=init)`(안승환과) | 10/1 |
+| N34 | AI Terraform 생성물 보관 | `var/infra/<입력 해시>/`만, 팀 저장소에 커밋 안 함 | 10/1 |
+| N39 | 시크릿 장면 인프라 step 위치 | G1 뒤(정책 update). 3분을 넘기면 G1 전(새 정책 create) 재검토 | 10/2(리허설 뒤) |
+| N40 | 시크릿 장면 승인 버튼 수 | ✅ 결정: 한 화면·한 번 승인, 대상별 해시 기록 분리 (9/30). 인프라 기록은 plan sha256에 묶음 | 10/1 구현 |
+| N41 | 시크릿 값 쓰기 방식 | 코드 PutSecretValue(기본), write-only는 버전 확인 뒤 대안 | 10/1 |
+| N42 | state 층 경계선 | ECS 서비스·대상 그룹을 앱 층에 둘지 | 10/1 |
+| N9 | `ensure_tls` 데모 run 모드 | 확인 모드만. 드리프트를 찾으면 고칠지 실패할지도 결정 | 10/1 |
+| N15(D17)·N17 | 클라우드 DB 계정, `DATABASE_URL` 인코딩 | 앱 계정 DML + 마이그레이션 계정 DDL 분리, 코드가 인코딩한 완성 URL을 시크릿에 | 10/1 |
+| N18 | `MIGRATE_RESULT` 로그 읽기 주체 | 배포 역할 / 검증 역할(안승환과) | 10/1 |
+| – | ECS 서비스 `ignore_changes`에 `desired_count` 추가 | 추가(장부 32 문구는 `[task_definition]`만) — 확인 필요 | 10/1 |
+| – | 앱 층 되돌리기 스크립트 담당 | 안승환 `reset_demo_state`와 분담 | 10/2 |
+
+### 10-3. 확인 필요 (실측·조회)
+
+- AI Terraform 수정 루프 3회 안 성공률, 생성·검증·plan·apply 소요
+- 부트스트랩 인프라 apply 소요(RDS 포함), 개선 배포 `plan_infra`(refresh) 소요
+- `terraform output -json`의 sensitive 처리, 앱 층이 플랫폼 층 출력을 변수로 받는 방식
+- write-only `secret_string_wo`의 AWS provider 지원 버전
+- 정적 게이트가 IAM 규칙·파일 함수를 `jsonencode`·`aws_iam_policy_document`·heredoc 모든 형태에서 잡는지(못 잡는 형태는 거부)
+- 관리자 단기 키를 env로만 받은 terraform이 `HOME` 격리 상태에서 plan·apply되는지
+- (P1) 읽기 세션 `plan -lock=false`와 상태 읽기 권한만으로 plan이 되는지
+- Terraform이 역할 생성·삭제 때 부르는 IAM 읽기·보조 액션(CloudTrail) → 파이프라인 역할·경계 확정
+- 외부 DNS(가비아·Cloudflare 등) 화면 실제 동작, ACM 요청 때 태그 권한 필요 여부
+- ALB의 AZ별 퍼블릭 IPv4 과금 여부
+
+---
+
+## 11. 참고 (설계 원본)
+
+| 문서 | 볼 곳 |
+|---|---|
+| [00 결정 요약](../../docs/00_결정-요약.md) | 장부 17·21~24·27·28·32~36, 남은 결정 R3·R9~R12·N25~N30·N32~N34·N39~N44 |
+| [01 아키텍처](../../docs/01_아키텍처.md) | [5-1 구성 요소](../../docs/01_아키텍처.md#5-1-구성-요소), [5-3 HTTPS](../../docs/01_아키텍처.md#5-3-https), [5-4 RDS](../../docs/01_아키텍처.md#5-4-rds-mysql-연결), [5-5 AI Terraform과 파이프라인의 경계](../../docs/01_아키텍처.md#5-5-ai-terraform과-파이프라인의-경계), [5-8 흐름](../../docs/01_아키텍처.md#5-8-ai-terraform-흐름-), [5-9 부트스트랩 vs 개선](../../docs/01_아키텍처.md#5-9-부트스트랩-모드와-개선-배포-모드-), [5-10 권한 경계](../../docs/01_아키텍처.md#5-10-권한-경계-), [5-11 Docker Hub](../../docs/01_아키텍처.md#5-11-이미지-저장소-docker-hub-장부-28), [8 환경 정보](../../docs/01_아키텍처.md#8-데이터-흐름-환경-정보와-설정값의-출처), 10 확인 필요 |
+| [02 파이프라인과 계획](../../docs/02_파이프라인과-계획.md) | 1 5단계, 2 한 run의 흐름, [4-3 클라우드 트랙](../../docs/02_파이프라인과-계획.md#4-3-④⑤-클라우드-트랙), 6-4 골든 plan, 7-2~7-4 V22~V25, 8-2 타임아웃, 8-3 실패 처리, 9 부트스트랩, 10 시간 예산 |
+| [03 골든 패스](../../docs/03_골든패스-시나리오.md) | 9-1 준비와 플랫폼 생성, 9-2 리허설 초기화, [10 3분 대본·시크릿 장면 세부](../../docs/03_골든패스-시나리오.md#10-3분-데모-대본-초-단위), 12 함정 #38~#54 |
+| [04 툴 카탈로그](../../docs/04_툴-카탈로그.md) | 1-4 입출력·실패 규약, 2 툴 40개(#11~#15·#23·#38·#40), 3 P0 순서, 4 AI 사용 툴 |
+| [05 역할과 일정](../../docs/05_역할과-일정.md) | 1 역할표, 1-1 결정 영향, **2-4 유상준 체크리스트**, 3 계약 목록, 4 일정, 5 로컬 테스트 원칙 |
+| [06 보안·신뢰 경계](../../docs/06_보안-신뢰경계.md) | [4-7 AI Terraform 게이트](../../docs/06_보안-신뢰경계.md#4-7-ai-terraform-게이트-), [8 IAM 분리](../../docs/06_보안-신뢰경계.md#8-iam-분리)(8-1 역할, 8-2 경계, 8-3 테스트·데모 권한, 8-4 승인 절차), [13 예상 질문](../../docs/06_보안-신뢰경계.md#13-심사위원-예상-보안-질문과-답) #17·#18·#21·#25, 14 한계 |
+| [07 개발 하네스](../../docs/07_개발-하네스.md) | [12 AI Terraform 도구 설치와 공급망](../../docs/07_개발-하네스.md#12-ai-terraform-도구-설치와-공급망-), 10 막혔을 때 보고 |
+| [research/IAM 최소 권한 설계](../../../research/2026-09-30_IAM-최소권한-설계.md) | 4 P0 정책 JSON, 6 권한 상승 경로(E27~E30), 13 권한 경계(13-3 앱 경계, 13-4 위임 문, 13-7 부트스트랩, 13-8 검사), 14 Docker Hub·시크릿 장면·이름 |
+| [docs/19 팀 공유: 데모 웹앱과 시나리오](../../../docs/19_팀공유-웹앱과-데모시나리오.md) | 3 시크릿 장면, 5 역할별 관련 부분 |
