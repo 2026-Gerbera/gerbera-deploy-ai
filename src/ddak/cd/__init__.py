@@ -5,7 +5,7 @@
 ensure_tls, deploy_tier, rollback_tier, health_check.
 - interface.py: provider가 구현할 함수 6개(deploy, rollback, health_check, migrate_db,
   inject_config(설정·시크릿), ensure_tls(클라우드만, 온프렘은 "해당 없음" 반환)).
-- provider 구현은 환경별 팀 디렉토리에 있다: ddak.cloud.deploy(AwsProvider, C2 안승환;
+- provider 구현은 환경별 팀 디렉토리에 있다: ddak.cloud.deploy(AWS·GCP·Azure, C2 안승환;
   ensure_tls는 ddak.cloud.tls C1 유상준, health_check는 ddak.cloud.health C3 양서윤) ·
   ddak.onprem.deploy(OnPremProvider, O1 정준우) · cd/fake.py(테스트).
   GCP·Azure는 후순위라 인터페이스만 있고 코드는 없다.
