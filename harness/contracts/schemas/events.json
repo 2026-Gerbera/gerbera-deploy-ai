@@ -1,0 +1,164 @@
+{
+  "$defs": {
+    "EventType": {
+      "enum": [
+        "run.state",
+        "step.started",
+        "step.finished",
+        "step.skipped",
+        "gate.waiting",
+        "gate.opened",
+        "gate.failed",
+        "rollback.started",
+        "rollback.finished",
+        "ai.call",
+        "report.ready"
+      ],
+      "title": "EventType",
+      "type": "string"
+    },
+    "Stage": {
+      "description": "파이프라인 5단계 + 공통 + 운영. 단위·통합 테스트 단계는 없다.",
+      "enum": [
+        "plan",
+        "validate",
+        "build",
+        "deploy",
+        "verify_report",
+        "common",
+        "ops"
+      ],
+      "title": "Stage",
+      "type": "string"
+    },
+    "Target": {
+      "description": "배포 대상 환경. 실행기가 plan.json의 트랙과 deploy.yaml로 정한다(AI가 고르지 않는다).",
+      "enum": [
+        "local",
+        "cloud"
+      ],
+      "title": "Target",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "관리 페이지 2열 진행 화면이 읽는 이벤트 한 줄.",
+  "properties": {
+    "detail": {
+      "anyOf": [
+        {
+          "maxLength": 4096,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Detail"
+    },
+    "elapsed_s": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Elapsed S"
+    },
+    "run_id": {
+      "description": "실행 ID. 모든 툴의 필수 입력",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+      "title": "Run Id",
+      "type": "string"
+    },
+    "seq": {
+      "minimum": 0,
+      "title": "Seq",
+      "type": "integer"
+    },
+    "stage": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Stage"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "status": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Status"
+    },
+    "step": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Step"
+    },
+    "target": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Target"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "tool": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Tool"
+    },
+    "ts": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Ts"
+    },
+    "type": {
+      "$ref": "#/$defs/EventType"
+    }
+  },
+  "required": [
+    "run_id",
+    "seq",
+    "type"
+  ],
+  "title": "RunEvent",
+  "type": "object"
+}

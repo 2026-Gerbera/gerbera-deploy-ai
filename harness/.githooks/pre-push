@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# 저장소 공용 git 훅. `make setup`이 core.hooksPath=harness/.githooks를 설정한다. 로직은 scripts/git_guard.py.
+set -euo pipefail
+PY="$(command -v python3 || command -v python)" || { echo "git_guard: python3가 없다" >&2; exit 1; }
+# pre-push는 stdin(ref 목록)을 그대로 넘긴다(exec이므로 stdin이 이어진다).
+exec "$PY" "$(cd -- "$(dirname -- "$0")/.." && pwd)/scripts/git_guard.py" pre-push "$@"

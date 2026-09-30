@@ -1,0 +1,876 @@
+[
+  {
+    "canonical": true,
+    "destructive": false,
+    "effect": "read",
+    "kind": "tool_fn",
+    "layer": "builtin",
+    "module": "cd",
+    "name": "acquire_deploy_lock",
+    "owners": {
+      "logic": "O1"
+    },
+    "read_only": false,
+    "requires_approval": false,
+    "requires_lock": false,
+    "stage": "deploy",
+    "targets": [],
+    "timeout_s": 60,
+    "uses_ai": false
+  },
+  {
+    "canonical": true,
+    "destructive": false,
+    "effect": "read",
+    "kind": "tool_fn",
+    "layer": "outside",
+    "module": "plan",
+    "name": "analyze_project",
+    "owners": {
+      "logic": "O2"
+    },
+    "read_only": true,
+    "requires_approval": false,
+    "requires_lock": false,
+    "stage": "plan",
+    "targets": [],
+    "timeout_s": 60,
+    "uses_ai": true
+  },
+  {
+    "canonical": true,
+    "destructive": true,
+    "effect": "state_change",
+    "kind": "tool_fn",
+    "layer": "conditional",
+    "module": "infra",
+    "name": "apply_infra",
+    "owners": {
+      "cloud": "C1",
+      "logic": "C1",
+      "ui": "C3"
+    },
+    "read_only": false,
+    "requires_approval": true,
+    "requires_lock": true,
+    "stage": "deploy",
+    "targets": [
+      "cloud"
+    ],
+    "timeout_s": 3600,
+    "uses_ai": false
+  },
+  {
+    "canonical": true,
+    "destructive": false,
+    "effect": "additive_prep",
+    "kind": "tool_fn",
+    "layer": "conditional",
+    "module": "ci",
+    "name": "build_image",
+    "owners": {
+      "cloud": "C2",
+      "local": "O1",
+      "logic": "C2"
+    },
+    "read_only": false,
+    "requires_approval": false,
+    "requires_lock": false,
+    "stage": "build",
+    "targets": [
+      "local",
+      "cloud"
+    ],
+    "timeout_s": 900,
+    "uses_ai": false
+  },
+  {
+    "canonical": true,
+    "destructive": false,
+    "effect": "read",
+    "kind": "library",
+    "layer": "outside",
+    "module": "core",
+    "name": "call_ai",
+    "owners": {
+      "logic": "O2"
+    },
+    "read_only": false,
+    "requires_approval": false,
+    "requires_lock": false,
+    "stage": "common",
+    "targets": [],
+    "timeout_s": 60,
+    "uses_ai": false
+  },
+  {
+    "canonical": true,
+    "destructive": true,
+    "effect": "state_change",
+    "kind": "tool_fn",
+    "layer": "outside",
+    "module": "ops",
+    "name": "cleanup",
+    "owners": {
+      "cloud": "C1",
+      "local": "O1",
+      "logic": "C1"
+    },
+    "read_only": false,
+    "requires_approval": true,
+    "requires_lock": false,
+    "stage": "ops",
+    "targets": [
+      "local",
+      "cloud"
+    ],
+    "timeout_s": 60,
+    "uses_ai": false
+  },
+  {
+    "canonical": true,
+    "destructive": false,
+    "effect": "read",
+    "kind": "tool_fn",
+    "layer": "builtin",
+    "module": "verify",
+    "name": "collect_diagnostics",
+    "owners": {
+      "cloud": "C3",
+      "local": "O1",
+      "logic": "C3"
+    },
+    "read_only": true,
+    "requires_approval": false,
+    "requires_lock": false,
+    "stage": "verify_report",
+    "targets": [
+      "local",
+      "cloud"
+    ],
+    "timeout_s": 60,
+    "uses_ai": false
+  },
+  {
+    "canonical": true,
+    "destructive": false,
+    "effect": "read",
+    "kind": "tool_fn",
+    "layer": "mandatory",
+    "module": "verify",
+    "name": "compare_env_results",
+    "owners": {
+      "logic": "O3"
+    },
+    "read_only": true,
+    "requires_approval": false,
+    "requires_lock": false,
+    "stage": "verify_report",
+    "targets": [],
+    "timeout_s": 60,
+    "uses_ai": false
+  },
+  {
+    "canonical": true,
+    "destructive": true,
+    "effect": "state_change",
+    "kind": "tool_fn",
+    "layer": "conditional",
+    "module": "cd",
+    "name": "deploy_tier",
+    "owners": {
+      "cloud": "C2",
+      "local": "O1",
+      "logic": "O1"
+    },
+    "read_only": false,
+    "requires_approval": false,
+    "requires_lock": true,
+    "stage": "deploy",
+    "targets": [
+      "local",
+      "cloud"
+    ],
+    "timeout_s": 300,
+    "uses_ai": false
+  },
+  {
+    "canonical": true,
+    "destructive": false,
+    "effect": "read",
+    "kind": "tool_fn",
+    "layer": "outside",
+    "module": "plan",
+    "name": "detect_changed_tiers",
+    "owners": {
+      "logic": "O2"
+    },
+    "read_only": true,
+    "requires_approval": false,
+    "requires_lock": false,
+    "stage": "plan",
+    "targets": [],
+    "timeout_s": 60,
+    "uses_ai": false
+  },
+  {
+    "canonical": true,
+    "destructive": false,
+    "effect": "read",
+    "kind": "tool_fn",
+    "layer": "builtin",
+    "module": "verify",
+    "name": "diagnose_parity_gap",
+    "owners": {
+      "logic": "O3"
+    },
+    "read_only": true,
+    "requires_approval": false,
+    "requires_lock": false,
+    "stage": "verify_report",
+    "targets": [],
+    "timeout_s": 60,
+    "uses_ai": true
+  },
+  {
+    "canonical": true,
+    "destructive": false,
+    "effect": "read",
+    "kind": "tool_fn",
+    "layer": "outside",
+    "module": "infra",
+    "name": "discover_existing",
+    "owners": {
+      "logic": "C1"
+    },
+    "read_only": true,
+    "requires_approval": false,
+    "requires_lock": false,
+    "stage": "plan",
+    "targets": [
+      "cloud"
+    ],
+    "timeout_s": 60,
+    "uses_ai": false
+  },
+  {
+    "canonical": true,
+    "destructive": false,
+    "effect": "state_change",
+    "kind": "tool_fn",
+    "layer": "mandatory",
+    "module": "cd",
+    "name": "ensure_tls",
+    "owners": {
+      "cloud": "C1",
+      "logic": "C1"
+    },
+    "read_only": false,
+    "requires_approval": false,
+    "requires_lock": true,
+    "stage": "deploy",
+    "targets": [
+      "cloud"
+    ],
+    "timeout_s": 2700,
+    "uses_ai": false
+  },
+  {
+    "canonical": true,
+    "destructive": false,
+    "effect": "read",
+    "kind": "tool_fn",
+    "layer": "outside",
+    "module": "plan",
+    "name": "generate_dockerfile",
+    "owners": {
+      "logic": "O3"
+    },
+    "read_only": true,
+    "requires_approval": false,
+    "requires_lock": false,
+    "stage": "plan",
+    "targets": [],
+    "timeout_s": 120,
+    "uses_ai": true
+  },
+  {
+    "canonical": true,
+    "destructive": false,
+    "effect": "read",
+    "kind": "tool_fn",
+    "layer": "outside",
+    "module": "infra",
+    "name": "generate_infra",
+    "owners": {
+      "logic": "C1"
+    },
+    "read_only": true,
+    "requires_approval": false,
+    "requires_lock": false,
+    "stage": "plan",
+    "targets": [
+      "cloud"
+    ],
+    "timeout_s": 300,
+    "uses_ai": true
+  },
+  {
+    "canonical": true,
+    "destructive": false,
+    "effect": "read",
+    "kind": "tool_fn",
+    "layer": "outside",
+    "module": "plan",
+    "name": "generate_plan",
+    "owners": {
+      "logic": "O2"
+    },
+    "read_only": true,
+    "requires_approval": false,
+    "requires_lock": false,
+    "stage": "plan",
+    "targets": [],
+    "timeout_s": 60,
+    "uses_ai": true
+  },
+  {
+    "canonical": true,
+    "destructive": false,
+    "effect": "read",
+    "kind": "tool_fn",
+    "layer": "mandatory",
+    "module": "cd",
+    "name": "health_check",
+    "owners": {
+      "cloud": "C3",
+      "local": "O3",
+      "logic": "O3"
+    },
+    "read_only": true,
+    "requires_approval": false,
+    "requires_lock": false,
+    "stage": "verify_report",
+    "targets": [
+      "local",
+      "cloud"
+    ],
+    "timeout_s": 120,
+    "uses_ai": false
+  },
+  {
+    "canonical": true,
+    "destructive": false,
+    "effect": "state_change",
+    "kind": "tool_fn",
+    "layer": "conditional",
+    "module": "cd",
+    "name": "inject_env_config",
+    "owners": {
+      "cloud": "C2",
+      "local": "O1",
+      "logic": "O1"
+    },
+    "read_only": false,
+    "requires_approval": false,
+    "requires_lock": true,
+    "stage": "deploy",
+    "targets": [
+      "local",
+      "cloud"
+    ],
+    "timeout_s": 60,
+    "uses_ai": false
+  },
+  {
+    "canonical": true,
+    "destructive": false,
+    "effect": "read",
+    "kind": "tool_fn",
+    "layer": "outside",
+    "module": "plan",
+    "name": "patch_config",
+    "owners": {
+      "logic": "O3"
+    },
+    "read_only": false,
+    "requires_approval": true,
+    "requires_lock": false,
+    "stage": "plan",
+    "targets": [],
+    "timeout_s": 60,
+    "uses_ai": true
+  },
+  {
+    "canonical": true,
+    "destructive": false,
+    "effect": "read",
+    "kind": "tool_fn",
+    "layer": "outside",
+    "module": "plan",
+    "name": "patch_db_access",
+    "owners": {
+      "logic": "O3"
+    },
+    "read_only": false,
+    "requires_approval": true,
+    "requires_lock": false,
+    "stage": "plan",
+    "targets": [],
+    "timeout_s": 60,
+    "uses_ai": true
+  },
+  {
+    "canonical": true,
+    "destructive": false,
+    "effect": "read",
+    "kind": "tool_fn",
+    "layer": "outside",
+    "module": "plan",
+    "name": "patch_storage",
+    "owners": {
+      "logic": "O3"
+    },
+    "read_only": false,
+    "requires_approval": true,
+    "requires_lock": false,
+    "stage": "plan",
+    "targets": [],
+    "timeout_s": 60,
+    "uses_ai": true
+  },
+  {
+    "canonical": false,
+    "destructive": false,
+    "effect": "read",
+    "kind": "tool_fn",
+    "layer": "optional",
+    "module": "core",
+    "name": "ping",
+    "owners": {
+      "logic": "TL"
+    },
+    "read_only": true,
+    "requires_approval": false,
+    "requires_lock": false,
+    "stage": "common",
+    "targets": [
+      "local",
+      "cloud"
+    ],
+    "timeout_s": 60,
+    "uses_ai": false
+  },
+  {
+    "canonical": true,
+    "destructive": false,
+    "effect": "read",
+    "kind": "tool_fn",
+    "layer": "outside",
+    "module": "infra",
+    "name": "plan_infra",
+    "owners": {
+      "cloud": "C1",
+      "logic": "C1",
+      "ui": "C3"
+    },
+    "read_only": true,
+    "requires_approval": false,
+    "requires_lock": false,
+    "stage": "validate",
+    "targets": [
+      "cloud"
+    ],
+    "timeout_s": 600,
+    "uses_ai": false
+  },
+  {
+    "canonical": true,
+    "destructive": false,
+    "effect": "read",
+    "kind": "tool_fn",
+    "layer": "mandatory",
+    "module": "verify",
+    "name": "post_report",
+    "owners": {
+      "logic": "C3"
+    },
+    "read_only": true,
+    "requires_approval": false,
+    "requires_lock": false,
+    "stage": "verify_report",
+    "targets": [],
+    "timeout_s": 60,
+    "uses_ai": true
+  },
+  {
+    "canonical": true,
+    "destructive": false,
+    "effect": "read",
+    "kind": "tool_fn",
+    "layer": "outside",
+    "module": "ops",
+    "name": "preflight_check",
+    "owners": {
+      "cloud": "C1",
+      "local": "O1",
+      "logic": "O1"
+    },
+    "read_only": true,
+    "requires_approval": false,
+    "requires_lock": false,
+    "stage": "ops",
+    "targets": [
+      "local",
+      "cloud"
+    ],
+    "timeout_s": 60,
+    "uses_ai": false
+  },
+  {
+    "canonical": true,
+    "destructive": true,
+    "effect": "state_change",
+    "kind": "tool_fn",
+    "layer": "conditional",
+    "module": "cd",
+    "name": "prepare_db",
+    "owners": {
+      "cloud": "C2",
+      "local": "O1",
+      "logic": "O1"
+    },
+    "read_only": false,
+    "requires_approval": false,
+    "requires_lock": true,
+    "stage": "deploy",
+    "targets": [
+      "local",
+      "cloud"
+    ],
+    "timeout_s": 180,
+    "uses_ai": false
+  },
+  {
+    "canonical": true,
+    "destructive": false,
+    "effect": "state_change",
+    "kind": "tool_fn",
+    "layer": "optional",
+    "module": "cd",
+    "name": "prepare_storage",
+    "owners": {
+      "cloud": "C2",
+      "local": "O1",
+      "logic": "O1"
+    },
+    "read_only": false,
+    "requires_approval": false,
+    "requires_lock": true,
+    "stage": "deploy",
+    "targets": [
+      "local",
+      "cloud"
+    ],
+    "timeout_s": 60,
+    "uses_ai": false
+  },
+  {
+    "canonical": true,
+    "destructive": false,
+    "effect": "additive_prep",
+    "kind": "tool_fn",
+    "layer": "builtin",
+    "module": "ci",
+    "name": "push_image",
+    "owners": {
+      "logic": "C2"
+    },
+    "read_only": false,
+    "requires_approval": false,
+    "requires_lock": false,
+    "stage": "build",
+    "targets": [],
+    "timeout_s": 120,
+    "uses_ai": false
+  },
+  {
+    "canonical": true,
+    "destructive": false,
+    "effect": "read",
+    "kind": "tool_fn",
+    "layer": "outside",
+    "module": "plan",
+    "name": "receive_deploy_request",
+    "owners": {
+      "logic": "O2",
+      "ui": "C3"
+    },
+    "read_only": false,
+    "requires_approval": false,
+    "requires_lock": false,
+    "stage": "plan",
+    "targets": [],
+    "timeout_s": 60,
+    "uses_ai": false
+  },
+  {
+    "canonical": true,
+    "destructive": false,
+    "effect": "read",
+    "kind": "tool_fn",
+    "layer": "builtin",
+    "module": "verify",
+    "name": "record_deploy_log",
+    "owners": {
+      "logic": "O1"
+    },
+    "read_only": false,
+    "requires_approval": false,
+    "requires_lock": false,
+    "stage": "verify_report",
+    "targets": [],
+    "timeout_s": 60,
+    "uses_ai": false
+  },
+  {
+    "canonical": true,
+    "destructive": false,
+    "effect": "read",
+    "kind": "executor_fn",
+    "layer": "builtin",
+    "module": "core",
+    "name": "request_approval",
+    "owners": {
+      "logic": "O1",
+      "ui": "C3"
+    },
+    "read_only": false,
+    "requires_approval": false,
+    "requires_lock": false,
+    "stage": "common",
+    "targets": [],
+    "timeout_s": 60,
+    "uses_ai": false
+  },
+  {
+    "canonical": true,
+    "destructive": true,
+    "effect": "state_change",
+    "kind": "tool_fn",
+    "layer": "outside",
+    "module": "ops",
+    "name": "reset_demo_state",
+    "owners": {
+      "cloud": "C2",
+      "local": "O1",
+      "logic": "O1"
+    },
+    "read_only": false,
+    "requires_approval": true,
+    "requires_lock": false,
+    "stage": "ops",
+    "targets": [
+      "local",
+      "cloud"
+    ],
+    "timeout_s": 60,
+    "uses_ai": false
+  },
+  {
+    "canonical": true,
+    "destructive": true,
+    "effect": "state_change",
+    "kind": "tool_fn",
+    "layer": "builtin",
+    "module": "cd",
+    "name": "rollback_tier",
+    "owners": {
+      "cloud": "C2",
+      "local": "O1",
+      "logic": "O1"
+    },
+    "read_only": false,
+    "requires_approval": false,
+    "requires_lock": true,
+    "stage": "deploy",
+    "targets": [
+      "local",
+      "cloud"
+    ],
+    "timeout_s": 300,
+    "uses_ai": false
+  },
+  {
+    "canonical": true,
+    "destructive": false,
+    "effect": "read",
+    "kind": "tool_fn",
+    "layer": "mandatory",
+    "module": "verify",
+    "name": "smoke_test",
+    "owners": {
+      "cloud": "C3",
+      "local": "O3",
+      "logic": "O3"
+    },
+    "read_only": false,
+    "requires_approval": false,
+    "requires_lock": false,
+    "stage": "verify_report",
+    "targets": [
+      "local",
+      "cloud"
+    ],
+    "timeout_s": 120,
+    "uses_ai": false
+  },
+  {
+    "canonical": true,
+    "destructive": false,
+    "effect": "read",
+    "kind": "executor_fn",
+    "layer": "builtin",
+    "module": "core",
+    "name": "stream_progress",
+    "owners": {
+      "logic": "O1",
+      "ui": "C3"
+    },
+    "read_only": false,
+    "requires_approval": false,
+    "requires_lock": false,
+    "stage": "common",
+    "targets": [],
+    "timeout_s": 60,
+    "uses_ai": false
+  },
+  {
+    "canonical": true,
+    "destructive": true,
+    "effect": "additive_prep",
+    "kind": "tool_fn",
+    "layer": "conditional",
+    "module": "cd",
+    "name": "sync_env_to_cloud",
+    "owners": {
+      "cloud": "C2",
+      "logic": "C2"
+    },
+    "read_only": false,
+    "requires_approval": false,
+    "requires_lock": true,
+    "stage": "deploy",
+    "targets": [
+      "cloud"
+    ],
+    "timeout_s": 60,
+    "uses_ai": false
+  },
+  {
+    "canonical": true,
+    "destructive": false,
+    "effect": "read",
+    "kind": "tool_fn",
+    "layer": "outside",
+    "module": "plan",
+    "name": "validate_dockerfile",
+    "owners": {
+      "logic": "O3",
+      "ui": "C3"
+    },
+    "read_only": false,
+    "requires_approval": false,
+    "requires_lock": false,
+    "stage": "validate",
+    "targets": [],
+    "timeout_s": 600,
+    "uses_ai": false
+  },
+  {
+    "canonical": true,
+    "destructive": false,
+    "effect": "read",
+    "kind": "tool_fn",
+    "layer": "outside",
+    "module": "infra",
+    "name": "validate_infra",
+    "owners": {
+      "logic": "C1"
+    },
+    "read_only": true,
+    "requires_approval": false,
+    "requires_lock": false,
+    "stage": "validate",
+    "targets": [
+      "cloud"
+    ],
+    "timeout_s": 300,
+    "uses_ai": false
+  },
+  {
+    "canonical": true,
+    "destructive": false,
+    "effect": "read",
+    "kind": "tool_fn",
+    "layer": "outside",
+    "module": "plan",
+    "name": "validate_plan",
+    "owners": {
+      "logic": "O2"
+    },
+    "read_only": true,
+    "requires_approval": false,
+    "requires_lock": false,
+    "stage": "validate",
+    "targets": [],
+    "timeout_s": 60,
+    "uses_ai": false
+  },
+  {
+    "canonical": true,
+    "destructive": false,
+    "effect": "read",
+    "kind": "tool_fn",
+    "layer": "mandatory",
+    "module": "verify",
+    "name": "verify_tls",
+    "owners": {
+      "cloud": "C3",
+      "logic": "C3"
+    },
+    "read_only": true,
+    "requires_approval": false,
+    "requires_lock": false,
+    "stage": "verify_report",
+    "targets": [
+      "cloud"
+    ],
+    "timeout_s": 60,
+    "uses_ai": false
+  },
+  {
+    "canonical": true,
+    "destructive": false,
+    "effect": "read",
+    "kind": "tool_fn",
+    "layer": "optional",
+    "module": "verify",
+    "name": "watch_post_deploy",
+    "owners": {
+      "cloud": "C3",
+      "local": "O1",
+      "logic": "C3"
+    },
+    "read_only": true,
+    "requires_approval": false,
+    "requires_lock": false,
+    "stage": "verify_report",
+    "targets": [
+      "local",
+      "cloud"
+    ],
+    "timeout_s": 60,
+    "uses_ai": false
+  }
+]

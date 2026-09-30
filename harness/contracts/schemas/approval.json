@@ -1,0 +1,117 @@
+{
+  "$defs": {
+    "SnapshotBinding": {
+      "additionalProperties": false,
+      "properties": {
+        "build_snapshot_hash": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Build Snapshot Hash",
+          "type": "string"
+        },
+        "patch_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Patch Sha256"
+        },
+        "source_snapshot_hash": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Source Snapshot Hash",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_snapshot_hash",
+        "build_snapshot_hash"
+      ],
+      "title": "SnapshotBinding",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "approval_id": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Approval Id",
+      "type": "string"
+    },
+    "approved_at": {
+      "format": "date-time",
+      "title": "Approved At",
+      "type": "string"
+    },
+    "approver": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Approver",
+      "type": "string"
+    },
+    "bound_to": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Bound To",
+      "type": "string"
+    },
+    "decision": {
+      "enum": [
+        "approved",
+        "denied"
+      ],
+      "title": "Decision",
+      "type": "string"
+    },
+    "kind": {
+      "enum": [
+        "patch",
+        "deploy",
+        "infra",
+        "dockerfile",
+        "foundation"
+      ],
+      "title": "Kind",
+      "type": "string"
+    },
+    "project": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Project",
+      "type": "string"
+    },
+    "run_id": {
+      "description": "실행 ID. 모든 툴의 필수 입력",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+      "title": "Run Id",
+      "type": "string"
+    },
+    "snapshot": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SnapshotBinding"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "run_id",
+    "project",
+    "approval_id",
+    "kind",
+    "bound_to",
+    "approver",
+    "approved_at",
+    "decision"
+  ],
+  "title": "ApprovalRecord",
+  "type": "object"
+}
