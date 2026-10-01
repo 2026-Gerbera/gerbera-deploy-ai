@@ -1,0 +1,32 @@
+server {
+    listen 8080;
+    server_name ${PUBLIC_HOST};
+    client_max_body_size 1m;
+    # This must identify the dedicated cloudflared peer, never a client subnet.
+    set_real_ip_from ${TRUSTED_PROXY_CIDR};
+    real_ip_header CF-Connecting-IP;
+    real_ip_recursive off;
+    access_log off;
+
+    location /static/ {
+        root /usr/share/nginx/html;
+        try_files $uri =404;
+    }
+
+    location / {
+        proxy_pass http://${WAS_UPSTREAM};
+        proxy_http_version 1.1;
+        proxy_set_header Host ${PUBLIC_HOST};
+        proxy_set_header X-Forwarded-Host ${PUBLIC_HOST};
+        proxy_set_header X-Forwarded-Proto ${PUBLIC_SCHEME};
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header Forwarded "";
+        proxy_set_header X-Forwarded-Port "";
+        proxy_set_header X-Forwarded-Prefix "";
+        proxy_set_header Connection "";
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 30s;
+        proxy_redirect off;
+    }
+}

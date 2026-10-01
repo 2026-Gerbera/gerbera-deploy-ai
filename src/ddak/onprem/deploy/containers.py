@@ -35,6 +35,7 @@ _CONTAINER_FORMAT = (
     '"ImageManifestDescriptor":{{json (index . "ImageManifestDescriptor")}},'
     '"Config":{"Image":{{json .Config.Image}},"Labels":{{json .Config.Labels}}},'
     '"RestartCount":{{json .RestartCount}},'
+    '"Mounts":{{json .Mounts}},'
     '"State":{"Running":{{json .State.Running}},'
     '"Health":{{json (index .State "Health")}}}}'
 )

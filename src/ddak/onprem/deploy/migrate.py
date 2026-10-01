@@ -48,7 +48,12 @@ def migrate_db(
         raise fail("마이그레이션 ID 오류", ErrorCode.CONFIG_INVALID)
     with provider._session("was", ctx) as (host, config):
         ref = image_ref(ctx.images.get("was", ""))
-        args = provider._args(config, ctx.project, "was")
+        migration_config = (
+            config.model_copy(update={"env_file": config.migration_env_file})
+            if config.migration_env_file
+            else config
+        )
+        args = provider._args(migration_config, ctx.project, "was")
         host.run("image", "pull", "--platform", config.platform, ref)
         observation, local_image = host.image(ref, config.platform)
         provider._volumes(host, config, local_image)

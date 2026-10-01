@@ -37,14 +37,19 @@ def preflight_inventory(
         record("inventory", "fail", "인벤토리 형식/설정 오류")
         return {"passed": False, "checks": checks}
     try:
-        if parsed.ssh:
-            parsed.ssh.check_key()
+        connections = [t.ssh or parsed.ssh for t in parsed.tiers.values()]
+        if any(connections):
+            for connection in connections:
+                if connection:
+                    connection.check_key()
             record("ssh_key_stat", "ok")
         else:
             record("ssh_key_stat", "skip", "container 모드")
         for tier, config in parsed.tiers.items():
             if config.env_file:
                 _private_env(Path(config.env_file))
+                if config.migration_env_file:
+                    _private_env(Path(config.migration_env_file))
                 record(f"env_permissions.{tier}", "ok")
             else:
                 record(f"env_permissions.{tier}", "skip", "env_file 없음")
@@ -52,25 +57,22 @@ def preflight_inventory(
         record("local_files", "fail", str(error))
         record("docker", "skip", "로컬 파일 점검 실패")
         return {"passed": False, "checks": redact_obj(checks)}
-    first = next(iter(parsed.tiers))
-    try:
-        with provider._session(first, ctx) as (host, _):
-            record(
-                "ssh_hostkey_and_connection",
-                "ok" if parsed.ssh else "skip",
-                "지문 대조·BatchMode 확인" if parsed.ssh else "container 모드",
-            )
-            version = host.json("version", "--format", "{{json .}}")
-            try:
-                for side in ("Server", "Client"):
-                    value = version[side].get("ApiVersion", version[side].get("APIVersion", ""))
-                    api = tuple(int(x) for x in value.split("."))
-                    if len(api) != 2 or api < (1, 49):
-                        raise ValueError
-                record("docker_api", "ok", "Server/Client API >= 1.49")
-            except (AttributeError, KeyError, ValueError, TypeError):
-                raise fail("Docker Server/Client API 1.49 이상 필요") from None
-            for tier, config in parsed.tiers.items():
+    # 서로 다른 VM이므로 Docker 버전, network, ownership도 tier마다 확인한다.
+    for tier, config in parsed.tiers.items():
+        try:
+            with provider._session(tier, ctx) as (host, _):
+                remote = bool(config.ssh or parsed.ssh)
+                record(f"connection.{tier}", "ok", "pinned SSH" if remote else "container")
+                version = host.json("version", "--format", "{{json .}}")
+                try:
+                    for side in ("Server", "Client"):
+                        value = version[side].get("ApiVersion", version[side].get("APIVersion", ""))
+                        api = tuple(int(x) for x in value.split("."))
+                        if len(api) != 2 or api < (1, 49):
+                            raise ValueError
+                except (AttributeError, KeyError, ValueError, TypeError):
+                    raise fail("Docker Server/Client API 1.49 이상 필요") from None
+                record(f"docker_api.{tier}", "ok")
                 actual = str(version["Server"].get("Os")) + "/" + str(version["Server"].get("Arch"))
                 actual = actual.replace("aarch64", "arm64").replace("x86_64", "amd64")
                 if actual != config.platform:
@@ -88,6 +90,14 @@ def preflight_inventory(
                         if state:
                             host.owned(state, project, tier)
                 record(f"ownership.{tier}", "ok")
-    except DdakToolError as error:
-        record("remote_checks", "fail", str(error))
-    return {"passed": all(c["status"] != "fail" for c in checks), "checks": redact_obj(checks)}
+        except DdakToolError as error:
+            record("remote_checks", "fail", f"{tier}: {error}")
+    passed = all(c["status"] != "fail" for c in checks)
+    if passed:
+        record("remote_checks", "ok", "모든 tier 독립 점검")
+    record(
+        "ssh_hostkey_and_connection",
+        "ok" if parsed.mode == "vm" and passed else "skip",
+        "tier별 connection 결과 참조",
+    )
+    return {"passed": passed, "checks": redact_obj(checks)}

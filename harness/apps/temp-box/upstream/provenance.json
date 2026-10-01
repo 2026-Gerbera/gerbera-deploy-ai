@@ -1,0 +1,20 @@
+{
+  "source": "https://github.com/pallets/flask/tree/3.1.2/examples/tutorial",
+  "tag": "3.1.2",
+  "archive_sha256": "ccd76c6c3a3bb5186393fbf4e2e31b2fcace53cb0c2cfed7015e13f23cf09359",
+  "files_sha256": {
+    "LICENSE.txt": "489a8e1108509ed98a37bb983e11e0f7e1d31f0bd8f99a79c8448e7ff37d07ea",
+    "upstream/__init__.py.txt": "ecfe54451a0cb1cfb8aac26d0f65bdfc4b1fc5ccd7148f4ad38829a8ba26f03a",
+    "upstream/auth.py.txt": "a5ed5eaa05c6f6ee3e5bdb07b9e657a6e9320a115a68fd74b1cb4ac646680167",
+    "upstream/blog.py.txt": "c49c5f6e3db32d74bfac13633fd328ec904cb7159d76ca78f6956432076c1fd7",
+    "upstream/db.py.txt": "700f9d0a455bf79c9bf6de4f2784f13b96256faea19c15ddee71fb7957e14c31",
+    "upstream/schema.sql.txt": "c23021b8a5229cedd3191825850e963f393790a794d31ac2f83846a0c5d559f7",
+    "flaskr/static/style.css": "b7724c7981be21b5a13484c8f7eb9df306f06a88406db3dc7619b80aa040e372",
+    "flaskr/templates/auth/login.html": "f0d4ee341a19c8f9d51a66c5da624e687e58de7e3fb2ca41c6f5b8d07e20a6c1",
+    "flaskr/templates/auth/register.html": "53da308c1d62f057613ec8e445eb70e89404288f503156102d1e3e39ec5b2153",
+    "flaskr/templates/base.html": "a3c74c6ba8ae95bd3b4b63c0bcf5712944c5b954578514c1316a248db0949b07",
+    "flaskr/templates/blog/create.html": "f41e3166cfd09d41a88def1896fb93631e707b0d9968b14ccb00953263e20025",
+    "flaskr/templates/blog/index.html": "67cdf10979b06f697953477d0ee8043e56a11ebe87b03b307ada12d13a240617",
+    "flaskr/templates/blog/update.html": "0e16cd0d933914628e890411dcddd7527fb96b5a7c9113390d93b3e79b44b5ad"
+  }
+}

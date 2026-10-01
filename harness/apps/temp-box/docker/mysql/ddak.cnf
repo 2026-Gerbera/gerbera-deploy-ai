@@ -1,0 +1,8 @@
+# Installed as /etc/mysql/conf.d/ddak.cnf (mode 0644).
+[mysqld]
+character-set-server=utf8mb4
+collation-server=utf8mb4_unicode_ci
+default-time-zone=+00:00
+sql-mode=STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION
+skip-name-resolve
+local-infile=0

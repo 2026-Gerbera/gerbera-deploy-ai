@@ -1,4 +1,11 @@
-*
-!Dockerfile
-!server.py
-!content.json
+.venv
+.git
+__pycache__
+*.pyc
+.pytest_cache
+data
+.env
+.env.*
+.pytest-tmp
+.ruff_cache
+var

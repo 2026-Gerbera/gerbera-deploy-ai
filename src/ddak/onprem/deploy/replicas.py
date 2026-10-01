@@ -7,7 +7,7 @@ import json
 import shlex
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ddak.cd.interface import ProviderResult
 from ddak.core.contracts.context import RunContext
@@ -20,14 +20,17 @@ if TYPE_CHECKING:
     from ddak.onprem.deploy.provider import OnPremProvider, _Tier
 
 # argv로 받는 포트/경로/시간 이외에는 인벤토리나 앱 코드를 실행하지 않는다.
-_READY_SCRIPT = """import http.client, sys, time
+_READY_SCRIPT = """import http.client, os, sys, time
+from urllib.parse import urlsplit
 port, path, wait = int(sys.argv[1]), sys.argv[2], float(sys.argv[3])
 end = time.monotonic() + wait
 while time.monotonic() < end:
     timeout = min(1, max(.01, end-time.monotonic()))
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
     try:
-        conn.request("GET", path)
+        origin = urlsplit(os.environ.get("APP_BASE_URL", ""))
+        headers = {"Host": origin.netloc} if origin.netloc else {}
+        conn.request("GET", path, headers=headers)
         if conn.getresponse().status == 200:
             sys.exit(0)
     except (OSError, http.client.HTTPException):
@@ -44,12 +47,32 @@ class ReplicaUnhealthy(Exception):
     """관측된 앱 상태 실패. Docker/SSH 전송 실패와 구분한다."""
 
 
+def _healthy(state: dict | None) -> bool:
+    return bool(
+        state
+        and state["State"]["Running"]
+        and (state["State"].get("Health") or {}).get("Status") == "healthy"
+    )
+
+
 def health_args(config: _Tier) -> list[str]:
     if config.ready is None:
         return []
     command = shlex.join(
         ["python", "-c", _READY_SCRIPT, str(config.ready.port), config.ready.path, "1"]
     )
+    if config.kind == "nginx":
+        command = shlex.join(
+            [
+                "wget",
+                "-q",
+                "-O",
+                "/dev/null",
+                f"http://127.0.0.1:{config.ready.port}{config.ready.path}",
+            ]
+        )
+    elif config.kind == "mysql":
+        command = "sh /usr/local/bin/ddak-db-ready"
     return [
         "--health-cmd",
         command,
@@ -94,20 +117,24 @@ def check_ready(
     if wait <= 0:
         raise ReplicaUnhealthy("replica 준비 확인 시간 부족")
     end = time.monotonic() + wait
-    result = host.run(
-        "container",
-        "exec",
-        state["Id"],
-        "python",
-        "-c",
-        _READY_SCRIPT,
-        str(config.ready.port),
-        config.ready.path,
-        str(wait),
-        check=False,
-        timeout=wait + 10,
+    result = (
+        host.run(
+            "container",
+            "exec",
+            state["Id"],
+            "python",
+            "-c",
+            _READY_SCRIPT,
+            str(config.ready.port),
+            config.ready.path,
+            str(wait),
+            check=False,
+            timeout=wait + 10,
+        )
+        if config.kind == "python_http"
+        else None
     )
-    if result.returncode:
+    if result is not None and result.returncode:
         if result.returncode == 1 and result.stdout.strip() == "DDAK_READY_FAILURE":
             raise ReplicaUnhealthy("replica 준비 확인 실패")
         raise fail("Docker 준비 확인 명령 실패")
@@ -142,6 +169,8 @@ def replace_replicas(
     *,
     strict_env: bool = False,
 ) -> ProviderResult:
+    if tier == "db" or config.kind == "mysql":
+        raise fail("DB는 교체·reset 대상이 아니다", ErrorCode.PRECONDITION_FAILED)
     ref = image_ref(ref)
     base_args = provider._args(config, ctx.project, tier)
     before = {}
@@ -170,23 +199,29 @@ def replace_replicas(
         release_id = ctx.previous_release.get("local", {}).get("release_id")
     if not isinstance(release_id, str) or not release_id or any(c in release_id for c in "\n\r\0"):
         raise fail("RELEASE_ID 형식 오류", ErrorCode.CONFIG_INVALID)
-    spec = {
+    spec: dict[str, Any] = {
         "config": config.model_dump(),
-        "release_id": release_id,
     }
+    # web 이미지/설정이 같으면 WAS 릴리스가 바뀌어도 nginx를 교체하지 않는다.
+    if tier != "web":
+        spec["release_id"] = release_id
     env_hash = hashlib.sha256(
         json.dumps(env_key_names(Path(config.env_file)) if config.env_file else []).encode()
     ).hexdigest()
     spec_hash = hashlib.sha256(json.dumps(spec, sort_keys=True).encode()).hexdigest()
     updated = []
     previous = next((s["Config"]["Image"] for s in before.values() if s), None)
-    for i, name in names(config):
+    ordered = names(config)
+    if function == "rollback":
+        # 불량/정지 replica를 먼저 복구해 마지막 정상본의 서비스 경로를 남긴다.
+        ordered.sort(key=lambda pair: _healthy(before[pair[0]]))
+    for i, name in ordered:
         current = before[i]
         staged_name = name + "-ddak-next"
         staged = host.container(staged_name)
         changed = False
         if staged:
-            host.remove(staged, ctx.project, tier)
+            host.remove(staged, ctx.project, tier, stop_seconds=30)
             changed = True
         same = (
             current is not None
@@ -200,6 +235,21 @@ def replace_replicas(
                 host.run("container", "start", current["Id"])
                 changed = True
         else:
+            # 이미 정상 replica가 부족하면 마지막 정상 인스턴스를 내리지 않는다.
+            # 빈 자리 생성은 제한하지 않는다. rollback도 마지막 정상본을 보존한다.
+            if current and (config.replicas or 1) > 1:
+                observed = []
+                for _, peer_name in names(config):
+                    peer = host.container(peer_name)
+                    if peer:
+                        host.owned(peer, ctx.project, tier)
+                        if _healthy(peer):
+                            observed.append(peer_name)
+                if name in observed and len(observed) == 1:
+                    raise fail(
+                        "마지막 정상 replica는 교체하지 않는다; 기존 장애 확인 필요",
+                        ErrorCode.PRECONDITION_FAILED,
+                    )
             args = [
                 *base_args,
                 "--label",
@@ -232,7 +282,7 @@ def replace_replicas(
             if not host.matches(staged, local_image, observation):
                 raise fail("대체 컨테이너 플랫폼 manifest 불일치")
             if current:
-                host.remove(current, ctx.project, tier)
+                host.remove(current, ctx.project, tier, stop_seconds=30)
             host.run("container", "rename", staged["Id"], name)
             host.run("container", "start", staged["Id"])
             changed = True
@@ -259,13 +309,15 @@ def replace_replicas(
         previous_image=previous,
         image_ref=ref,
         observation=observation,
-        detail=f"{'복구' if function == 'rollback' else '교체'} replica: {updated}",
+        detail=f"{'복구' if function == 'rollback' else '교체'} replica: {sorted(updated)}",
     )
 
 
 def remove_replicas(
     provider: OnPremProvider, host: DockerHost, config: _Tier, tier: str, ctx: RunContext
 ) -> ProviderResult:
+    if tier == "db":
+        raise fail("DB 제거 경로는 지원하지 않는다", ErrorCode.PRECONDITION_FAILED)
     found = []
     for i, name in names(config):
         for candidate in (name, name + "-ddak-next"):
@@ -274,7 +326,7 @@ def remove_replicas(
                 host.owned(current, ctx.project, tier)
                 found.append((i, current))
     for _, current in found:
-        host.remove(current, ctx.project, tier)
+        host.remove(current, ctx.project, tier, stop_seconds=30)
     return ProviderResult(
         provider=provider.name,
         function="rollback",
