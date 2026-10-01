@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="948" viewBox="0 0 680 948" font-family="-apple-system, 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif">
+<rect width="680" height="948" fill="#FFFFFF"/>
+<defs><marker id="a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="#888780" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+<line x1="215" y1="96" x2="215" y2="154" stroke="#888780" stroke-width="1.5" marker-end="url(#a)"/>
+<line x1="465" y1="96" x2="465" y2="154" stroke="#888780" stroke-width="1.5" marker-end="url(#a)"/>
+<line x1="215" y1="212" x2="215" y2="270" stroke="#888780" stroke-width="1.5" marker-end="url(#a)"/>
+<line x1="465" y1="212" x2="465" y2="270" stroke="#888780" stroke-width="1.5" marker-end="url(#a)"/>
+<line x1="340" y1="328" x2="340" y2="386" stroke="#888780" stroke-width="1.5" marker-end="url(#a)"/>
+<line x1="340" y1="444" x2="340" y2="502" stroke="#888780" stroke-width="1.5" marker-end="url(#a)"/>
+<line x1="215" y1="560" x2="215" y2="618" stroke="#888780" stroke-width="1.5" marker-end="url(#a)"/>
+<line x1="465" y1="560" x2="465" y2="618" stroke="#888780" stroke-width="1.5" marker-end="url(#a)"/>
+<line x1="215" y1="676" x2="215" y2="734" stroke="#888780" stroke-width="1.5" marker-end="url(#a)"/>
+<line x1="465" y1="676" x2="465" y2="734" stroke="#888780" stroke-width="1.5" marker-end="url(#a)"/>
+<line x1="215" y1="792" x2="215" y2="850" stroke="#888780" stroke-width="1.5" marker-end="url(#a)"/>
+<line x1="465" y1="792" x2="465" y2="850" stroke="#888780" stroke-width="1.5" marker-end="url(#a)"/>
+<rect x="110" y="40" width="460" height="56" rx="4" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="1"/>
+<text x="340.0" y="60" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#444441">prod 브랜치</text>
+<text x="340.0" y="80" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#5F5E5A">개발자들이 push하는 기준 코드</text>
+<rect x="110" y="156" width="210" height="56" rx="4" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="1"/>
+<text x="215.0" y="176" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#444441">① 채팅으로 배포 지시</text>
+<text x="215.0" y="196" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#5F5E5A">자동 감지 끔</text>
+<rect x="360" y="156" width="210" height="56" rx="4" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="1"/>
+<text x="465.0" y="176" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#444441">② push 자동 감지</text>
+<text x="465.0" y="196" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#5F5E5A">자동 감지 켬</text>
+<rect x="110" y="272" width="460" height="56" rx="4" fill="#E1F5EE" stroke="#0F6E56" stroke-width="1"/>
+<text x="340.0" y="292" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#085041">우리 프로그램 (지금 내 PC, 나중에 서버)</text>
+<text x="340.0" y="312" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#0F6E56">계획 · AI 패치 제안 → 사람 승인 · 채팅 질문 답변</text>
+<rect x="110" y="388" width="460" height="56" rx="4" fill="#EEEDFE" stroke="#534AB7" stroke-width="1"/>
+<text x="340.0" y="408" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#3C3489">ai-prod 브랜치 = 배포 후보</text>
+<text x="340.0" y="428" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#534AB7">prod merge + 승인 패치 커밋, 이력 보존</text>
+<rect x="110" y="504" width="460" height="56" rx="4" fill="#E1F5EE" stroke="#0F6E56" stroke-width="1"/>
+<text x="340.0" y="524" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#085041">이미지 빌드 (CI)</text>
+<text x="340.0" y="544" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#0F6E56">ai-prod 커밋 SHA로 고정, 라벨에 SHA 기록</text>
+<rect x="110" y="620" width="210" height="56" rx="4" fill="#FAECE7" stroke="#993C1D" stroke-width="1"/>
+<text x="215.0" y="640" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#712B13">온프렘 배포</text>
+<text x="215.0" y="660" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#993C1D">선택 시, 독립 진행</text>
+<rect x="360" y="620" width="210" height="56" rx="4" fill="#FAECE7" stroke="#993C1D" stroke-width="1"/>
+<text x="465.0" y="640" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#712B13">클라우드 배포</text>
+<text x="465.0" y="660" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#993C1D">선택 시, 독립 진행</text>
+<rect x="110" y="736" width="210" height="56" rx="4" fill="#EEEDFE" stroke="#534AB7" stroke-width="1"/>
+<text x="215.0" y="756" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#3C3489">deployed/onprem 태그</text>
+<text x="215.0" y="776" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#534AB7">온프렘 성공 커밋</text>
+<rect x="360" y="736" width="210" height="56" rx="4" fill="#EEEDFE" stroke="#534AB7" stroke-width="1"/>
+<text x="465.0" y="756" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#3C3489">deployed/cloud 태그</text>
+<text x="465.0" y="776" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#534AB7">클라우드 성공 커밋</text>
+<rect x="110" y="852" width="460" height="56" rx="4" fill="#EEEDFE" stroke="#534AB7" stroke-width="1"/>
+<text x="340.0" y="872" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#3C3489">main 브랜치</text>
+<text x="340.0" y="892" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#534AB7">마지막으로 배포된 코드</text>
+</svg>
