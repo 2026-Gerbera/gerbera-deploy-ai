@@ -15,6 +15,7 @@ from ddak.core.contracts.tools.detect_changed_tiers import (
     DetectChangedTiersOutput,
 )
 from ddak.core.contracts.tools.generate_plan import GeneratePlanInput, GeneratePlanOutput
+from ddak.core.contracts.tools.health_check import HealthCheckInput, HealthCheckOutput
 from ddak.core.contracts.tools.post_report import PostReportInput, PostReportOutput, ReportIssue
 from ddak.core.contracts.tools.receive_deploy_request import (
     ReceiveDeployRequestInput,
@@ -43,4 +44,3 @@ __all__ = [
     "VerifyTlsInput",
     "VerifyTlsOutput",
 ]
-from ddak.core.contracts.tools.health_check import HealthCheckInput, HealthCheckOutput

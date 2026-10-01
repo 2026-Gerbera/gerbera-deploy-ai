@@ -1,5 +1,6 @@
 # plan/planner (담당: 김준석)
-- 할 일: 계획 생성(generate_plan). AI는 step 선택 초안만 만든다
-- 입출력 계약: `src/ddak/core/contracts` (이 툴의 <Tool>Input/Output 모델은 아직 없다. 입출력은 __init__.py docstring)
-- 다른 디렉토리 안쪽 파일을 직접 import하지 말고 __init__.py의 공개 함수만 쓴다.
-- AI 호출은 core/ai(call_ai)로만, 허용된 디렉토리에서만 한다(여기는 허용: import-linter 계약 2).
+- 할 일: `generate_plan`. AI는 OPTIONAL step의 포함 여부 `(id, include, reason)`만 제안한다.
+- 흐름: 결정 가능 step 없음 -> AI 미호출 / Jev(`ask_jev`, 확률>=0.5 포함) -> Claude(`call_ai`, `prompt.md`, `plan-v1`) -> 빈 초안(`fallback=True`).
+- `feedback`은 Claude 호출의 데이터 구역에만 들어간다. Jev 경로는 무시한다.
+- 입출력: `core/contracts/tools/generate_plan.py`. 툴 등록은 `tool.py`.
+- 다른 디렉토리는 `__init__.py` 공개 이름으로만 import. `plan/validate`는 import 금지.

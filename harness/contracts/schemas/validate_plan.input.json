@@ -144,6 +144,14 @@
         "mode": {
           "$ref": "#/$defs/RunMode"
         },
+        "modified_migrations": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Modified Migrations",
+          "type": "array"
+        },
         "new_migrations": {
           "default": [],
           "items": {

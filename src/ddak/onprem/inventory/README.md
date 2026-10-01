@@ -1,5 +1,5 @@
 # onprem/inventory (담당: 김준석)
-- 할 일: 인벤토리(tier별 주소) 읽기
-- 입출력 계약: `src/ddak/core/contracts` (모양은 `src/ddak/onprem/deploy/provider.py` docstring의 인벤토리 계약)
-- 다른 디렉토리 안쪽 파일을 직접 import하지 말고 __init__.py의 공개 함수만 쓴다.
-- AI 호출은 core/ai(call_ai)로만, 허용된 디렉토리에서만 한다(여기는 금지: import-linter 계약이 막는다).
+- `load_inventory(path)`: `platform.onprem.yaml`을 읽어 `RunContext.platform["onprem"]` 모양(`docker_host`, `tiers`)으로 돌려준다. flow가 컨텍스트에 넣는다.
+- 거부: 파일 없음, 최상위 비매핑, tier 이름 위반, 시크릿 키(password/secret/token/key), 비로컬 `docker_host`(`unix://`만), 알 수 없는 필드. 값 상세 검증은 `onprem/deploy` provider가 한다.
+- 모양: `src/ddak/onprem/deploy/provider.py` docstring의 인벤토리 계약.
+- AI 호출 금지(import-linter 계약).

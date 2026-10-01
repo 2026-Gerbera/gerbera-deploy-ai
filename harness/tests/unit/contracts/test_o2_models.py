@@ -195,3 +195,22 @@ def test_tool_models(name):
     out.model_json_schema()
     if name == "ValidatePlan":
         assert out is Plan
+
+
+def test_invalidated_extended_values() -> None:
+    from ddak.core.contracts.plan import Invalidated
+
+    old = Invalidated(id="verify.report", why="x")
+    assert (old.attempt, old.result) == ("skip", "forced_include")
+    new = Invalidated(id="build.web", attempt="include", result="forced_skip", why="tree_unchanged")
+    assert Invalidated.model_validate_json(new.model_dump_json()) == new
+    with pytest.raises(ValidationError):
+        Invalidated(id="a.b", attempt="drop", why="x")  # type: ignore[arg-type]
+    with pytest.raises(ValidationError):
+        Invalidated(id="a.b", result="forced_x", why="x")  # type: ignore[arg-type]
+
+
+def test_golden_plan_parses_unchanged() -> None:
+    gold = json.loads((HARNESS / "fixtures/plans/golden_v2_update.json").read_text())
+    p = Plan.model_validate(gold)
+    assert all(i.attempt == "skip" and i.result == "forced_include" for i in p.invalidated)

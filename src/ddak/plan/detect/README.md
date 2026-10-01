@@ -1,5 +1,6 @@
 # plan/detect (담당: 김준석)
-- 할 일: 변경 탐지·스냅샷 해시(detect_changed_tiers)
-- 입출력 계약: `src/ddak/core/contracts` (이 툴의 <Tool>Input/Output 모델은 아직 없다. 입출력은 __init__.py docstring)
-- 다른 디렉토리 안쪽 파일을 직접 import하지 말고 __init__.py의 공개 함수만 쓴다.
-- AI 호출은 core/ai(call_ai)로만, 허용된 디렉토리에서만 한다(여기는 금지: import-linter 계약이 막는다).
+- 환경별 마지막 성공 배포의 `source_files` manifest와 현재 소스를 비교해 바뀐 tier, 새 마이그레이션, facts 해시를 돌려준다(AI 없음, git 불필요).
+- 공개: `detect_changed_tiers(inp, ctx)`(툴 `detect_changed_tiers`), `facts_reader(source)`(`DeploymentService.prepare`용).
+- 입출력: `ddak.core.contracts.tools.detect_changed_tiers`. `previous`는 호출자(flow)가 Store에서 읽어 넘긴다(detect는 Store를 열지 않는다).
+  Store 위치: `environments(project)[env]["current"]`의 run_id -> `releases.manifest`의 `source_files`. 없으면 None.
+- 소스는 `DDAK_SOURCES_DIR`(기본 `var/sources`) / `source_dir`.
