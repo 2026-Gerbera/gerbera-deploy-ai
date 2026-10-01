@@ -1,0 +1,188 @@
+{
+  "$defs": {
+    "AIUsage": {
+      "additionalProperties": false,
+      "description": "AI 툴 출력에 붙이는 사용량. 💭 필드 확정은 계약 문서(TODO(contract)).",
+      "properties": {
+        "cost_usd": {
+          "minimum": 0,
+          "title": "Cost Usd",
+          "type": "number"
+        },
+        "input_tokens": {
+          "minimum": 0,
+          "title": "Input Tokens",
+          "type": "integer"
+        },
+        "latency_ms": {
+          "minimum": 0,
+          "title": "Latency Ms",
+          "type": "integer"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "output_tokens": {
+          "minimum": 0,
+          "title": "Output Tokens",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "model",
+        "input_tokens",
+        "output_tokens",
+        "cost_usd",
+        "latency_ms"
+      ],
+      "title": "AIUsage",
+      "type": "object"
+    },
+    "By": {
+      "description": "결정 주체. 계획 step·패치 등을 규칙이 정했는지 AI가 정했는지 표시한다.",
+      "enum": [
+        "rule",
+        "ai"
+      ],
+      "title": "By",
+      "type": "string"
+    },
+    "PlanDraft": {
+      "additionalProperties": false,
+      "properties": {
+        "decisions": {
+          "items": {
+            "$ref": "#/$defs/StepDecision"
+          },
+          "title": "Decisions",
+          "type": "array"
+        },
+        "planner": {
+          "$ref": "#/$defs/Planner"
+        }
+      },
+      "required": [
+        "decisions",
+        "planner"
+      ],
+      "title": "PlanDraft",
+      "type": "object"
+    },
+    "Planner": {
+      "additionalProperties": false,
+      "properties": {
+        "attempts": {
+          "default": 1,
+          "minimum": 0,
+          "title": "Attempts",
+          "type": "integer"
+        },
+        "by": {
+          "$ref": "#/$defs/By"
+        },
+        "fallback": {
+          "default": false,
+          "title": "Fallback",
+          "type": "boolean"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model"
+        },
+        "provider": {
+          "title": "Provider",
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/Source",
+          "default": "live"
+        }
+      },
+      "required": [
+        "by",
+        "provider"
+      ],
+      "title": "Planner",
+      "type": "object"
+    },
+    "Source": {
+      "description": "AI 결과의 출처. live가 아니면 관리 페이지가 라벨을 표시한다(목업은 목업이라고 밝힘).",
+      "enum": [
+        "live",
+        "cache",
+        "fixture",
+        "replay"
+      ],
+      "title": "Source",
+      "type": "string"
+    },
+    "StepDecision": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^[a-z][a-z0-9_]*(\\.[a-z0-9_]+){1,3}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "include": {
+          "title": "Include",
+          "type": "boolean"
+        },
+        "reason": {
+          "maxLength": 200,
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "include",
+        "reason"
+      ],
+      "title": "StepDecision",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "ai_usage": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AIUsage"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "draft": {
+      "$ref": "#/$defs/PlanDraft"
+    },
+    "source": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Source"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "draft"
+  ],
+  "title": "GeneratePlanOutput",
+  "type": "object"
+}

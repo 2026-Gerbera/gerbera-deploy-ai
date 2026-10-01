@@ -1,0 +1,188 @@
+{
+  "$defs": {
+    "AIUsage": {
+      "additionalProperties": false,
+      "description": "AI 툴 출력에 붙이는 사용량. 💭 필드 확정은 계약 문서(TODO(contract)).",
+      "properties": {
+        "cost_usd": {
+          "minimum": 0,
+          "title": "Cost Usd",
+          "type": "number"
+        },
+        "input_tokens": {
+          "minimum": 0,
+          "title": "Input Tokens",
+          "type": "integer"
+        },
+        "latency_ms": {
+          "minimum": 0,
+          "title": "Latency Ms",
+          "type": "integer"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "output_tokens": {
+          "minimum": 0,
+          "title": "Output Tokens",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "model",
+        "input_tokens",
+        "output_tokens",
+        "cost_usd",
+        "latency_ms"
+      ],
+      "title": "AIUsage",
+      "type": "object"
+    },
+    "By": {
+      "description": "결정 주체. 계획 step·패치 등을 규칙이 정했는지 AI가 정했는지 표시한다.",
+      "enum": [
+        "rule",
+        "ai"
+      ],
+      "title": "By",
+      "type": "string"
+    },
+    "EnvKey": {
+      "additionalProperties": false,
+      "properties": {
+        "by": {
+          "$ref": "#/$defs/By",
+          "default": "rule"
+        },
+        "is_new": {
+          "default": true,
+          "title": "Is New",
+          "type": "boolean"
+        },
+        "kind": {
+          "enum": [
+            "plain",
+            "secret"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "name": {
+          "pattern": "^[A-Z][A-Z0-9_]{0,63}$",
+          "title": "Name",
+          "type": "string"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "tier": {
+          "anyOf": [
+            {
+              "description": "deploy.yaml에 정의된 tier",
+              "pattern": "^[a-z][a-z0-9_-]{0,31}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tier"
+        }
+      },
+      "required": [
+        "name",
+        "kind"
+      ],
+      "title": "EnvKey",
+      "type": "object"
+    },
+    "Source": {
+      "description": "AI 결과의 출처. live가 아니면 관리 페이지가 라벨을 표시한다(목업은 목업이라고 밝힘).",
+      "enum": [
+        "live",
+        "cache",
+        "fixture",
+        "replay"
+      ],
+      "title": "Source",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "ai_usage": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AIUsage"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "env_keys": {
+      "items": {
+        "$ref": "#/$defs/EnvKey"
+      },
+      "title": "Env Keys",
+      "type": "array"
+    },
+    "has_dockerfile": {
+      "patternProperties": {
+        "^[a-z][a-z0-9_-]{0,31}$": {
+          "type": "boolean"
+        }
+      },
+      "propertyNames": {
+        "description": "deploy.yaml에 정의된 tier"
+      },
+      "title": "Has Dockerfile",
+      "type": "object"
+    },
+    "infra_inputs_changed": {
+      "title": "Infra Inputs Changed",
+      "type": "boolean"
+    },
+    "source": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Source"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "tiers": {
+      "items": {
+        "description": "deploy.yaml에 정의된 tier",
+        "pattern": "^[a-z][a-z0-9_-]{0,31}$",
+        "type": "string"
+      },
+      "title": "Tiers",
+      "type": "array"
+    }
+  },
+  "required": [
+    "tiers",
+    "env_keys",
+    "has_dockerfile",
+    "infra_inputs_changed"
+  ],
+  "title": "AnalyzeProjectOutput",
+  "type": "object"
+}

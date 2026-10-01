@@ -1,0 +1,78 @@
+{
+  "$defs": {
+    "TierConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "dockerfile": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Dockerfile"
+        },
+        "paths": {
+          "default": [
+            "."
+          ],
+          "items": {
+            "type": "string"
+          },
+          "title": "Paths",
+          "type": "array"
+        }
+      },
+      "title": "TierConfig",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "env_example": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Env Example"
+    },
+    "migrations_dir": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Migrations Dir"
+    },
+    "tiers": {
+      "minProperties": 1,
+      "patternProperties": {
+        "^[a-z][a-z0-9_-]{0,31}$": {
+          "$ref": "#/$defs/TierConfig"
+        }
+      },
+      "propertyNames": {
+        "description": "deploy.yaml에 정의된 tier"
+      },
+      "title": "Tiers",
+      "type": "object"
+    }
+  },
+  "required": [
+    "tiers"
+  ],
+  "title": "DeployConfig",
+  "type": "object"
+}
