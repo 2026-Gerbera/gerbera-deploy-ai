@@ -1,0 +1,513 @@
+{
+  "$defs": {
+    "By": {
+      "description": "결정 주체. 계획 step·패치 등을 규칙이 정했는지 AI가 정했는지 표시한다.",
+      "enum": [
+        "rule",
+        "ai"
+      ],
+      "title": "By",
+      "type": "string"
+    },
+    "DeploySections": {
+      "additionalProperties": false,
+      "properties": {
+        "cloud": {
+          "$ref": "#/$defs/Section"
+        },
+        "local": {
+          "$ref": "#/$defs/Section"
+        }
+      },
+      "title": "DeploySections",
+      "type": "object"
+    },
+    "Effect": {
+      "description": "step이 대상 환경에 주는 영향(💭). 대기 지점 규칙(W1~W3)의 근거다.\n\n클라우드 트랙의 STATE_CHANGE step은 반드시 wait_for: local_verified 뒤에 둔다(✅ 장부 6).",
+      "enum": [
+        "read",
+        "additive_prep",
+        "state_change"
+      ],
+      "title": "Effect",
+      "type": "string"
+    },
+    "Invalidated": {
+      "additionalProperties": false,
+      "description": "AI가 빼려 했으나 계획 검증이 무효화한 것(강제 포함).",
+      "properties": {
+        "attempt": {
+          "const": "skip",
+          "default": "skip",
+          "title": "Attempt",
+          "type": "string"
+        },
+        "by": {
+          "$ref": "#/$defs/By",
+          "default": "ai"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "result": {
+          "const": "forced_include",
+          "default": "forced_include",
+          "title": "Result",
+          "type": "string"
+        },
+        "why": {
+          "maxLength": 200,
+          "title": "Why",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "why"
+      ],
+      "title": "Invalidated",
+      "type": "object"
+    },
+    "Layer": {
+      "description": "step 층(✅ 장부 5). 툴의 기본값이고, step 카탈로그가 대상별로 덮어쓸 수 있다.\n\n예: ensure_tls는 cloud에서 필수. 계획 검증(validate_plan, 코드)이 층 규칙을 강제한다.",
+      "enum": [
+        "builtin",
+        "mandatory",
+        "conditional",
+        "optional",
+        "outside"
+      ],
+      "title": "Layer",
+      "type": "string"
+    },
+    "PlanStep": {
+      "additionalProperties": false,
+      "description": "실행할 step 하나. step != 툴: 같은 툴이 여러 step에 쓰인다(deploy_tier가 tier·대상별로).",
+      "properties": {
+        "by": {
+          "$ref": "#/$defs/By",
+          "default": "rule"
+        },
+        "effect": {
+          "$ref": "#/$defs/Effect",
+          "default": "read"
+        },
+        "evidence": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence",
+          "type": "array"
+        },
+        "id": {
+          "pattern": "^[a-z][a-z0-9_]*(\\.[a-z0-9_]+){1,3}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "layer": {
+          "$ref": "#/$defs/Layer"
+        },
+        "params": {
+          "additionalProperties": true,
+          "title": "Params",
+          "type": "object"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "run": {
+          "anyOf": [
+            {
+              "const": "finally",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Run"
+        },
+        "signal": {
+          "anyOf": [
+            {
+              "enum": [
+                "infra_ready",
+                "images_ready",
+                "local_verified",
+                "cloud_verified"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Signal"
+        },
+        "target": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Target"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "tier": {
+          "anyOf": [
+            {
+              "description": "deploy.yaml에 정의된 tier",
+              "pattern": "^[a-z][a-z0-9_-]{0,31}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tier"
+        },
+        "tool": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Tool",
+          "type": "string"
+        },
+        "wait_for": {
+          "items": {
+            "enum": [
+              "infra_ready",
+              "images_ready",
+              "local_verified",
+              "cloud_verified"
+            ],
+            "type": "string"
+          },
+          "title": "Wait For",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "tool",
+        "layer"
+      ],
+      "title": "PlanStep",
+      "type": "object"
+    },
+    "PlanWarning": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Code",
+          "type": "string"
+        },
+        "message": {
+          "maxLength": 200,
+          "title": "Message",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "title": "PlanWarning",
+      "type": "object"
+    },
+    "Planner": {
+      "additionalProperties": false,
+      "properties": {
+        "attempts": {
+          "default": 1,
+          "minimum": 0,
+          "title": "Attempts",
+          "type": "integer"
+        },
+        "by": {
+          "$ref": "#/$defs/By"
+        },
+        "fallback": {
+          "default": false,
+          "title": "Fallback",
+          "type": "boolean"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model"
+        },
+        "provider": {
+          "title": "Provider",
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/Source",
+          "default": "live"
+        }
+      },
+      "required": [
+        "by",
+        "provider"
+      ],
+      "title": "Planner",
+      "type": "object"
+    },
+    "RunMode": {
+      "description": "run 종류. 초기 배포도 같은 파이프라인으로 한다(✅ 장부 14).",
+      "enum": [
+        "update",
+        "bootstrap"
+      ],
+      "title": "RunMode",
+      "type": "string"
+    },
+    "Section": {
+      "additionalProperties": false,
+      "properties": {
+        "signal": {
+          "anyOf": [
+            {
+              "enum": [
+                "infra_ready",
+                "images_ready",
+                "local_verified",
+                "cloud_verified"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Signal"
+        },
+        "skipped": {
+          "items": {
+            "$ref": "#/$defs/SkippedStep"
+          },
+          "title": "Skipped",
+          "type": "array"
+        },
+        "steps": {
+          "items": {
+            "$ref": "#/$defs/PlanStep"
+          },
+          "title": "Steps",
+          "type": "array"
+        }
+      },
+      "title": "Section",
+      "type": "object"
+    },
+    "SkippedStep": {
+      "additionalProperties": false,
+      "description": "뺀 step과 이유. 관리 페이지 계획 카드의 \"제외\" 줄.",
+      "properties": {
+        "by": {
+          "$ref": "#/$defs/By",
+          "default": "rule"
+        },
+        "id": {
+          "pattern": "^[a-z][a-z0-9_]*(\\.[a-z0-9_]+){1,3}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "layer": {
+          "$ref": "#/$defs/Layer"
+        },
+        "reason": {
+          "maxLength": 200,
+          "title": "Reason",
+          "type": "string"
+        },
+        "skip_rule": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Skip Rule"
+        },
+        "target": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Target"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "tier": {
+          "anyOf": [
+            {
+              "description": "deploy.yaml에 정의된 tier",
+              "pattern": "^[a-z][a-z0-9_-]{0,31}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tier"
+        },
+        "tool": {
+          "title": "Tool",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "tool",
+        "layer",
+        "reason"
+      ],
+      "title": "SkippedStep",
+      "type": "object"
+    },
+    "Source": {
+      "description": "AI 결과의 출처. live가 아니면 관리 페이지가 라벨을 표시한다(목업은 목업이라고 밝힘).",
+      "enum": [
+        "live",
+        "cache",
+        "fixture",
+        "replay"
+      ],
+      "title": "Source",
+      "type": "string"
+    },
+    "Target": {
+      "description": "배포 대상 환경. 실행기가 plan.json의 트랙과 deploy.yaml로 정한다(AI가 고르지 않는다).",
+      "enum": [
+        "local",
+        "cloud"
+      ],
+      "title": "Target",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "build": {
+      "$ref": "#/$defs/Section"
+    },
+    "deploy": {
+      "$ref": "#/$defs/DeploySections"
+    },
+    "facts_hash": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Facts Hash"
+    },
+    "invalidated": {
+      "items": {
+        "$ref": "#/$defs/Invalidated"
+      },
+      "title": "Invalidated",
+      "type": "array"
+    },
+    "mode": {
+      "$ref": "#/$defs/RunMode",
+      "default": "update"
+    },
+    "plan_hash": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Plan Hash"
+    },
+    "planner": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Planner"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "project": {
+      "default": "",
+      "title": "Project",
+      "type": "string"
+    },
+    "run_id": {
+      "description": "실행 ID. 모든 툴의 필수 입력",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+      "title": "Run Id",
+      "type": "string"
+    },
+    "schema": {
+      "const": "ddak.plan/v1",
+      "default": "ddak.plan/v1",
+      "title": "Schema",
+      "type": "string"
+    },
+    "toggles": {
+      "additionalProperties": {
+        "type": "boolean"
+      },
+      "title": "Toggles",
+      "type": "object"
+    },
+    "verify": {
+      "$ref": "#/$defs/Section"
+    },
+    "warnings": {
+      "items": {
+        "$ref": "#/$defs/PlanWarning"
+      },
+      "title": "Warnings",
+      "type": "array"
+    }
+  },
+  "required": [
+    "run_id"
+  ],
+  "title": "Plan",
+  "type": "object"
+}

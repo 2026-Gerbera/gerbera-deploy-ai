@@ -1,0 +1,12 @@
+# 프로젝트 저장소 루트의 deploy.yaml 샘플. 사람이 쓴다(AI가 만들지 않는다).
+# 필드는 O2 초안, 팀 협의 전. 도메인·호스트·digest·시크릿 값은 넣지 않는다.
+# 모든 경로는 저장소 루트 상대 경로('..'·절대 경로 금지).
+tiers:
+  web:
+    paths: [web]
+    dockerfile: web/Dockerfile
+  was:
+    paths: [app, requirements.txt]
+    dockerfile: null   # null = Dockerfile 없음 -> generate_dockerfile 대상
+migrations_dir: migrations
+env_example: .env.example

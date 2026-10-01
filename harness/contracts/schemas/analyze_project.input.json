@@ -1,0 +1,141 @@
+{
+  "$defs": {
+    "DeployRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "code_patch": {
+          "default": false,
+          "title": "Code Patch",
+          "type": "boolean"
+        },
+        "message": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Message"
+        },
+        "mode": {
+          "$ref": "#/$defs/RunMode",
+          "default": "update"
+        },
+        "project": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+          "title": "Project",
+          "type": "string"
+        },
+        "ref": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ref"
+        },
+        "repo_url": {
+          "maxLength": 300,
+          "minLength": 1,
+          "title": "Repo Url",
+          "type": "string"
+        },
+        "target": {
+          "enum": [
+            "local",
+            "cloud",
+            "both"
+          ],
+          "title": "Target",
+          "type": "string"
+        }
+      },
+      "required": [
+        "project",
+        "repo_url",
+        "target"
+      ],
+      "title": "DeployRequest",
+      "type": "object"
+    },
+    "RunMode": {
+      "description": "run 종류. 초기 배포도 같은 파이프라인으로 한다(✅ 장부 14).",
+      "enum": [
+        "update",
+        "bootstrap"
+      ],
+      "title": "RunMode",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "changed": {
+      "additionalProperties": {
+        "patternProperties": {
+          "^[a-z][a-z0-9_-]{0,31}$": {
+            "type": "boolean"
+          }
+        },
+        "propertyNames": {
+          "description": "deploy.yaml에 정의된 tier"
+        },
+        "type": "object"
+      },
+      "propertyNames": {
+        "enum": [
+          "local",
+          "cloud"
+        ]
+      },
+      "title": "Changed",
+      "type": "object"
+    },
+    "changed_paths": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Changed Paths",
+      "type": "array"
+    },
+    "new_migrations": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "New Migrations",
+      "type": "array"
+    },
+    "request": {
+      "$ref": "#/$defs/DeployRequest"
+    },
+    "run_id": {
+      "description": "실행 ID. 모든 툴의 필수 입력",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+      "title": "Run Id",
+      "type": "string"
+    },
+    "source_dir": {
+      "title": "Source Dir",
+      "type": "string"
+    }
+  },
+  "required": [
+    "run_id",
+    "request",
+    "source_dir",
+    "changed"
+  ],
+  "title": "AnalyzeProjectInput",
+  "type": "object"
+}
