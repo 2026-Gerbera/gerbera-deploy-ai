@@ -1,0 +1,84 @@
+{
+  "$defs": {
+    "FileMeta": {
+      "additionalProperties": false,
+      "description": "core/store.release_view 의 파일 항목과 같은 모양.",
+      "properties": {
+        "executable": {
+          "title": "Executable",
+          "type": "boolean"
+        },
+        "sha256": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sha256",
+        "executable"
+      ],
+      "title": "FileMeta",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "changed": {
+      "additionalProperties": {
+        "patternProperties": {
+          "^[a-z][a-z0-9_-]{0,31}$": {
+            "type": "boolean"
+          }
+        },
+        "propertyNames": {
+          "description": "deploy.yaml에 정의된 tier"
+        },
+        "type": "object"
+      },
+      "propertyNames": {
+        "enum": [
+          "local",
+          "cloud"
+        ]
+      },
+      "title": "Changed",
+      "type": "object"
+    },
+    "changed_paths": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Changed Paths",
+      "type": "array"
+    },
+    "facts_hash": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Facts Hash",
+      "type": "string"
+    },
+    "manifest": {
+      "additionalProperties": {
+        "$ref": "#/$defs/FileMeta"
+      },
+      "title": "Manifest",
+      "type": "object"
+    },
+    "new_migrations": {
+      "items": {
+        "type": "string"
+      },
+      "title": "New Migrations",
+      "type": "array"
+    }
+  },
+  "required": [
+    "changed",
+    "new_migrations",
+    "changed_paths",
+    "facts_hash",
+    "manifest"
+  ],
+  "title": "DetectChangedTiersOutput",
+  "type": "object"
+}
