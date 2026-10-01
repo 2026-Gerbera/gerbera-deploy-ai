@@ -75,6 +75,7 @@ __all__ = [
     "DockerHub",
     "Ecr",
     "ImageRegistry",
+    "check_digest",
     "image_artifact",
     "tag_for",
 ]

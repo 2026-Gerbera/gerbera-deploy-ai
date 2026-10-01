@@ -18,8 +18,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from ddak.cloud.build.registries import PLATFORMS
-from ddak.cloud.build.registries._names import check_digest
+from ddak.cloud.build.registries import PLATFORMS, check_digest
 from ddak.core.contracts.base import TIER_PATTERN
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 
