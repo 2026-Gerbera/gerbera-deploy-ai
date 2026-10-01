@@ -46,6 +46,7 @@ def create() -> FastAPI:
     return create_app(
         llm_status=llm_status,
         deployment_factory=lambda: DeploymentService(registry, settings.run_dir.parent),
+        settings=settings,
     )
 
 

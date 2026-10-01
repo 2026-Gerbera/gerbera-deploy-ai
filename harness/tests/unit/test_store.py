@@ -204,3 +204,23 @@ def test_release_preserves_validated_hash_metadata_for_password_named_files(stor
                 }
             }
         )
+
+
+def test_project_settings_use_optimistic_version(store: Store) -> None:
+    first = store.save_project_settings(
+        "flaskr",
+        {"cloud_domain": "app.example.com", "dns_mode": "external"},
+        updated_by="tester",
+        expected_version=0,
+    )
+    assert first["version"] == 1
+    saved = store.project_settings("flaskr")
+    assert saved is not None
+    assert saved["cloud_domain"] == "app.example.com"
+    with pytest.raises(DdakToolError, match="새로고침"):
+        store.save_project_settings(
+            "flaskr",
+            {"cloud_domain": "new.example.com"},
+            updated_by="tester",
+            expected_version=0,
+        )

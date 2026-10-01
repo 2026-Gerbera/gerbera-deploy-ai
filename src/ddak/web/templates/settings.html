@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}클라우드 설정 · Gerbera{% endblock %}
+{% block content %}
+<section class="hero"><p class="eyebrow">PROJECT SETTINGS</p><h1>클라우드 도메인</h1><p>도메인은 run 시작 시 스냅샷되며 AI 입력이나 plan.json에 포함되지 않습니다.</p></section>
+<form class="card form" method="post" action="/settings">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <input type="hidden" name="project" value="{{ project }}">
+  <input type="hidden" name="version" value="{{ settings.version or 0 }}">
+  <label>Cloud domain<input name="cloud_domain" required placeholder="app.example.com" value="{{ settings.cloud_domain or '' }}"></label>
+  <label>DNS mode<select name="dns_mode"><option value="route53" {% if settings.dns_mode == 'route53' %}selected{% endif %}>Route 53</option><option value="external" {% if settings.dns_mode == 'external' %}selected{% endif %}>External DNS</option></select></label>
+  <label>Hosted zone ID<input name="hosted_zone_id" placeholder="Z..." value="{{ settings.hosted_zone_id or '' }}"></label>
+  <div class="warning">도메인을 바꾸면 인증서 재발급과 DNS 검증이 필요할 수 있습니다.</div>
+  <button class="button" type="submit">설정 저장</button>
+</form>
+{% endblock %}

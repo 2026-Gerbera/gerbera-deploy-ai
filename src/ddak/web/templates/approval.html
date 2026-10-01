@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}배포 승인 · Gerbera{% endblock %}
+{% block content %}
+<section class="hero"><p class="eyebrow">HUMAN APPROVAL</p><h1>{{ approval.project }} 변경 승인</h1><p><code>{{ approval.run_id }}</code></p></section>
+<section class="card"><h2>승인 대상 해시</h2><dl>{% for kind, digest in approval.subjects.items() %}<dt>{{ kind }}</dt><dd><code>{{ digest }}</code></dd>{% endfor %}</dl></section>
+{% if approval.patch %}<section class="card"><div class="row"><h2>AI 코드 수정안</h2><a href="/runs/{{ approval.run_id }}/approved-patch.diff">승인 후 diff 다운로드</a></div><p class="badge">승인 전 제안</p><pre>{{ approval.patch }}</pre></section>{% endif %}
+<section class="card"><h2>계획</h2>
+  <div class="tracks"><div><h3>Build</h3><p>{{ approval.plan.build.steps|length }} steps</p></div><div><h3>On-prem</h3><p>{{ approval.plan.deploy.local.steps|length }} steps</p></div><div><h3>Cloud</h3><p>{{ approval.plan.deploy.cloud.steps|length }} steps</p></div><div><h3>Verify</h3><p>{{ approval.plan.verify.steps|length }} steps</p></div></div>
+</section>
+<form class="actions" method="post" action="/runs/{{ approval.run_id }}/approval"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button danger" name="decision" value="denied">거절</button><button class="button" name="decision" value="approved">승인하고 배포</button></form>
+{% endblock %}

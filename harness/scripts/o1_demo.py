@@ -32,6 +32,7 @@ from ddak.core.contracts.release import ImageArtifact, ImageObservation, Release
 from ddak.core.registry import CATALOG, Registry
 from ddak.core.snapshots import digest_json
 from ddak.executor.service import DeploymentService
+from ddak.onprem.deploy import preflight_inventory, reset_demo
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "fixtures" / "o1_demo"
@@ -538,12 +539,32 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--containers", action="store_true", help="reset 시 이중 라벨 컨테이너도 정리"
     )
+    parser.add_argument("--inventory", type=Path, help="provider 모양 onprem 인벤토리 JSON")
+    parser.add_argument("--project", default="flaskr")
+    parser.add_argument(
+        "--state",
+        type=Path,
+        default=Path(os.environ.get("DDAK_RUN_DIR", str(ROOT / "var" / "runs"))).parent,
+    )
+    parser.add_argument("--release", help="복구할 REAL 성공 run_id")
     args = parser.parse_args(argv)
     if args.yes and args.mode != "fixture":
         parser.error("--yes는 fixture 테스트에만 사용할 수 있다")
     if args.containers and not args.reset:
         parser.error("--containers는 --reset과 함께 사용한다")
     try:
+        if args.preflight and args.inventory:
+            inventory = json.loads(args.inventory.read_text())
+            report = preflight_inventory(inventory, project=args.project)
+            print(json.dumps(report, ensure_ascii=False))
+            return 0 if report["passed"] else 3
+        if args.reset and args.mode == "real":
+            if not args.inventory or not args.release:
+                parser.error("real reset에는 --inventory와 --release가 필요하다")
+            inventory = json.loads(args.inventory.read_text())
+            report = reset_demo(args.state, args.project, inventory, args.release)
+            print(json.dumps(report, ensure_ascii=False))
+            return 0
         if args.reset:
             if args.mode != "fixture":
                 raise ValueError("실배포 reset은 지원하지 않는다; provider 소유 정리 절차 필요")
