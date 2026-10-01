@@ -13,6 +13,7 @@ dependencies = [
     "fastapi>=0.141,<1",  # SSE는 fastapi.sse 내장(0.135+). sse-starlette는 쓰지 않는다
     "uvicorn>=0.54,<1",
     "boto3>=1.43,<2",  # cloud/infra·build·deploy·tls·health (C1·C2·C3)
+    "python-hcl2>=7,<8",
 ]
 # 추가 예정(담당이 `uv add`, 버전은 설치 시 확인):
 # - anthropic: call_ai api backend(O2). 1.x는 httpx2 기반
