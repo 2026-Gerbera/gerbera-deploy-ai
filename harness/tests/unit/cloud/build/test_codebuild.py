@@ -10,7 +10,9 @@ import pytest
 from botocore.stub import Stubber
 
 from ddak.cloud.build.codebuild import (
-    BuildSource,
+    GitSource,
+    S3Source,
+    check_built_source,
     exported_names,
     read_digests,
     run_build,
@@ -20,7 +22,10 @@ from ddak.cloud.build.codebuild import (
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 
 BUILD_ID = "ddak-build:0f1e2d3c"
-SOURCE = BuildSource(bucket="ddak-source", key="flaskr/run-1.zip", version_id="v-123")
+SHA = "0123456789abcdef0123456789abcdef01234567"
+REPO_URL = "https://github.com/gerbera-demo/flaskr"
+SOURCE = GitSource(repository_url=REPO_URL, commit_sha=SHA)
+S3_SOURCE = S3Source(bucket="ddak-source", key="flaskr/run-1.zip", version_id="v-123", revision=SHA)
 INDEX = "sha256:" + "1" * 64
 AMD64 = "sha256:" + "2" * 64
 ARM64 = "sha256:" + "3" * 64
@@ -51,8 +56,14 @@ def _exported(tier: str = "was") -> list[dict[str, str]]:
     ]
 
 
-def _build(status: str, exported: list[dict[str, str]] | None = None) -> dict[str, Any]:
-    build: dict[str, Any] = {"id": BUILD_ID, "buildStatus": status}
+def _build(
+    status: str, exported: list[dict[str, str]] | None = None, resolved: str = SHA
+) -> dict[str, Any]:
+    build: dict[str, Any] = {
+        "id": BUILD_ID,
+        "buildStatus": status,
+        "resolvedSourceVersion": resolved,
+    }
     if exported is not None:
         build["exportedEnvironmentVariables"] = exported
     return {"builds": [build]}
@@ -77,7 +88,31 @@ def test_exported_names_follow_tier() -> None:
     assert exported_names("api-v2")[0] == "DDAK_API_V2_INDEX"
 
 
-def test_start_build_sends_pinned_source_and_plaintext_overrides(
+OVERRIDES = [
+    {"name": "BUILD_TIERS", "value": "was,web", "type": "PLAINTEXT"},
+    {"name": "RELEASE_ID", "value": "rel-1", "type": "PLAINTEXT"},
+    {"name": "SOURCE_REVISION", "value": SHA, "type": "PLAINTEXT"},
+]
+
+
+def test_start_build_pins_github_commit_and_sends_plaintext_overrides(
+    client: Any, stub: Stubber
+) -> None:
+    stub.add_response(
+        "start_build",
+        {"build": {"id": BUILD_ID}},
+        {
+            "projectName": "ddak-build",
+            "sourceTypeOverride": "GITHUB",
+            "sourceLocationOverride": REPO_URL,
+            "sourceVersion": SHA,  # 브랜치 이름이 아니라 커밋 SHA
+            "environmentVariablesOverride": OVERRIDES,
+        },
+    )
+    assert start_build(client, "ddak-build", SOURCE, ["was", "web"], "rel-1") == BUILD_ID
+
+
+def test_start_build_s3_fallback_pins_version_and_sends_revision(
     client: Any, stub: Stubber
 ) -> None:
     stub.add_response(
@@ -88,13 +123,10 @@ def test_start_build_sends_pinned_source_and_plaintext_overrides(
             "sourceTypeOverride": "S3",
             "sourceLocationOverride": "ddak-source/flaskr/run-1.zip",
             "sourceVersion": "v-123",
-            "environmentVariablesOverride": [
-                {"name": "BUILD_TIERS", "value": "was,web", "type": "PLAINTEXT"},
-                {"name": "RELEASE_ID", "value": "rel-1", "type": "PLAINTEXT"},
-            ],
+            "environmentVariablesOverride": OVERRIDES,
         },
     )
-    assert start_build(client, "ddak-build", SOURCE, ["was", "web"], "rel-1") == BUILD_ID
+    assert start_build(client, "ddak-build", S3_SOURCE, ["was", "web"], "rel-1") == BUILD_ID
 
 
 @pytest.mark.parametrize(
@@ -106,6 +138,26 @@ def test_start_build_rejects_bad_input_before_calling(
 ) -> None:
     with pytest.raises(DdakToolError):
         start_build(client, "ddak-build", SOURCE, tiers, release_id)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        GitSource(repository_url=REPO_URL, commit_sha="ai-prod"),  # 브랜치 이름 금지
+        GitSource(repository_url=REPO_URL, commit_sha=SHA[:7]),  # 짧은 SHA 금지
+        GitSource(repository_url=REPO_URL, commit_sha=SHA.upper()),
+        GitSource(repository_url="https://user:tok" + "en@github.com/o/r", commit_sha=SHA),
+        GitSource(repository_url="https://gitlab.com/o/r", commit_sha=SHA),
+        GitSource(repository_url="http://github.com/o/r", commit_sha=SHA),
+        S3Source(bucket="ddak-source", key="k.zip", version_id="v-1", revision="main"),
+    ],
+)
+def test_start_build_rejects_unpinned_or_bad_source(
+    client: Any, stub: Stubber, source: GitSource | S3Source
+) -> None:
+    with pytest.raises(DdakToolError) as err:
+        start_build(client, "ddak-build", source, ["was"], "rel-1")
+    assert err.value.code is ErrorCode.CONFIG_INVALID
 
 
 def test_start_build_hides_aws_error_detail(client: Any, stub: Stubber) -> None:
@@ -125,12 +177,30 @@ def test_run_build_polls_until_success_and_reads_digests(client: Any, stub: Stub
         client, "ddak-build", SOURCE, ["was"], "rel-1", 100.0, clock=clock, sleep=clock.sleep
     )
     assert result.build_id == BUILD_ID
+    assert result.revision == SHA
     assert result.digests["was"].index_digest == INDEX
     assert dict(result.digests["was"].platform_digests) == {
         "linux/amd64": AMD64,
         "linux/arm64": ARM64,
     }
     assert clock.now == 5.0
+
+
+def test_run_build_fails_when_built_commit_differs(client: Any, stub: Stubber) -> None:
+    other = "f" * 40
+    stub.add_response("start_build", {"build": {"id": BUILD_ID}})
+    stub.add_response("batch_get_builds", _build("SUCCEEDED", _exported(), resolved=other))
+    with pytest.raises(DdakToolError) as err:
+        run_build(client, "ddak-build", SOURCE, ["was"], "rel-1", 100.0, clock=FakeClock())
+    assert err.value.code is ErrorCode.ADAPTER_FAILED
+
+
+def test_check_built_source_uses_version_id_for_s3() -> None:
+    check_built_source({"resolvedSourceVersion": "v-123"}, S3_SOURCE)
+    with pytest.raises(DdakToolError):
+        check_built_source({"resolvedSourceVersion": SHA}, S3_SOURCE)
+    with pytest.raises(DdakToolError):
+        check_built_source({}, SOURCE)
 
 
 @pytest.mark.parametrize("status", ["FAILED", "FAULT", "STOPPED", "TIMED_OUT"])
