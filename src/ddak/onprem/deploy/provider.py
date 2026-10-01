@@ -1,4 +1,4 @@
-"""O1 로컬 Docker provider(옛 cd/providers/onprem.py). health_check는 O3에 주입하거나 TODO로 남긴다.
+"""O1 Docker provider. local health는 O1, 기능 smoke는 O3가 담당한다.
 
 실행기가 등록 툴에서 이 provider를 호출한다. 인벤토리 계약(값/시크릿은 넣지 않는다)::
 
@@ -17,14 +17,15 @@
 
 platform은 linux/amd64 또는 linux/arm64. ports/volumes는 생략 가능하다. 추가 키와
 임의 Docker 플래그는 거부한다. named volume은 local driver/빈 Options만 허용한다.
-원격 SSH/TCP daemon과 원격 env 전달은 아직 지원하지 않는다.
+VM은 mode=vm + pinned ssh 인벤토리로 연결한다. TCP daemon은 지원하지 않는다.
+VM에서도 --env-file은 노트북 파일이다. Docker 인증은 노트북 credential helper를 쓴다.
 ctx.images[tier]는 repo@sha256:...; ctx.deadline은 monotonic 절대 시각(없으면 180초).
 롤백은 ctx.previous_release['local']['images'][tier]를 사용한다. 이전 기록이 없으면
 해당 tier의 소유 컨테이너를 제거한다(최초 배포 복구). 누락된 images/tier는 거부한다.
 설정·named volume은 유지하고 이미지 실행만 복구한다. DB 역마이그레이션은 하지 않는다.
 
-inject_config는 public_env의 허용된 공개 설정을 upsert하고 was.env의 SECRET_KEY를
-token_hex(32)로 생성/재사용한다. 다른 요청 키는
+inject_config는 public_env의 허용된 공개 설정을 upsert하고 SECRET_KEY 요청이 있을 때만
+was.env에 token_hex(32)로 생성/재사용한다. 다른 요청 키는
 운영자가 준비한 같은 파일에 있어야 한다. 파일 내용은 컨텍스트/반환/로그로 보내지 않는다.
 config_ref만 반환하므로 실행기는 이 경로를 비밀값으로 오인해 파일 내용으로 바꾸면 안 된다.
 
@@ -40,28 +41,26 @@ stdout은 JSON 객체 하나 또는 'MIGRATE_RESULT ' 뒤 JSON 객체 하나를 
 버전==expected를 확인한다. O3 실제 러너와의 통합 합의/검증은 별도다. 임의 stdout/stderr는
 결과에 포함하지 않는다. migration은 최종 C-09 결과 + event='MIGRATE_RESULT' + phases 목록.
 CLI 시간 초과는 daemon 작업 취소를 보장하지 않으며 ADAPTER_TIMEOUT은 상태 불확실이다.
-배포 성공은 컨테이너 running/이미지 관측까지만이며 HTTP/기능 검증은 O3가 수행한다.
+배포 성공은 running/digest와 replica HTTP 준비 확인까지다. 기능 smoke는 O3가 수행한다.
 """
 
 from __future__ import annotations
 
-import fcntl
-import hashlib
-import os
 import re
-import secrets
-import stat
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
-from typing import Annotated, Any, ClassVar, Literal
+from typing import Any, ClassVar, Literal
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from ddak.cd.interface import ProviderName, ProviderResult
 from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.enums import Target
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
+from ddak.onprem.deploy import config, health, migrate, replicas
+from ddak.onprem.deploy.config import _private_env
 from ddak.onprem.deploy.containers import (
     NAME,
     DockerHost,
@@ -70,9 +69,7 @@ from ddak.onprem.deploy.containers import (
     image_ref,
     subprocess_runner,
 )
-
-_IDENTIFIER = re.compile(r"[a-zA-Z_][a-zA-Z0-9_]*\Z")
-_MIGRATION = r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$"
+from ddak.onprem.deploy.ssh import SSHConfig, session
 
 
 class _Config(BaseModel):
@@ -102,6 +99,19 @@ class _Volume(_Config):
         return value
 
 
+class _Ready(_Config):
+    port: int = Field(default=8000, ge=1, le=65535)
+    path: str = "/health/ready"
+    timeout_s: float = Field(default=30, gt=0, le=120, allow_inf_nan=False)
+
+    @field_validator("path")
+    @classmethod
+    def ready_path(cls, value: str) -> str:
+        if not re.fullmatch(r"/[a-zA-Z0-9_./-]*", value) or value.startswith("//"):
+            raise ValueError("ready path 오류")
+        return value
+
+
 class _Tier(_Config):
     name: str
     platform: Literal["linux/amd64", "linux/arm64"]
@@ -110,12 +120,36 @@ class _Tier(_Config):
     volumes: list[_Volume] = Field(default_factory=list)
     env_file: str | None = None
     public_env: dict[str, str] = Field(default_factory=dict)
+    replicas: int | None = Field(default=None, ge=1, le=5)
+    traefik_labels: dict[str, str] = Field(default_factory=dict)
+    ready: _Ready | None = None
+
+    @field_validator("traefik_labels")
+    @classmethod
+    def valid_labels(cls, values: dict[str, str]) -> dict[str, str]:
+        if any(
+            not re.fullmatch(r"traefik\.[a-zA-Z0-9_.-]+", key)
+            or key == "traefik.docker.network"
+            or any(c in value for c in "\n\r\0")
+            for key, value in values.items()
+        ):
+            raise ValueError("Traefik 라벨 오류")
+        return values
+
+    @model_validator(mode="after")
+    def replicas_ports(self) -> _Tier:
+        if self.replicas and self.replicas > 1 and self.ports:
+            raise ValueError("복수 replica는 publish 포트를 사용할 수 없다")
+        return self
 
     @field_validator("public_env")
     @classmethod
     def valid_public_env(cls, values: dict[str, str]) -> dict[str, str]:
         allowed = {
             "APP_BASE_URL",
+            "APP_ENV",
+            "PROXY_FIX_X_FOR",
+            "PROXY_FIX_X_PROTO",
             "SESSION_COOKIE_SECURE",
             "SESSION_COOKIE_HTTPONLY",
             "SESSION_COOKIE_SAMESITE",
@@ -143,8 +177,11 @@ class _Tier(_Config):
                 if url.port is not None and not 0 < url.port <= 65535:
                     raise ValueError("URL 포트 오류")
             elif key in {"SESSION_COOKIE_SECURE", "SESSION_COOKIE_HTTPONLY"}:
-                if value.lower() not in {"true", "false", "0", "1"}:
+                if value.lower() not in {"true", "false"}:
                     raise ValueError("공개 bool 설정 오류")
+            elif key in {"PROXY_FIX_X_FOR", "PROXY_FIX_X_PROTO"}:
+                if not re.fullmatch(r"[0-5]", value):
+                    raise ValueError("ProxyFix hop은 0-5 정수여야 한다")
             elif key == "SESSION_COOKIE_SAMESITE":
                 if value not in {"Lax", "Strict", "None"}:
                     raise ValueError("SameSite 설정 오류")
@@ -180,103 +217,38 @@ class _Tier(_Config):
 
 
 class _Inventory(_Config):
+    mode: Literal["container", "vm"] = "container"
     docker_host: str | None = None
+    public_url: str | None = None
+    ssh: SSHConfig | None = None
     tiers: dict[str, _Tier]
 
+    @field_validator("public_url")
+    @classmethod
+    def public_address(cls, value: str | None) -> str | None:
+        if value is not None:
+            _Tier.valid_public_env({"APP_BASE_URL": value})
+        return value
 
-class _Fingerprint(_Config):
-    version: str = Field(max_length=256)
-    sql_mode: str = Field(max_length=512)
-    collation: str = Field(max_length=128)
-    time_zone: str = Field(max_length=64)
-    ssl_version: str = Field(max_length=64)
-
-
-class _MigrationResult(_Config):
-    phase: Literal["precheck", "up", "verify"]
-    ok: bool
-    current: Annotated[str, Field(pattern=_MIGRATION)] | None
-    expected: Annotated[str, Field(pattern=_MIGRATION)]
-    applied: list[Annotated[str, Field(pattern=_MIGRATION)]]
-    signature: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
-    fingerprint: _Fingerprint
-
-
-def _private_env(
-    path: Path,
-    keys: Sequence[str] | None = None,
-    public_env: Mapping[str, str] | None = None,
-) -> bool:
-    """0600 단일 소유 일반 파일만 허용한다. keys=None이면 내용은 읽지 않는다."""
-    changed = False
-    try:
-        if keys is not None:
-            path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        flags = os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK
-        try:
-            fd = os.open(path, flags)
-        except FileNotFoundError:
-            if keys is None:
-                raise
-            try:
-                fd = os.open(path, flags | os.O_CREAT | os.O_EXCL, 0o600)
-            except FileExistsError:
-                fd = os.open(path, flags)
-            else:
-                changed = True
-        with os.fdopen(fd, "r+", encoding="utf-8") as stream:
-            meta = os.fstat(stream.fileno())
-            if not stat.S_ISREG(meta.st_mode) or meta.st_nlink != 1 or meta.st_uid != os.getuid():
-                raise fail("env 파일 소유권/형식 오류", ErrorCode.CONFIG_INVALID)
-            # 기다리는 파일 lock 때문에 실행 deadline을 초과하지 않는다.
-            fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            if stat.S_IMODE(meta.st_mode) != 0o600:
-                if keys is None:
-                    raise fail("env 파일 권한은 0600이어야 한다", ErrorCode.CONFIG_INVALID)
-                os.fchmod(stream.fileno(), 0o600)
-                changed = True
-            if keys is None:
-                return False
-            if meta.st_size > 65536:
-                raise fail("env 파일 크기 초과", ErrorCode.CONFIG_INVALID)
-            original = stream.read()
-            values: dict[str, str] = {}
-            for line in original.splitlines():
-                if not line or line.startswith("#"):
-                    continue
-                key, sep, value = line.partition("=")
-                if not sep or not _IDENTIFIER.fullmatch(key) or key in values or "\x00" in value:
-                    raise fail("env 파일 형식 오류", ErrorCode.CONFIG_INVALID)
-                values[key] = value
-            old_values = dict(values)
-            values.update(public_env or {})
-            if any(key != "SECRET_KEY" and not values.get(key) for key in keys):
-                raise fail("요청한 환경 키가 host env 파일에 없다", ErrorCode.CONFIG_INVALID)
-            if "SECRET_KEY" in values:
-                if not re.fullmatch(r"[0-9a-f]{64}", values["SECRET_KEY"]):
-                    raise fail("기존 SECRET_KEY는 64자리 hex여야 한다", ErrorCode.CONFIG_INVALID)
-            else:
-                values["SECRET_KEY"] = secrets.token_hex(32)
-            if values != old_values:
-                lines = original.splitlines()
-                updated = [
-                    line.partition("=")[0] + "=" + values[line.partition("=")[0]]
-                    if line and not line.startswith("#")
-                    else line
-                    for line in lines
-                ]
-                updated.extend(
-                    f"{key}={value}" for key, value in values.items() if key not in old_values
-                )
-                stream.seek(0)
-                stream.write("\n".join(updated) + "\n")
-                stream.truncate()
-                stream.flush()
-                os.fsync(stream.fileno())
-                changed = True
-        return changed
-    except (OSError, UnicodeError):
-        raise fail("host env 파일 접근 실패", ErrorCode.CONFIG_INVALID) from None
+    @model_validator(mode="after")
+    def mode_fields(self) -> _Inventory:
+        if (
+            self.public_url
+            and self.public_url.startswith("http://")
+            and any(
+                t.public_env.get("SESSION_COOKIE_SECURE", "false").lower() == "true"
+                for t in self.tiers.values()
+            )
+        ):
+            raise ValueError("Secure 쿠키에는 HTTPS public_url이 필요하다")
+        if self.mode == "container" and self.ssh is not None:
+            raise ValueError("container 모드는 ssh를 받지 않는다")
+        if self.mode == "vm":
+            if self.ssh is None or self.docker_host is not None:
+                raise ValueError("vm은 ssh가 필요하고 docker_host를 받지 않는다")
+            if any(t.ports or t.network == "bridge" for t in self.tiers.values()):
+                raise ValueError("vm은 publish 없이 공유 network가 필요하다")
+        return self
 
 
 class OnPremProvider:
@@ -304,11 +276,32 @@ class OnPremProvider:
             raise fail("volume target 중복", ErrorCode.CONFIG_INVALID)
         if config.public_env and not config.env_file:
             raise fail("공개 설정에는 env_file이 필요하다", ErrorCode.CONFIG_INVALID)
+        if inventory.mode == "vm" and config.ready is None:
+            config = config.model_copy(update={"ready": _Ready()})
         host = DockerHost(
-            self.runner, deadline=getattr(ctx, "deadline", None), endpoint=inventory.docker_host
+            self.runner,
+            deadline=getattr(ctx, "deadline", None),
+            endpoint="ssh://ddak-target" if inventory.mode == "vm" else inventory.docker_host,
+            local_registry=inventory.mode == "vm",
         )
         host.check_deadline()
         return host, config
+
+    @contextmanager
+    def _session(self, tier: str, ctx: RunContext) -> Iterator[tuple[DockerHost, _Tier]]:
+        host, config = self._runtime(tier, ctx)
+        inventory = _Inventory.model_validate(ctx.platform["onprem"])
+        try:
+            if inventory.ssh:
+                with session(inventory.ssh, self.runner, host.deadline) as runner:
+                    host.runner = runner
+                    yield host, config
+            else:
+                yield host, config
+        except DdakToolError as error:
+            if error.code == ErrorCode.ADAPTER_TIMEOUT and not host.mutation_started:
+                raise fail("상태 변경 전 Docker 작업 시간 초과") from None
+            raise
 
     @staticmethod
     def _args(config: _Tier, project: str, tier: str) -> list[str]:
@@ -348,71 +341,19 @@ class OnPremProvider:
                 )
 
     def _replace(self, tier: str, ctx: RunContext, ref: str, function: str) -> ProviderResult:
-        host, config = self._runtime(tier, ctx)
-        ref = image_ref(ref)
-        args = self._args(config, ctx.project, tier)
-        current = host.container(config.name)
-        if current:
-            host.owned(current, ctx.project, tier)
-        # pull/manifest/config 검증과 생성이 모두 끝난 뒤에만 이전 실행을 멈춘다.
-        host.run("image", "pull", "--platform", config.platform, ref)
-        observation, local_image = host.image(ref, config.platform)
-        artifacts = ctx.release_artifacts
-        if function == "deploy" and artifacts is not None and tier in artifacts.images:
-            expected = artifacts.images[tier].platform_digests[observation.platform]
-            if observation.platform_digest != expected:
-                raise fail("빌드 산출물과 실제 플랫폼 manifest 불일치")
-        self._volumes(host, config, local_image)
-        spec_hash = hashlib.sha256(config.model_dump_json().encode()).hexdigest()
-        previous = current["Config"]["Image"] if current else None
-        same = (
-            current is not None
-            and previous == ref
-            and host.matches(current, local_image, observation)
-            and current["Config"]["Labels"].get("ddak.spec") == spec_hash
-        )
-        changed = not same
-        if same and current is not None:
-            if not current["State"]["Running"]:
-                host.run("container", "start", current["Id"])
-                changed = True
-        else:
-            staged_name = config.name + "-ddak-next"
-            staged = host.container(staged_name)
-            if staged:
-                host.remove(staged, ctx.project, tier)
-            args.extend(["--label", f"ddak.spec={spec_hash}"])
-            for port in config.ports:
-                args.extend(["--publish", port])
-            host.run("container", "create", "--name", staged_name, *args, ref)
-            staged = host.container(staged_name)
-            if not staged:
-                raise fail("대체 컨테이너 생성 관측 실패")
-            host.owned(staged, ctx.project, tier)
-            if not host.matches(staged, local_image, observation):
-                raise fail("대체 컨테이너 플랫폼 manifest 불일치")
-            if current:
-                host.remove(current, ctx.project, tier)
-            host.run("container", "rename", staged["Id"], config.name)
-            host.run("container", "start", staged["Id"])
-        running = host.container(config.name)
-        if not running:
-            raise fail("배포 컨테이너 관측 실패")
-        host.owned(running, ctx.project, tier)
-        if (
-            not running["State"]["Running"]
-            or running["Config"]["Image"] != ref
-            or not host.matches(running, local_image, observation)
-        ):
-            raise fail("배포 이미지 실행 관측 실패")
-        return ProviderResult(
-            provider=self.name,
-            function=function,
-            changed=changed,
-            previous_image=previous,
-            image_ref=ref,
-            observation=observation,
-        )
+        with self._session(tier, ctx) as (host, config):
+            return self._replace_on_host(host, config, tier, ctx, ref, function)
+
+    def _replace_on_host(
+        self,
+        host: DockerHost,
+        config: _Tier,
+        tier: str,
+        ctx: RunContext,
+        ref: str,
+        function: str,
+    ) -> ProviderResult:
+        return replicas.replace_replicas(self, host, config, tier, ctx, ref, function)
 
     def deploy(self, tier: str, ctx: RunContext) -> ProviderResult:
         return self._replace(tier, ctx, ctx.images.get(tier, ""), "deploy")
@@ -428,114 +369,28 @@ class OnPremProvider:
                 raise fail("이전 릴리스의 tier image가 없다", ErrorCode.CONFIG_INVALID)
             if images[tier] is not None:
                 return self._replace(tier, ctx, image_ref(images[tier]), "rollback")
-        host, config = self._runtime(tier, ctx)
-        current = host.container(config.name)
-        prior_ref = current["Config"]["Image"] if current else None
-        if current:
-            host.remove(current, ctx.project, tier)
-        staged = host.container(config.name + "-ddak-next")
-        if staged:
-            host.remove(staged, ctx.project, tier)
-        return ProviderResult(
-            provider=self.name,
-            function="rollback",
-            changed=bool(current or staged),
-            previous_image=prior_ref,
-        )
+        with self._session(tier, ctx) as (host, config):
+            return self._remove_on_host(host, config, tier, ctx)
+
+    def _remove_on_host(
+        self,
+        host: DockerHost,
+        config: _Tier,
+        tier: str,
+        ctx: RunContext,
+    ) -> ProviderResult:
+        return replicas.remove_replicas(self, host, config, tier, ctx)
 
     def health_check(self, ctx: RunContext) -> ProviderResult:
         if self.health_checker:
             return self.health_checker(ctx)
-        raise DdakToolError(ErrorCode.INTERNAL, "미구현: TODO(O3)")
+        return health.health_check(self, ctx)
 
     def migrate_db(self, migrations: Sequence[str], ctx: RunContext) -> ProviderResult:
-        if any(not re.fullmatch(_MIGRATION, item) for item in migrations):
-            raise fail("마이그레이션 ID 오류", ErrorCode.CONFIG_INVALID)
-        host, config = self._runtime("was", ctx)
-        ref = image_ref(ctx.images.get("was", ""))
-        args = self._args(config, ctx.project, "was")
-        host.run("image", "pull", "--platform", config.platform, ref)
-        observation, local_image = host.image(ref, config.platform)
-        self._volumes(host, config, local_image)
-        phases = []
-        name = config.name + "-ddak-migrate"
-        # wait 타임아웃 뒤에도 container 정리를 위해 전체 deadline 내 5초를 예약한다.
-        work = DockerHost(self.runner, deadline=host.deadline - 5, endpoint=host.endpoint)
-        for phase in ("precheck", "up", "verify"):
-            leftover = host.container(name)
-            if leftover:
-                host.remove(leftover, ctx.project, "was")
-            try:
-                work.run(
-                    "container",
-                    "create",
-                    "--name",
-                    name,
-                    *args,
-                    "--entrypoint",
-                    "python",
-                    ref,
-                    "-m",
-                    "flaskr.migrate",
-                    phase,
-                    "--json",
-                )
-                created = work.container(name)
-                if not created or not work.matches(created, local_image, observation):
-                    raise fail("마이그레이션 컨테이너 이미지 불일치")
-                work.owned(created, ctx.project, "was")
-                work.run("container", "start", name)
-                status = work.run("container", "wait", name).stdout.strip()
-                if status != "0":
-                    raise fail("마이그레이션 프로세스 실패")
-                raw = work.run("container", "logs", name).stdout
-                lines = [
-                    line[len("MIGRATE_RESULT ") :]
-                    for line in raw.splitlines()
-                    if line.startswith("MIGRATE_RESULT ")
-                ]
-                if len(lines) > 1:
-                    raise fail("MIGRATE_RESULT 중복")
-                try:
-                    result = _MigrationResult.model_validate_json(lines[0] if lines else raw)
-                except ValidationError:
-                    raise fail("MIGRATE_RESULT 형식 오류") from None
-                if result.phase != phase or not result.ok:
-                    raise fail("마이그레이션 단계 실패")
-                if phase == "verify" and (
-                    result.current != result.expected
-                    or (migrations and result.expected != migrations[-1])
-                ):
-                    raise fail("요청한 마이그레이션 적용 확인 실패")
-                phases.append(result.model_dump())
-            finally:
-                # 절대 deadline이 지나면 새 명령은 실행하지 않는다. 잔여 컨테이너는 다음 호출이
-                # 소유 라벨을 검사한 뒤 제거한다. 정리 실패도 성공으로 숨기지 않는다.
-                leftover = host.container(name)
-                if leftover:
-                    host.remove(leftover, ctx.project, "was")
-        return ProviderResult(
-            provider=self.name,
-            function="migrate_db",
-            changed=any(p["applied"] for p in phases if p["phase"] == "up"),
-            image_ref=ref,
-            migration={**phases[-1], "event": "MIGRATE_RESULT", "phases": phases},
-        )
+        return migrate.migrate_db(self, migrations, ctx)
 
     def inject_config(self, keys: Sequence[str], ctx: RunContext) -> ProviderResult:
-        host, config = self._runtime("was", ctx)
-        wanted = sorted(set(keys) | set(config.public_env) | {"SECRET_KEY"})
-        if any(not _IDENTIFIER.fullmatch(key) for key in wanted) or not config.env_file:
-            raise fail("env key 또는 env_file 설정 오류", ErrorCode.CONFIG_INVALID)
-        changed = _private_env(Path(config.env_file), wanted, config.public_env)
-        host.check_deadline()
-        return ProviderResult(
-            provider=self.name,
-            function="inject_config",
-            changed=changed,
-            config_ref=config.env_file,
-            keys=wanted,
-        )
+        return config.inject_config(self, keys, ctx)
 
     def ensure_tls(self, mode: Literal["check", "apply"], ctx: RunContext) -> ProviderResult:
         del mode, ctx

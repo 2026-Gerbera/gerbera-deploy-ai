@@ -34,6 +34,7 @@ _CONTAINER_FORMAT = (
     '{"Id":{{json .Id}},"Image":{{json .Image}},'
     '"ImageManifestDescriptor":{{json (index . "ImageManifestDescriptor")}},'
     '"Config":{"Image":{{json .Config.Image}},"Labels":{{json .Config.Labels}}},'
+    '"RestartCount":{{json .RestartCount}},'
     '"State":{"Running":{{json .State.Running}}}}'
 )
 _IMAGE_FORMAT = (
@@ -85,16 +86,22 @@ class DockerHost:
         deadline: float | None = None,
         command_timeout: float = 60,
         endpoint: str | None = None,
+        local_registry: bool = False,
     ) -> None:
         self.runner = runner
         self.deadline = deadline if deadline is not None else time.monotonic() + 180
         self.command_timeout = command_timeout
         self.endpoint = endpoint
+        self.local_registry = local_registry
+        self.mutation_started = False
         if not math.isfinite(self.deadline) or not math.isfinite(command_timeout):
             raise fail("deadline이 유효하지 않다", ErrorCode.CONFIG_INVALID)
         if command_timeout <= 0:
             raise fail("command timeout은 양수여야 한다", ErrorCode.CONFIG_INVALID)
-        if endpoint is not None and not endpoint.startswith("unix:///"):
+        if endpoint is not None and not (
+            endpoint.startswith("unix:///")
+            or re.fullmatch(r"ssh://[a-zA-Z0-9][a-zA-Z0-9_.-]*", endpoint)
+        ):
             raise fail("현재 온프렘은 로컬 unix Docker 소켓만 지원한다", ErrorCode.CONFIG_INVALID)
 
     def check_deadline(self) -> float:
@@ -103,8 +110,14 @@ class DockerHost:
             raise fail("Docker 작업 deadline 초과", ErrorCode.ADAPTER_TIMEOUT)
         return min(remaining, self.command_timeout)
 
-    def _invoke(self, argv: list[str]) -> subprocess.CompletedProcess[str]:
-        timeout = self.check_deadline()
+    def _invoke(
+        self, argv: list[str], timeout: float | None = None
+    ) -> subprocess.CompletedProcess[str]:
+        timeout = (
+            min(self.deadline - time.monotonic(), timeout) if timeout else self.check_deadline()
+        )
+        if timeout <= 0:
+            raise fail("Docker 작업 deadline 초과", ErrorCode.ADAPTER_TIMEOUT)
         try:
             result = self.runner(argv, timeout=timeout)
         except (subprocess.TimeoutExpired, TimeoutError):
@@ -114,7 +127,9 @@ class DockerHost:
         self.check_deadline()
         return result
 
-    def run(self, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+    def run(
+        self, *args: str, check: bool = True, timeout: float | None = None
+    ) -> subprocess.CompletedProcess[str]:
         if self.endpoint is None:
             # 파일을 읽지 않고 endpoint만 조회한다. 원격 context에 로컬 env를 보내지 않는다.
             endpoint = os.environ.get("DOCKER_HOST")
@@ -128,7 +143,15 @@ class DockerHost:
             if not endpoint.startswith("unix:///"):
                 raise fail("로컬 Docker context가 필요하다", ErrorCode.CONFIG_INVALID)
             self.endpoint = endpoint
-        result = self._invoke(["docker", "--host", self.endpoint, *args])
+        if args[:2] in (
+            ("container", "create"),
+            ("container", "stop"),
+            ("container", "rm"),
+            ("container", "rename"),
+            ("container", "start"),
+        ):
+            self.mutation_started = True
+        result = self._invoke(["docker", "--host", self.endpoint, *args], timeout)
         if check and result.returncode:
             raise fail("Docker 명령 실패")
         return result
@@ -148,7 +171,10 @@ class DockerHost:
             return None
         if len(ids) != 1:
             raise fail("컨테이너 이름이 유일하지 않다")
-        value = self.json("container", "inspect", "--format", _CONTAINER_FORMAT, ids[0])
+        return self.inspect_container(ids[0])
+
+    def inspect_container(self, identifier: str) -> dict[str, Any]:
+        value = self.json("container", "inspect", "--format", _CONTAINER_FORMAT, identifier)
         if not isinstance(value, dict):
             raise fail("컨테이너 관측 형식 오류")
         return value
@@ -171,7 +197,13 @@ class DockerHost:
         self.run("container", "rm", current["Id"])
 
     def _manifest(self, ref: str) -> dict[str, Any]:
-        raw = self.run("buildx", "imagetools", "inspect", "--raw", ref).stdout
+        if self.local_registry:
+            result = self._invoke(["docker", "buildx", "imagetools", "inspect", "--raw", ref])
+            if result.returncode:
+                raise fail("registry manifest 조회 실패")
+            raw = result.stdout
+        else:
+            raw = self.run("buildx", "imagetools", "inspect", "--raw", ref).stdout
         expected = ref.rsplit("@", 1)[1]
         # buildx 버전에 따라 출력 끝에 LF 하나를 붙인다. JSON 재직렬화는 하지 않는다.
         if not any(
