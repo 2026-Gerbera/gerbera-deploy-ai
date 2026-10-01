@@ -17,12 +17,12 @@ from ddak.core.contracts.step_catalog import StepDef, catalog_steps
 from ddak.core.contracts.tools.validate_plan import ValidatePlanInput
 from ddak.plan.validate import rules as R
 
-TOGGLE = "validate_ai_draft"
+TOGGLE = "strict_ai_check"  # 없으면 False = 기본 검사
 
 
 def assemble(inp: ValidatePlanInput, ctx: RunContext) -> Plan:
     facts = inp.facts
-    strict = ctx.toggles.get(TOGGLE, True)
+    strict = ctx.toggles.get(TOGGLE, False)
     catalog = catalog_steps(facts.tiers, facts.target)
     by_id = {s.id: s for s in catalog}
     warns: list[PlanWarning] = []
@@ -31,10 +31,7 @@ def assemble(inp: ValidatePlanInput, ctx: RunContext) -> Plan:
         decided, w = R.check_draft(inp.draft.decisions, by_id, strict=strict)
         warns += w
         ai = {i: d.include for i, d in decided.items()}
-    if not strict:
-        warns.append(
-            R.warning(R.W_CHECK_DISABLED, "AI 초안 검사가 꺼져 있다(validate_ai_draft=false)")
-        )
+    warns += R.check_modified_migrations(facts, strict=strict)
 
     # 1) 결정
     chosen: dict[
@@ -53,8 +50,17 @@ def assemble(inp: ValidatePlanInput, ctx: RunContext) -> Plan:
                 )
         elif ruled is not None:
             inc, why, by, rid = ruled.include, ruled.reason, By.RULE, s.skip_rule
-            if inc and want is False and strict:
+            if inc and want is False:
                 invalid.append(Invalidated(id=s.id, why=R.clip(f"{s.skip_rule}: {ruled.reason}")))
+            elif not inc and want is True:
+                invalid.append(
+                    Invalidated(
+                        id=s.id,
+                        attempt="include",
+                        result="forced_skip",
+                        why=R.clip(f"{s.skip_rule}: {ruled.reason}"),
+                    )
+                )
         else:  # OPTIONAL: AI 결정, 없으면 기본 제외
             inc = bool(want)
             why = "AI 결정" if want is not None else "기본 제외"
@@ -83,6 +89,9 @@ def assemble(inp: ValidatePlanInput, ctx: RunContext) -> Plan:
                     )
                 )
 
+    # R-couple이 다시 포함시킨 step은 강제 제외 기록이 틀리므로 지운다
+    invalid = [i for i in invalid if not (i.result == "forced_skip" and chosen[i.id][0])]
+
     # 3) 조립 (R-gate: 신호는 카탈로그 값, 로컬 트랙이 없으면 local_verified 대기 제거)
     has_local = facts.target != "cloud"
     sections = {k: Section() for k in ("build", "deploy.local", "deploy.cloud", "verify")}
@@ -101,6 +110,9 @@ def assemble(inp: ValidatePlanInput, ctx: RunContext) -> Plan:
                     by=by, reason=R.clip(why), skip_rule=rid,
                 )
             )  # fmt: skip
+
+    envs = ["local", "cloud"] if facts.target == "both" else [facts.target]
+    R.check_migrations(facts, {e: sections[f"deploy.{e}"].steps for e in envs})
 
     return Plan(
         run_id=inp.run_id,

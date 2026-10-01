@@ -43,6 +43,9 @@ class _Tier(_M):
     volumes: list[_Volume] = Field(default_factory=list)
     env_file: str | None = None
     public_env: dict[str, str] = Field(default_factory=dict)
+    replicas: int | None = Field(default=None, ge=1, le=5)
+    traefik_labels: dict[str, str] = Field(default_factory=dict)
+    ready: dict[str, Any] | None = None  # 내부 필드(port·path·timeout_s) 검증은 O1 provider가 한다
 
 
 class _Inventory(_M):

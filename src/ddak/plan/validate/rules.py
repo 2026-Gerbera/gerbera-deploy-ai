@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
-from ddak.core.contracts.plan import PlanWarning
+from ddak.core.contracts.plan import PlanStep, PlanWarning
 from ddak.core.contracts.plan_draft import StepDecision
 from ddak.core.contracts.plan_facts import EnvKey, Facts
 from ddak.core.contracts.step_catalog import FORBIDDEN_PARAM_KEYS, StepDef
@@ -18,9 +18,10 @@ R_MANDATORY = "R-mandatory"
 R_COUPLE = "R-couple"
 R_GATE = "R-gate"
 R_FACTS = "R-facts"
+R_MIGRATION = "R-migration"
 
 W_ITEM_DROPPED = "ai_draft_item_dropped"
-W_CHECK_DISABLED = "ai_check_disabled"
+W_MIGRATION_MODIFIED = "migration_modified"
 
 
 def clip(text: str, limit: int = 200) -> str:
@@ -33,6 +34,40 @@ def _invalid(msg: str) -> DdakToolError:
 
 def warning(code: str, message: str) -> PlanWarning:
     return PlanWarning(code=code, message=clip(message))
+
+
+def check_migrations(facts: Facts, steps: Mapping[str, Iterable[PlanStep]]) -> None:
+    """R-migration(끌 수 없음). steps = 환경 -> 그 환경 deploy 섹션의 포함 step(실행 순서).
+
+    새 마이그레이션이 있으면 deploy.db.<e>가 정확한 params로 tier 배포보다 앞에 있어야 하고,
+    없으면 없어야 한다.
+    """
+    want = sorted(facts.new_migrations)
+    for env, seq in steps.items():
+        order = [s.id for s in seq]
+        db_id = f"deploy.db.{env}"
+        if not want:
+            if db_id in order:
+                raise _invalid(f"{R_MIGRATION}: 새 마이그레이션이 없는데 {db_id}가 있다")
+            continue
+        if db_id not in order:
+            raise _invalid(f"{R_MIGRATION}: 새 마이그레이션 {want}이 있는데 {db_id}가 없다")
+        db = next(s for s in seq if s.id == db_id)
+        if db.params.get("migrations") != want:
+            raise _invalid(f"{R_MIGRATION}: {db_id}의 migrations가 {want}와 다르다")
+        pos = order.index(db_id)
+        if any(s.tool == "deploy_tier" and order.index(s.id) < pos for s in seq):
+            raise _invalid(f"{R_MIGRATION}: {db_id}가 {env} tier 배포보다 앞이어야 한다")
+
+
+def check_modified_migrations(facts: Facts, *, strict: bool) -> list[PlanWarning]:
+    """이미 적용된 마이그레이션 파일이 바뀌었다: 경고, 엄격 모드는 거부."""
+    if not facts.modified_migrations:
+        return []
+    msg = f"적용된 마이그레이션 파일이 바뀌었다: {', '.join(facts.modified_migrations)}"
+    if strict:
+        raise _invalid(f"{R_MIGRATION}: {msg}")
+    return [warning(W_MIGRATION_MODIFIED, msg)]
 
 
 def check_draft(

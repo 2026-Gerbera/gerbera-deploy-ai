@@ -36,6 +36,7 @@ def detect_changed_tiers(
     return DetectChangedTiersOutput(
         changed=logic.changed_tiers(cfg, manifest, inp.previous),
         new_migrations=logic.new_migrations(cfg, manifest, inp.previous),
+        modified_migrations=logic.modified_migrations(cfg, manifest, inp.previous),
         changed_paths=logic.changed_paths(manifest, inp.previous),
         facts_hash=logic.facts_hash(manifest),
         manifest=manifest,

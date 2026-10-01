@@ -33,3 +33,12 @@ F16 접수 시점 해시 · F17 최소 환경(훅·전역 설정·프롬프트 �
 F20 캐시 키별 `flock` · F21 run은 캐시 복사본을 쓰므로 캐시 덮어쓰기와 무관.
 
 실제 github.com 접속 테스트는 에이전트가 돌리지 않는다(사용자가 직접).
+
+## 레포 감시 (`watch.py`, 플랜 10)
+하드코딩 URL(`load_watch_targets`, `DDAK_WATCH_REPO_URL`로 덮어씀, 자리표시자면 시작 전 오류)의 `main`을 `DDAK_WATCH_INTERVAL_S`(기본 10초)마다
+`git ls-remote`로 확인한다. 공개: `WatchTarget`, `Watcher(targets, on_new_commit, policy=, interval_s=, clock=, sleep=, resolve=, warm=)`,
+`load_watch_targets`, `resolve_head`, `warm_cache`(fetch.py). 자동은 계획 생성·검증까지이며 배포 실행은 사람 승인 뒤다.
+- 기준선: 상태 없음 → 현재 HEAD 기록 + 캐시 예열, 트리거 없음. 재시작 시 저장된 `last_commit`과 비교해 꺼져 있던 동안의 push도 감지.
+- 합치기: 핸들러 실행 중 push는 최신 SHA 하나만 대기, 끝난 뒤 한 번 더. 핸들러 실패는 3회(간격) 재시도 후 처리 완료로 표시.
+- 폴링 오류는 로그만, 지수 백오프(최대 60초). 상태 파일 `<DDAK_SOURCES_DIR>/watch/<project>.json`(원자적 쓰기, 토큰·경로 없음).
+- T8(delta fetch 최적화)은 하지 않았다: 03의 F13·F14·F19~F21 안전성(원자 clone)을 건드릴 위험이 있고 `warm_cache`로 첫 clone 지연이 이미 줄어든다.

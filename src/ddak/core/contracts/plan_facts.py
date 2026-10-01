@@ -38,6 +38,7 @@ class Facts(ContractModel):
     tiers: tuple[TierName, ...]
     changed: dict[Env, dict[TierName, bool]]  # 환경별 tier 변경 여부(성공 기록 없으면 True)
     new_migrations: tuple[str, ...] = ()  # 예: "0002"
+    modified_migrations: tuple[str, ...] = ()  # 이미 적용된 id인데 파일 내용이 바뀐 것
     env_keys: tuple[EnvKey, ...] = ()
     db_initialized: dict[Env, bool] = Field(default_factory=dict)
     has_dockerfile: dict[TierName, bool] = Field(default_factory=dict)

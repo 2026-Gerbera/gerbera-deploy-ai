@@ -88,14 +88,42 @@ def new_migrations(
     current: Mapping[str, FileMeta],
     previous: Mapping[Env, Mapping[str, FileMeta] | None],
 ) -> tuple[str, ...]:
-    if not cfg.migrations_dir:
-        return ()
-    prefix = cfg.migrations_dir.rstrip("/") + "/"
     ids: set[str] = set()
-    for path in current:
-        if not path.startswith(prefix):
-            continue
-        m = _MIGRATION_ID.match(path[len(prefix) :])
-        if m and any(p is None or path not in p for p in previous.values()):
-            ids.add(m.group(1))
+    for path, mid in _migration_files(cfg, current):
+        if any(p is None or path not in p for p in previous.values()):
+            ids.add(mid)
     return tuple(sorted(ids))
+
+
+def modified_migrations(
+    cfg: DeployConfig,
+    current: Mapping[str, FileMeta],
+    previous: Mapping[Env, Mapping[str, FileMeta] | None],
+) -> tuple[str, ...]:
+    """이미 적용된 경로(이전 manifest에 있음)인데 sha256이 달라진 마이그레이션 id."""
+    ids = {
+        mid
+        for path, mid in _migration_files(cfg, current)
+        for p in previous.values()
+        if p is not None and path in p and p[path].sha256 != current[path].sha256
+    }
+    return tuple(sorted(ids))
+
+
+def _migration_files(cfg: DeployConfig, current: Mapping[str, FileMeta]) -> list[tuple[str, str]]:
+    """(경로, id). .sql이 아닌 파일은 무시, 숫자 접두 없는 .sql은 실패(조용히 놓치지 않는다)."""
+    if not cfg.migrations_dir:
+        return []
+    prefix = cfg.migrations_dir.rstrip("/") + "/"
+    out: list[tuple[str, str]] = []
+    for path in current:
+        if not path.startswith(prefix) or not path.endswith(".sql"):
+            continue
+        name = path[len(prefix) :]
+        m = _MIGRATION_ID.match(name)
+        if not m:
+            raise DdakToolError(
+                ErrorCode.CONFIG_INVALID, f"마이그레이션 파일명에 숫자 접두가 필요하다: {name}"
+            )
+        out.append((path, m.group(1)))
+    return out

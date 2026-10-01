@@ -18,6 +18,7 @@ class DetectChangedTiersInput(ToolInput):
 class DetectChangedTiersOutput(ContractModel):
     changed: dict[Env, dict[TierName, bool]]
     new_migrations: tuple[str, ...]
+    modified_migrations: tuple[str, ...] = ()
     changed_paths: tuple[str, ...]
     facts_hash: Sha256
     manifest: dict[str, FileMeta]

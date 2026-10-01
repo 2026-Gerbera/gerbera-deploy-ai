@@ -32,7 +32,9 @@ __all__ = [
     "check_url",
     "fetch_repo",
     "fetched_at",
+    "resolve_head",
     "run_git",
+    "warm_cache",
 ]
 
 _log = get_logger("plan")
@@ -345,3 +347,43 @@ def fetch_repo(
     finally:
         _rm(run_partial)
     return Checkout(run_dir, commit)
+
+
+def resolve_head(
+    repo_url: str,
+    ref: str | None,
+    *,
+    policy: FetchPolicy,
+    runner: Runner = run_git,
+    sleep: Callable[[float], None] = time.sleep,
+) -> str:
+    """감시용: URL·ref 검사(F1·F2) 후 ls-remote 한 번으로 커밋 SHA를 얻는다."""
+    git = _Git(policy, check_url(repo_url, policy), runner, sleep)
+    return _resolve(git, check_ref(ref))
+
+
+def warm_cache(
+    repo_url: str,
+    ref: str | None,
+    *,
+    project: str,
+    policy: FetchPolicy,
+    runner: Runner = run_git,
+    now: Callable[[], float] = time.time,
+    sleep: Callable[[float], None] = time.sleep,
+) -> str:
+    """캐시만 미리 채운다(run 사본 없음). fetch_repo와 같은 캐시 키·잠금을 쓴다. 커밋 SHA를 반환."""
+    url = check_url(repo_url, policy)
+    ref = check_ref(ref)
+    git = _Git(policy, url, runner, sleep)
+    commit = _resolve(git, ref)
+    key = hashlib.sha256(url.encode()).hexdigest()
+    ref_key = hashlib.sha256((ref or "HEAD").encode()).hexdigest()[:16]
+    base = policy.root / "cache" / project
+    cache = base / key / ref_key
+    with _locked(base / f"{key}-{ref_key}.lock", policy.timeout_s):
+        if not _cache_ok(cache, commit, now(), policy.cache_ttl_s):
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            _rm(cache)
+            _download(git, commit, cache, now())
+    return commit

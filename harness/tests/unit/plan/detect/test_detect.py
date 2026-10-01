@@ -142,3 +142,19 @@ def test_source_changed_after_intake(src: Path) -> None:
 
 def test_registered() -> None:
     assert "detect_changed_tiers" in load_tools().registered()
+
+
+def test_migration_sql_without_prefix_fails(src: Path) -> None:
+    _write(src, {"db/migrations/init.sql": "x"})
+    with pytest.raises(DdakToolError) as e:
+        _run(src, {"local": None})
+    assert e.value.code is ErrorCode.CONFIG_INVALID and "init.sql" in e.value.message
+
+
+def test_modified_applied_migration(src: Path) -> None:
+    v1 = _manifest(src)
+    assert _run(src, {"local": v1}).modified_migrations == ()
+    _write(src, {"db/migrations/0001_init.sql": "changed", "db/migrations/0002_add.sql": "n"})
+    out = _run(src, {"local": v1})
+    assert out.modified_migrations == ("0001",) and out.new_migrations == ("0002",)
+    assert _run(src, {"local": None}).modified_migrations == ()

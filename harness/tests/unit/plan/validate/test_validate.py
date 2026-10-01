@@ -95,9 +95,9 @@ def test_deterministic_and_order_independent() -> None:
     assert pa.model_dump() == pb.model_dump()
 
 
-def test_rejects_unknown_id() -> None:
+def test_strict_rejects_unknown_id() -> None:
     with pytest.raises(DdakToolError) as e:
-        run(facts(), draft(("deploy.nope.cloud", True)))
+        run(facts(), draft(("deploy.nope.cloud", True)), strict_ai_check=True)
     assert e.value.code is ErrorCode.PLAN_INVALID
 
 
@@ -168,19 +168,93 @@ def test_gate_local_verified() -> None:
     assert not only_cloud.deploy.local.steps
 
 
-def test_toggle_off_relaxes_but_keeps_floor() -> None:
-    d = draft(("deploy.nope.cloud", True), ("verify.report", False), ("deploy.db.cloud", False))
+def test_default_mode_drops_strict_mode_rejects() -> None:
+    unknown = draft(("deploy.nope.cloud", True))
+    p = run(facts(), unknown)  # 기본 검사: 버림 + 경고
+    assert "ai_draft_item_dropped" in [w.code for w in p.warnings]
+    assert p.toggles == {"code_patch": False}
+    with pytest.raises(DdakToolError) as e:
+        run(facts(), unknown, strict_ai_check=True)
+    assert e.value.code is ErrorCode.PLAN_INVALID
+
+
+def test_both_modes_keep_floor() -> None:
+    d = draft(("verify.report", False), ("deploy.db.cloud", False))
+    for strict in (False, True):
+        p = run(facts(), d, strict_ai_check=strict)
+        assert p.toggles["strict_ai_check"] is strict
+        assert {"verify.report", "deploy.db.cloud"} <= ids(p)
+        assert {"verify.report", "deploy.db.cloud"} == {i.id for i in p.invalidated}
+        assert all(i.result == "forced_include" for i in p.invalidated)
+
+
+def test_forbidden_param_rejected_in_both_modes() -> None:
+    for strict in (False, True):
+        with pytest.raises(DdakToolError):
+            check_params("deploy.db.cloud", {"domain": "x"}, ("migrations",), strict=strict)
+
+
+def test_forced_skip_recorded_both_modes() -> None:
+    f = facts(changed={"local": {"was": True, "web": False}, "cloud": {"was": True, "web": False}})
+    for strict in (False, True):
+        p = run(f, draft(("build.web", True), ("build.was", True)), strict_ai_check=strict)
+        rec = [i for i in p.invalidated if i.attempt == "include"]
+        assert [(i.id, i.result, i.by) for i in rec] == [("build.web", "forced_skip", By.AI)]
+        assert rec[0].why.startswith("tree_unchanged")
+        assert "build.web" not in ids(p)
+    assert not run(f, draft(("build.web", False))).invalidated  # 규칙과 일치
+
+
+def _env_ids(p: Plan, env: str) -> list[str]:
+    return [s.id for s in getattr(p.deploy, env).steps]
+
+
+@pytest.mark.parametrize("target", ["local", "cloud", "both"])
+def test_r_migration_present(target: str) -> None:
+    ch = {e: {"was": True, "web": True} for e in ("local", "cloud") if target in (e, "both")}
+    p = run(facts(target=target, changed=ch, new_migrations=("0003", "0002")))
+    envs = ["local", "cloud"] if target == "both" else [target]
+    for e in envs:
+        order = _env_ids(p, e)
+        assert order.index(f"deploy.db.{e}") < order.index(f"deploy.was.{e}")
+        db = next(s for s in getattr(p.deploy, e).steps if s.id == f"deploy.db.{e}")
+        assert db.params == {"migrations": ["0002", "0003"]}
+
+
+@pytest.mark.parametrize("target", ["local", "cloud", "both"])
+def test_r_migration_absent(target: str) -> None:
+    p = run(facts(target=target, new_migrations=()))
+    assert not [i for e in ("local", "cloud") for i in _env_ids(p, e) if i.startswith("deploy.db.")]
+
+
+def test_r_migration_violations_rejected() -> None:
+    from ddak.core.contracts.enums import Effect, Layer
+    from ddak.core.contracts.plan import PlanStep
+    from ddak.plan.validate.rules import check_migrations
+
+    def st(i: str, tool: str, **params: Any) -> PlanStep:
+        return PlanStep(
+            id=i, tool=tool, layer=Layer.CONDITIONAL, effect=Effect.STATE_CHANGE, params=params
+        )
+
+    db = st("deploy.db.cloud", "prepare_db", migrations=["0002"])
+    tier = st("deploy.was.cloud", "deploy_tier")
+    f = facts(target="cloud")
+    check_migrations(f, {"cloud": [db, tier]})
+    for steps in ([tier], [tier, db], [st("deploy.db.cloud", "prepare_db", migrations=[]), tier]):
+        with pytest.raises(DdakToolError) as e:
+            check_migrations(f, {"cloud": steps})
+        assert e.value.code is ErrorCode.PLAN_INVALID and "R-migration" in e.value.message
     with pytest.raises(DdakToolError):
-        run(facts(), d)
-    p = run(facts(), d, validate_ai_draft=False)
-    codes = [w.code for w in p.warnings]
-    assert "ai_draft_item_dropped" in codes and "ai_check_disabled" in codes
-    assert p.toggles["validate_ai_draft"] is False
-    assert "verify.report" in ids(p) and "verify.report" in {i.id for i in p.invalidated}
-    assert "deploy.db.cloud" in ids(p) and "deploy.db.cloud" not in {i.id for i in p.invalidated}
-    on = run(facts(), draft(("deploy.db.cloud", False)))
-    assert "ai_check_disabled" not in [w.code for w in on.warnings]
-    assert on.toggles == {"code_patch": False}
+        check_migrations(facts(target="cloud", new_migrations=()), {"cloud": [db, tier]})
+
+
+def test_modified_migration_warns_strict_rejects() -> None:
+    f = facts(modified_migrations=("0001",))
+    assert "migration_modified" in [w.code for w in run(f).warnings]
+    with pytest.raises(DdakToolError) as e:
+        run(f, strict_ai_check=True)
+    assert e.value.code is ErrorCode.PLAN_INVALID
 
 
 def test_check_draft_relaxed_drops_unknown() -> None:

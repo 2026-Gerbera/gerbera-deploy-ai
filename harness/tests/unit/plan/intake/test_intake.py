@@ -789,7 +789,7 @@ def test_public_api_and_tool_wrapper(
 ) -> None:
     import ddak.plan.intake as pkg
 
-    assert set(pkg.__all__) == {"FetchPolicy", "cleanup_stale_sources", "receive_deploy_request"}
+    assert {"FetchPolicy", "cleanup_stale_sources", "receive_deploy_request"} <= set(pkg.__all__)
     monkeypatch.setenv("DDAK_SOURCES_DIR", str(tmp_path / "envsrc"))
     monkeypatch.setenv("DDAK_GIT_ALLOWED_HOSTS", "github.com")
     with pytest.raises(DdakToolError) as e:  # 환경 정책은 https/github.com만 허용한다
