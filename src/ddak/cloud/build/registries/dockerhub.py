@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
-from ddak.cloud.build.registries._names import check_digest, check_name
+from ddak.cloud.build.registries._names import check_digest, check_name, check_tag
 
 
 @dataclass(frozen=True)
@@ -25,3 +25,9 @@ class DockerHub:
         ns = check_name(self.namespace, "네임스페이스")
         repo = check_name(repository, "저장소")
         return f"docker.io/{ns}/{repo}@{check_digest(digest)}"
+
+    def push_ref(self, repository: str, tag: str) -> str:
+        """`docker.io/<네임스페이스>/<저장소>:<태그>`. buildx push 대상으로만 쓴다(배포 금지)."""
+        ns = check_name(self.namespace, "네임스페이스")
+        repo = check_name(repository, "저장소")
+        return f"docker.io/{ns}/{repo}:{check_tag(tag)}"
