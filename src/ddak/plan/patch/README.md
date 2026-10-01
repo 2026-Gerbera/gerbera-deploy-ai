@@ -1,5 +1,10 @@
 # plan/patch (담당: 장민영)
 - 할 일: AI 코드 수정 P0(patch_config, patch_db_access, patch_storage). 토글 ON 전용·사람 승인
-- 입출력 계약: `src/ddak/core/contracts` (이 툴의 <Tool>Input/Output 모델은 아직 없다. 입출력은 __init__.py docstring)
+- 현재: **검사기만 있다**(`check.py`의 `check_patch`, AI 없음). 패치 생성 툴(AI)은 O2 분석 결과 형식이 정해지면 만든다. `__init__.py`의 툴 함수는 아직 빈 구현이다
+- 검사(공통 계약 3-5): 형식(UTF-8, 64KB, 파일 5개 이하, 기존 텍스트 파일 수정만) → 허용 파일(정책 `allowed_files`, `.py`, tests·migrations 제외) → 허용 패턴(지운 줄은 대상 패턴만, 추가한 줄은 대상 패턴·환경변수 읽기·import·괄호/주석만, 위험한 호출과 `;` 거부, 대상 패턴을 지운 파일엔 환경변수 읽기 필요, 대상 패턴이 하나도 없으면 거부) → 비밀값 리터럴(비밀 이름과 문자열 값이 같은 줄이면 거부, 개발값 기본값 포함) → O1과 같은 `core.snapshots.apply_diff`로 임시 사본에 적용 → `ast` 문법 검사
+- 대상 패턴(P0): 서명 키 하드코딩(`SECRET_KEY`), 코드 안 `localhost`·`127.0.0.1`, 쿠키 `SESSION_COOKIE_SECURE`, ProxyFix
+- 위반은 코드·파일·줄 번호만 돌려준다(줄 내용을 싣지 않는다)
+- 패치 생성 시 주의: 원본 줄바꿈(CRLF/LF)을 그대로 유지해야 적용된다(파일은 `newline=""`로 읽는다)
+- 입출력 계약: 툴 등록 때 `src/ddak/core/contracts`에 만든다
 - 다른 디렉토리 안쪽 파일을 직접 import하지 말고 __init__.py의 공개 함수만 쓴다.
-- AI 호출은 core/ai(call_ai)로만, 허용된 디렉토리에서만 한다(여기는 허용: import-linter 계약 2).
+- AI 호출은 core/ai(call_ai)로만, 허용된 디렉토리에서만 한다(여기는 허용: import-linter 계약 2). 검사기(`check.py`)는 AI를 import하지 않는다.

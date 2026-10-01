@@ -1,0 +1,41 @@
+{
+  "$defs": {
+    "Target": {
+      "description": "배포 대상 환경. 실행기가 plan.json의 트랙과 deploy.yaml로 정한다(AI가 고르지 않는다).",
+      "enum": [
+        "local",
+        "cloud"
+      ],
+      "title": "Target",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "target은 실행기가 트랙에서 채운다. scenarios는 plan step params(시나리오 묶음 이름).",
+  "properties": {
+    "run_id": {
+      "description": "실행 ID. 모든 툴의 필수 입력",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+      "title": "Run Id",
+      "type": "string"
+    },
+    "scenarios": {
+      "items": {
+        "pattern": "^[a-z][a-z0-9_]{0,31}$",
+        "type": "string"
+      },
+      "maxItems": 8,
+      "title": "Scenarios",
+      "type": "array"
+    },
+    "target": {
+      "$ref": "#/$defs/Target"
+    }
+  },
+  "required": [
+    "run_id",
+    "target"
+  ],
+  "title": "SmokeTestInput",
+  "type": "object"
+}
