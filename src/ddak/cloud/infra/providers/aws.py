@@ -1,17 +1,101 @@
-"""AWS 코드 소유 틀(💭, 담당 C1). AI HCL을 안전하게 돌리기 위한 고정 값이다. AI가 바꾸지 못한다.
-
-💭 이 틀은 앱마다 사람이 쓰는 Terraform이 아니라 제품 코드이므로 "딸깍" 취지에 맞는다는 것이
-우리 권고다(사용자 확인 필요, 설계 문서 01 §5-5). 들어갈 것(TODO(C1)):
-- 버전 고정(`required_version`, AWS provider `~> 6.66`, `.terraform.lock.hcl`), provider(region,
-  allowed_account_ids, default_tags), backend partial config, 이름 규칙, 권한 경계 정책,
-  상태 버킷 템플릿, 리소스 타입 허용 목록(약 30개), 정적 게이트 규칙.
-- Terraform state는 플랫폼 층 / 앱 층으로 나눈다(데모 plan을 짧게, ✅ 9/30). 앱 층은 플랫폼
-  층의 출력을 코드가 `terraform output -json`으로 읽어 변수로 넘긴다(state 원문·remote_state를
-  읽지 않음).
-"""
+"""C1 코드 소유 AWS 규칙. 서울·허용 리소스·검사 목록·앱 권한 경계."""
 
 from __future__ import annotations
 
 NAME = "aws"
 REGION = "ap-northeast-2"  # 서울만
 STATE_LAYERS = ("platform", "app")  # 💭 플랫폼 층(VPC·ALB·ECS 클러스터·공유 RDS·CodeBuild) / 앱 층
+
+# 생성기에도 제공하는 C1 내부 규칙. 공유 카탈로그/RunContext 계약은 바꾸지 않는다.
+RESOURCE_TYPES = frozenset(
+    [
+        "aws_vpc",
+        "aws_subnet",
+        "aws_internet_gateway",
+        "aws_route_table",
+        "aws_route_table_association",
+        "aws_route",
+        "aws_security_group",
+        "aws_vpc_security_group_ingress_rule",
+        "aws_vpc_security_group_egress_rule",
+        "aws_lb",
+        "aws_lb_listener",
+        "aws_lb_target_group",
+        "aws_ecs_cluster",
+        "aws_ecs_service",
+        "aws_ecs_task_definition",
+        "aws_db_subnet_group",
+        "aws_db_parameter_group",
+        "aws_db_instance",
+        "aws_cloudwatch_log_group",
+        "aws_codebuild_project",
+        "aws_s3_bucket",
+        "aws_s3_bucket_versioning",
+        "aws_s3_bucket_server_side_encryption_configuration",
+        "aws_s3_bucket_public_access_block",
+        "aws_secretsmanager_secret",
+        "aws_iam_role",
+        "aws_iam_role_policy",
+        "aws_acm_certificate",
+        "aws_acm_certificate_validation",
+        "aws_route53_record",
+    ]
+)
+APP_RESOURCE_TYPES = frozenset({"aws_secretsmanager_secret", "aws_iam_role", "aws_iam_role_policy"})
+CHECKS = tuple(
+    f"CKV_AWS_{n}" for n in (17, 24, 25, 260, 277, 382, 62, 1, 63, 355, 286, 289, 290, 61, 293)
+)
+BOUNDARY_PATH = "/ddak/boundary/"
+BOUNDARY_NAME = "ddak-app-boundary"
+
+
+def build_boundary_document(account_id: str) -> dict:
+    """앱 경계와 분리한 CodeBuild 상한. 소스 버킷 권한은 C2 계약 확정 후 추가한다."""
+    return {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Action": "secretsmanager:GetSecretValue",
+                "Resource": (
+                    f"arn:aws:secretsmanager:{REGION}:{account_id}:secret:"
+                    "ddak-platform/dockerhub-push-??????"
+                ),
+            },
+            {
+                "Effect": "Allow",
+                "Action": ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"],
+                "Resource": f"arn:aws:logs:{REGION}:{account_id}:log-group:/aws/codebuild/ddak-*:*",
+            },
+        ],
+    }
+
+
+def boundary_document(account_id: str) -> dict:
+    """research/IAM §13-3의 앱 경계. 권한 자체를 주는 정책은 아니다."""
+    prefix = f"arn:aws:secretsmanager:{REGION}:{account_id}:secret:"
+    return {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Action": "secretsmanager:GetSecretValue",
+                "Resource": prefix + "ddak-platform/dockerhub-pull-??????",
+            },
+            {
+                "Effect": "Allow",
+                "Action": ["logs:CreateLogStream", "logs:PutLogEvents"],
+                "Resource": f"arn:aws:logs:{REGION}:{account_id}:log-group:/ecs/ddak-*:*",
+            },
+            {
+                "Effect": "Allow",
+                "Action": "secretsmanager:GetSecretValue",
+                "Resource": [prefix + "ddak/*", prefix + "rds!*"],
+            },
+            {
+                "Effect": "Deny",
+                "Action": ["iam:*", "organizations:*", "account:*", "sts:AssumeRole"],
+                "Resource": "*",
+            },
+        ],
+    }
