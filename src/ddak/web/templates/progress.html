@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block title %}배포 진행 · Gerbera{% endblock %}
+{% block content %}
+<section class="hero"><p class="eyebrow">LIVE DEPLOYMENT</p><h1>배포 진행</h1><p><code>{{ run_id }}</code></p></section>
+<section class="grid two progress" data-run-id="{{ run_id }}"><article class="card"><h2>온프레미스</h2><ol id="local-events"></ol></article><article class="card"><h2>클라우드</h2><ol id="cloud-events"></ol></article></section>
+<section class="card"><h2>공통 이벤트</h2><ol id="common-events"></ol><a id="result-link" class="button hidden" href="/runs/{{ run_id }}/result">최종 결과 보기</a></section>
+{% endblock %}

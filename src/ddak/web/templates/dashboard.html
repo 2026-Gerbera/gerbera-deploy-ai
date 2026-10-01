@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}배포 대시보드 · Gerbera{% endblock %}
+{% block content %}
+<section class="hero"><p class="eyebrow">CONTROL PLANE</p><h1>{{ project }} 배포 대시보드</h1>
+<p>계획 승인부터 온프레미스·AWS 검증까지 한 화면에서 확인합니다.</p></section>
+<section class="grid two">
+  <article class="card"><h2>프로젝트 설정</h2>
+    {% if settings %}<p><strong>{{ settings.cloud_domain }}</strong></p><p>{{ settings.dns_mode }}</p>
+    {% else %}<p class="muted">도메인이 아직 설정되지 않았습니다.</p>{% endif %}
+    <a class="button secondary" href="/settings?project={{ project|urlencode }}">설정 열기</a>
+  </article>
+  <article class="card"><h2>배포 원칙</h2><ul><li>사람 승인 후 실행</li><li>로컬 검증 후 클라우드 상태 변경</li><li>동일 index digest 사용</li></ul></article>
+</section>
+<section class="card"><h2>최근 실행</h2>
+  {% if runs %}<div class="table-wrap"><table><thead><tr><th>Run</th><th>프로젝트</th><th>상태</th><th>보기</th></tr></thead><tbody>
+  {% for run in runs %}<tr><td><code>{{ run.run_id }}</code></td><td>{{ run.project }}</td><td><span class="status {{ run.status|lower }}">{{ run.status }}</span></td><td><a href="/runs/{{ run.run_id }}/result">결과</a></td></tr>{% endfor %}
+  </tbody></table></div>{% else %}<p class="muted">아직 실행 기록이 없습니다.</p>{% endif %}
+</section>
+{% endblock %}

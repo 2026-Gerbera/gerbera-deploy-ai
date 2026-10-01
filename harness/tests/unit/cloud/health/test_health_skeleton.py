@@ -1,15 +1,21 @@
-"""cloud/health 빈 구현: import되고 호출하면 NotImplementedError를 낸다."""
+"""C3 클라우드 검증의 안전한 로컬 경로."""
 
 from __future__ import annotations
 
 import pytest
 
-from ddak.cloud.health import health_check, verify_tls
+from ddak.cloud.health import health_check
+from ddak.cloud.health.fake import fake_verify_tls
 from ddak.core.contracts.context import RunContext
+from ddak.core.contracts.errors import DdakToolError
 
 
-def test_health_skeleton_raises_not_implemented() -> None:
-    with pytest.raises(NotImplementedError, match="cloud/health 미구현: 담당 양서윤"):
+def test_health_requires_cloud_domain_before_aws_call() -> None:
+    with pytest.raises(DdakToolError, match="cloud_domain"):
         health_check(RunContext("run-1"))
-    with pytest.raises(NotImplementedError, match="cloud/health 미구현: 담당 양서윤"):
-        verify_tls(None, RunContext("run-1"))
+
+
+def test_fake_tls_is_deterministic_and_complete() -> None:
+    result = fake_verify_tls("run-1")
+    assert result.passed is True
+    assert [check.id for check in result.checks] == [f"V{i}" for i in range(1, 10)]

@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block title %}배포 결과 · Gerbera{% endblock %}
+{% block content %}
+<section class="hero"><p class="eyebrow">DEPLOYMENT RESULT</p><h1>{{ run.status }}</h1><p><code>{{ run.run_id }}</code></p></section>
+<section class="grid two"><article class="card"><h2>트랙</h2><dl>{% for name, status in (result.tracks or {}).items() %}<dt>{{ name }}</dt><dd><span class="status {{ status|lower }}">{{ status }}</span></dd>{% endfor %}</dl></article><article class="card"><h2>실행 시간</h2><dl>{% for id, step in (result.steps or {}).items() %}<dt>{{ id }}</dt><dd>{{ '%.2f'|format(step.elapsed_s) }}s · {{ step.status }}</dd>{% endfor %}</dl></article></section>
+<section class="card"><h2>안전 상태</h2>{% if run.status == 'FAILED_BEFORE_DEPLOY' %}<p>클라우드 상태 변경 전에 중단되었습니다.</p>{% elif run.status == 'NEEDS_HUMAN' %}<p class="danger-text">사람의 상태 확인이 필요합니다.</p>{% else %}<p>실행기 기록을 기준으로 표시합니다.</p>{% endif %}</section>
+{% endblock %}

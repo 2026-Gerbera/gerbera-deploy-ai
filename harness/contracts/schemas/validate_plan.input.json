@@ -1,0 +1,345 @@
+{
+  "$defs": {
+    "By": {
+      "description": "결정 주체. 계획 step·패치 등을 규칙이 정했는지 AI가 정했는지 표시한다.",
+      "enum": [
+        "rule",
+        "ai"
+      ],
+      "title": "By",
+      "type": "string"
+    },
+    "EnvKey": {
+      "additionalProperties": false,
+      "properties": {
+        "by": {
+          "$ref": "#/$defs/By",
+          "default": "rule"
+        },
+        "is_new": {
+          "default": true,
+          "title": "Is New",
+          "type": "boolean"
+        },
+        "kind": {
+          "enum": [
+            "plain",
+            "secret"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "name": {
+          "pattern": "^[A-Z][A-Z0-9_]{0,63}$",
+          "title": "Name",
+          "type": "string"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "tier": {
+          "anyOf": [
+            {
+              "description": "deploy.yaml에 정의된 tier",
+              "pattern": "^[a-z][a-z0-9_-]{0,31}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tier"
+        }
+      },
+      "required": [
+        "name",
+        "kind"
+      ],
+      "title": "EnvKey",
+      "type": "object"
+    },
+    "Facts": {
+      "additionalProperties": false,
+      "properties": {
+        "changed": {
+          "additionalProperties": {
+            "patternProperties": {
+              "^[a-z][a-z0-9_-]{0,31}$": {
+                "type": "boolean"
+              }
+            },
+            "propertyNames": {
+              "description": "deploy.yaml에 정의된 tier"
+            },
+            "type": "object"
+          },
+          "propertyNames": {
+            "enum": [
+              "local",
+              "cloud"
+            ]
+          },
+          "title": "Changed",
+          "type": "object"
+        },
+        "code_patch": {
+          "default": false,
+          "title": "Code Patch",
+          "type": "boolean"
+        },
+        "db_initialized": {
+          "additionalProperties": {
+            "type": "boolean"
+          },
+          "propertyNames": {
+            "enum": [
+              "local",
+              "cloud"
+            ]
+          },
+          "title": "Db Initialized",
+          "type": "object"
+        },
+        "env_keys": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EnvKey"
+          },
+          "title": "Env Keys",
+          "type": "array"
+        },
+        "facts_hash": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Facts Hash",
+          "type": "string"
+        },
+        "has_dockerfile": {
+          "patternProperties": {
+            "^[a-z][a-z0-9_-]{0,31}$": {
+              "type": "boolean"
+            }
+          },
+          "propertyNames": {
+            "description": "deploy.yaml에 정의된 tier"
+          },
+          "title": "Has Dockerfile",
+          "type": "object"
+        },
+        "infra_inputs_changed": {
+          "default": false,
+          "title": "Infra Inputs Changed",
+          "type": "boolean"
+        },
+        "mode": {
+          "$ref": "#/$defs/RunMode"
+        },
+        "modified_migrations": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Modified Migrations",
+          "type": "array"
+        },
+        "new_migrations": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "New Migrations",
+          "type": "array"
+        },
+        "project": {
+          "title": "Project",
+          "type": "string"
+        },
+        "source_snapshot_hash": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Source Snapshot Hash",
+          "type": "string"
+        },
+        "target": {
+          "enum": [
+            "local",
+            "cloud",
+            "both"
+          ],
+          "title": "Target",
+          "type": "string"
+        },
+        "tiers": {
+          "items": {
+            "description": "deploy.yaml에 정의된 tier",
+            "pattern": "^[a-z][a-z0-9_-]{0,31}$",
+            "type": "string"
+          },
+          "title": "Tiers",
+          "type": "array"
+        }
+      },
+      "required": [
+        "project",
+        "mode",
+        "target",
+        "tiers",
+        "changed",
+        "source_snapshot_hash",
+        "facts_hash"
+      ],
+      "title": "Facts",
+      "type": "object"
+    },
+    "PlanDraft": {
+      "additionalProperties": false,
+      "properties": {
+        "decisions": {
+          "items": {
+            "$ref": "#/$defs/StepDecision"
+          },
+          "title": "Decisions",
+          "type": "array"
+        },
+        "planner": {
+          "$ref": "#/$defs/Planner"
+        }
+      },
+      "required": [
+        "decisions",
+        "planner"
+      ],
+      "title": "PlanDraft",
+      "type": "object"
+    },
+    "Planner": {
+      "additionalProperties": false,
+      "properties": {
+        "attempts": {
+          "default": 1,
+          "minimum": 0,
+          "title": "Attempts",
+          "type": "integer"
+        },
+        "by": {
+          "$ref": "#/$defs/By"
+        },
+        "fallback": {
+          "default": false,
+          "title": "Fallback",
+          "type": "boolean"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model"
+        },
+        "provider": {
+          "title": "Provider",
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/Source",
+          "default": "live"
+        }
+      },
+      "required": [
+        "by",
+        "provider"
+      ],
+      "title": "Planner",
+      "type": "object"
+    },
+    "RunMode": {
+      "description": "run 종류. 초기 배포도 같은 파이프라인으로 한다(✅ 장부 14).",
+      "enum": [
+        "update",
+        "bootstrap"
+      ],
+      "title": "RunMode",
+      "type": "string"
+    },
+    "Source": {
+      "description": "AI 결과의 출처. live가 아니면 관리 페이지가 라벨을 표시한다(목업은 목업이라고 밝힘).",
+      "enum": [
+        "live",
+        "cache",
+        "fixture",
+        "replay"
+      ],
+      "title": "Source",
+      "type": "string"
+    },
+    "StepDecision": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^[a-z][a-z0-9_]*(\\.[a-z0-9_]+){1,3}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "include": {
+          "title": "Include",
+          "type": "boolean"
+        },
+        "reason": {
+          "maxLength": 200,
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "include",
+        "reason"
+      ],
+      "title": "StepDecision",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "draft": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PlanDraft"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "facts": {
+      "$ref": "#/$defs/Facts"
+    },
+    "run_id": {
+      "description": "실행 ID. 모든 툴의 필수 입력",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+      "title": "Run Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "run_id",
+    "facts"
+  ],
+  "title": "ValidatePlanInput",
+  "type": "object"
+}

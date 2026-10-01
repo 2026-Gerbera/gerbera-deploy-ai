@@ -34,6 +34,9 @@ CREATE TABLE IF NOT EXISTS releases (
 CREATE TABLE IF NOT EXISTS env_release (
  project TEXT NOT NULL, target TEXT NOT NULL, status TEXT NOT NULL,
  current TEXT, previous TEXT, PRIMARY KEY (project, target));
+CREATE TABLE IF NOT EXISTS project_settings (
+ project TEXT PRIMARY KEY, version INTEGER NOT NULL, data TEXT NOT NULL,
+ updated_by TEXT NOT NULL, updated_at REAL NOT NULL);
 """
 
 
@@ -102,6 +105,68 @@ class Store:
         if result["result"]:
             result["result"] = json.loads(result["result"])
         return result
+
+    def list_runs(self, limit: int = 20) -> list[dict[str, Any]]:
+        """관리 화면용 최근 실행 목록. 저장된 결과는 이미 redact된 값이다."""
+        safe_limit = max(1, min(limit, 100))
+        with self.connection() as db:
+            rows = db.execute(
+                "SELECT run_id, project, status, created, finished FROM runs "
+                "ORDER BY created DESC LIMIT ?",
+                (safe_limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def project_settings(self, project: str) -> dict[str, Any] | None:
+        with self.connection() as db:
+            row = db.execute(
+                "SELECT version, data, updated_by, updated_at FROM project_settings "
+                "WHERE project=?",
+                (project,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "project": project,
+            "version": row["version"],
+            **json.loads(row["data"]),
+            "updated_by": row["updated_by"],
+            "updated_at": row["updated_at"],
+        }
+
+    def save_project_settings(
+        self,
+        project: str,
+        data: dict[str, Any],
+        *,
+        updated_by: str,
+        expected_version: int | None,
+    ) -> dict[str, Any]:
+        """낙관적 버전 검사로 도메인 설정 덮어쓰기를 막는다."""
+        safe_data = _json(data)
+        now = time.time()
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT version FROM project_settings WHERE project=?", (project,)
+            ).fetchone()
+            current = row["version"] if row else 0
+            if expected_version is not None and current != expected_version:
+                raise DdakToolError(
+                    ErrorCode.PRECONDITION_FAILED, "설정이 다른 화면에서 변경됐다. 새로고침하세요"
+                )
+            version = current + 1
+            db.execute(
+                "INSERT OR REPLACE INTO project_settings VALUES (?, ?, ?, ?, ?)",
+                (project, version, safe_data, updated_by, now),
+            )
+        return {
+            "project": project,
+            "version": version,
+            **json.loads(safe_data),
+            "updated_by": updated_by,
+            "updated_at": now,
+        }
 
     def approve(self, records: Sequence[ApprovalRecord]) -> None:
         if not records:

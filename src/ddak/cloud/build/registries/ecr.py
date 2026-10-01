@@ -10,7 +10,7 @@ import re
 from dataclasses import dataclass
 from typing import ClassVar
 
-from ddak.cloud.build.registries._names import check_digest, check_name
+from ddak.cloud.build.registries._names import check_digest, check_name, check_tag
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 
 _ACCOUNT = re.compile(r"^[0-9]{12}$")
@@ -22,9 +22,16 @@ class Ecr:
     account_id: str
     region: str = "ap-northeast-2"
 
-    def image_ref(self, repository: str, digest: str) -> str:
+    def _host(self) -> str:
         if not _ACCOUNT.fullmatch(self.account_id):
             raise DdakToolError(ErrorCode.CONFIG_INVALID, "계정 ID 형식이 아니다")
+        return f"{self.account_id}.dkr.ecr.{self.region}.amazonaws.com"
+
+    def image_ref(self, repository: str, digest: str) -> str:
         repo = check_name(repository, "저장소")
-        host = f"{self.account_id}.dkr.ecr.{self.region}.amazonaws.com"
-        return f"{host}/{repo}@{check_digest(digest)}"
+        return f"{self._host()}/{repo}@{check_digest(digest)}"
+
+    def push_ref(self, repository: str, tag: str) -> str:
+        """push 대상(태그). 배포에는 쓰지 않는다."""
+        repo = check_name(repository, "저장소")
+        return f"{self._host()}/{repo}:{check_tag(tag)}"
