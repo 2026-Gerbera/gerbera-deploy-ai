@@ -246,10 +246,16 @@ def test_real_http_replace_rollback_and_migration(tmp_path: Path, monkeypatch) -
         replica_ctx = replace(replica_ctx, images={"was": refs[1]})
         provider.deploy("was", replica_ctx)
         assert provider.health_check(replica_ctx).passed
+        before_broken = {
+            i: DockerHost().container(app_name + f"-replica-{i}")["Id"] for i in range(1, 4)
+        }
         replica_ctx = replace(
             replica_ctx,
+            run_id="replica-broken",
             images={"was": refs[2]},
-            previous_release={"local": {"images": {"was": refs[1]}}},
+            previous_release={
+                "local": {"release_id": replica_ctx.run_id, "images": {"was": refs[1]}}
+            },
         )
         with pytest.raises(DdakToolError) as ready_error:
             provider.deploy("was", replica_ctx)
@@ -257,20 +263,62 @@ def test_real_http_replace_rollback_and_migration(tmp_path: Path, monkeypatch) -
         replica_rollback = provider.rollback("was", replica_ctx)
         assert replica_rollback.detail == "복구 replica: [1]"
         assert not provider.rollback("was", replica_ctx).changed
+        for i in range(1, 4):
+            observed = DockerHost().container(app_name + f"-replica-{i}")
+            assert observed["Config"]["Image"] == refs[1]
+            assert (
+                observed["ImageManifestDescriptor"]["digest"]
+                == artifacts[1].platform_digests[platform]
+            )
+            if i > 1:
+                assert observed["Id"] == before_broken[i]
         service_port = _port()
         service_inventory = copy.deepcopy(ctx.platform)
         service_inventory["onprem"]["tiers"]["was"].update(
             {
                 "name": app_name + "-service",
-                "ports": [f"127.0.0.1:{service_port}:8000"],
+                "ports": [],
+                "replicas": 3,
+                "network": network_name,
                 "env_file": str(tmp_path / "service.env"),
                 "ready": {"timeout_s": 2.0},
                 "public_env": {"APP_BASE_URL": f"http://localhost:{service_port}"},
             }
         )
         service_ctx = replace(ctx, project="flaskr", platform=service_inventory)
+
+        def replica_http(port, expected, *, secret_valid=True, release_id=None):
+            values = []
+            for i in range(1, 4):
+                name = app_name + f"-service-{i}"
+                observed = DockerHost().container(name)
+                assert observed["State"]["Health"]["Status"] == "healthy"
+                assert json.loads(
+                    _docker(
+                        "container",
+                        "inspect",
+                        "--format",
+                        "{{json .HostConfig.PortBindings}}",
+                        name,
+                    )
+                ) in ({}, None)
+                value = json.loads(
+                    _docker(
+                        "container",
+                        "exec",
+                        name,
+                        "python",
+                        "-c",
+                        "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8000/version').read().decode())",
+                    )
+                )
+                assert value["version"] == expected and value["secret_valid"] == secret_valid
+                assert value["secret_present"] == secret_valid and value["release_id"] == release_id
+                values.append(value)
+            return {"replicas": values}
+
         rehearsals = service_rehearsals(
-            tmp_path / "service", service_ctx, artifacts, service_port, _http
+            tmp_path / "service", service_ctx, artifacts, service_port, replica_http
         )
         proof = {
             "source": "real-docker-test-runtime",

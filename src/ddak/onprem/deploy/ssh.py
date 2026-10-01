@@ -52,7 +52,7 @@ class SSHConfig(JumpHost):
     @field_validator("key_path")
     @classmethod
     def key_location(cls, value: str) -> str:
-        if not Path(value).is_absolute() or any(c in value for c in "\n\r\0%"):
+        if not Path(value).is_absolute() or any(c in value for c in "\n\r\0%$"):
             raise ValueError("SSH key_path 절대 경로 필요")
         return value
 

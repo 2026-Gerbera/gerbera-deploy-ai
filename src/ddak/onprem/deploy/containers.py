@@ -35,7 +35,8 @@ _CONTAINER_FORMAT = (
     '"ImageManifestDescriptor":{{json (index . "ImageManifestDescriptor")}},'
     '"Config":{"Image":{{json .Config.Image}},"Labels":{{json .Config.Labels}}},'
     '"RestartCount":{{json .RestartCount}},'
-    '"State":{"Running":{{json .State.Running}}}}'
+    '"State":{"Running":{{json .State.Running}},'
+    '"Health":{{json (index .State "Health")}}}}'
 )
 _IMAGE_FORMAT = (
     '{"Id":{{json .Id}},"Os":{{json .Os}},"Architecture":{{json .Architecture}},'
@@ -102,7 +103,9 @@ class DockerHost:
             endpoint.startswith("unix:///")
             or re.fullmatch(r"ssh://[a-zA-Z0-9][a-zA-Z0-9_.-]*", endpoint)
         ):
-            raise fail("현재 온프렘은 로컬 unix Docker 소켓만 지원한다", ErrorCode.CONFIG_INVALID)
+            raise fail(
+                "Docker endpoint는 unix 소켓 또는 ssh 별칭이어야 한다", ErrorCode.CONFIG_INVALID
+            )
 
     def check_deadline(self) -> float:
         remaining = self.deadline - time.monotonic()
@@ -186,12 +189,14 @@ class DockerHost:
         if any(labels.get(key) != value for key, value in expected.items()):
             raise fail("소유 라벨이 다른 컨테이너는 변경할 수 없다", ErrorCode.PRECONDITION_FAILED)
 
-    def remove(self, state: Mapping[str, Any], project: str, tier: str) -> None:
+    def remove(
+        self, state: Mapping[str, Any], project: str, tier: str, *, stop_seconds: int = 10
+    ) -> None:
         # 이름 대신 immutable ID로 다시 관측하여 이름 바꿔치기를 막는다.
         current = self.json("container", "inspect", "--format", _CONTAINER_FORMAT, state["Id"])
         self.owned(current, project, tier)
         if current["State"]["Running"]:
-            self.run("container", "stop", "--time", "10", current["Id"])
+            self.run("container", "stop", "--time", str(stop_seconds), current["Id"])
         current = self.json("container", "inspect", "--format", _CONTAINER_FORMAT, state["Id"])
         self.owned(current, project, tier)
         self.run("container", "rm", current["Id"])

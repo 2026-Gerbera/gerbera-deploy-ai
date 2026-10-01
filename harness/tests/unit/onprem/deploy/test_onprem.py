@@ -109,6 +109,8 @@ class FakeDocker:
                 "State": {"Running": False},
                 "phase": args[-2] if "flaskr.migrate" in args else None,
             }
+            if "--health-cmd" in args:
+                self.containers[name]["State"]["Health"] = {"Status": "healthy"}
             if self.native:
                 self.containers[name]["ImageManifestDescriptor"] = self.images[ref]["Descriptor"]
         elif args[:2] == ["container", "rename"]:
@@ -215,7 +217,7 @@ def test_replace_rollback_and_repeated_rollback(runtime) -> None:
     second_ctx = replace(
         ctx,
         images={"was": fake.refs[1]},
-        previous_release={"local": {"images": {"was": fake.refs[0]}}},
+        previous_release={"local": {"release_id": ctx.run_id, "images": {"was": fake.refs[0]}}},
     )
     mark = len(fake.calls)
     second = provider.deploy("was", second_ctx)
@@ -271,7 +273,9 @@ def test_stopped_previous_release_restarts(runtime) -> None:
     fake, provider, ctx = runtime
     provider.deploy("was", ctx)
     fake.containers["unit-was"]["State"]["Running"] = False
-    ctx = replace(ctx, previous_release={"local": {"images": {"was": fake.refs[0]}}})
+    ctx = replace(
+        ctx, previous_release={"local": {"release_id": ctx.run_id, "images": {"was": fake.refs[0]}}}
+    )
     assert provider.rollback("was", ctx).changed
     assert fake.containers["unit-was"]["State"]["Running"]
 

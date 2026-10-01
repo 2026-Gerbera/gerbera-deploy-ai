@@ -89,7 +89,9 @@ def service_rehearsals(
     @registry.tool("health_check")
     def health(inp: _HttpInput, ctx: RunContext) -> _HttpOutput:
         del inp
-        OnPremProvider().health_check(ctx)
+        result = OnPremProvider().health_check(ctx)
+        if not result.passed:
+            return _HttpOutput(passed=False)
         http(port, state["expected"], secret_valid=state["secret"], release_id=ctx.run_id)
         return _HttpOutput(passed=not state["force_failure"])
 
@@ -159,6 +161,8 @@ def service_rehearsals(
                 "images": "prebuilt fixture; not C2 provenance",
                 "cloud": "not run",
                 "ai": "not run",
+                "replicas": ctx.platform["onprem"]["tiers"]["was"].get("replicas", 1),
+                "ports": ctx.platform["onprem"]["tiers"]["was"].get("ports", []),
             }
         )
         return result
@@ -177,9 +181,15 @@ def service_rehearsals(
         for i in range(1, 4):
             result = await run(f"runtime-update-{i}", 1, RunMode.UPDATE)
             assert result.status is RunStatus.SUCCEEDED, result
+            observed = result.context.release_artifacts.observations["local"]["was"]
+            assert observed.platform_digest == artifacts[1].platform_digests[observed.platform]
+        successful = service.store.environments(ctx.project)["local"]["current"]
         broken = await run("runtime-broken", 2, RunMode.UPDATE)
         assert broken.status is RunStatus.FAILED_LOCAL, broken
         assert broken.tracks["local"] is TrackStatus.ROLLED_BACK
+        assert service.store.environments(ctx.project)["local"]["current"] == successful
+        failed_step = next(r for r in broken.records if r.status == "failed")
+        assert failed_step.tool == "deploy_tier" and "ADAPTER_FAILED" in failed_step.error
         http(port, "v2", release_id="runtime-update-3")
         # 컨트롤러 독점 잠금을 정상 해제한 뒤 운영 스크립트의 동일 함수를 호출한다.
         service.close()
@@ -207,10 +217,14 @@ def service_rehearsals(
         check_baseline()
         rerun = await run("runtime-after-reset", 1, RunMode.UPDATE)
         assert rerun.status is RunStatus.SUCCEEDED, rerun
+        successful = service.store.environments(ctx.project)["local"]["current"]
         state["force_failure"] = True
         failure = await run("runtime-health-failure", 1, RunMode.UPDATE)
         assert failure.status is RunStatus.FAILED_LOCAL, failure
         assert failure.tracks["local"] is TrackStatus.ROLLED_BACK
+        assert service.store.environments(ctx.project)["local"]["current"] == successful
+        failed_step = next(r for r in failure.records if r.status == "check_failed")
+        assert failed_step.tool == "health_check" and failed_step.output["passed"] is False
         http(port, "v2", release_id="runtime-after-reset")
 
     try:

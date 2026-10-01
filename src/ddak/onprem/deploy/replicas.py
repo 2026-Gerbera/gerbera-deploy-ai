@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shlex
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ddak.cd.interface import ProviderResult
 from ddak.core.contracts.context import RunContext
+from ddak.core.contracts.errors import ErrorCode
 from ddak.core.contracts.release import ImageObservation
 from ddak.onprem.deploy.config import env_key_names
 from ddak.onprem.deploy.containers import DockerHost, fail, image_ref
@@ -33,8 +35,33 @@ while time.monotonic() < end:
     finally:
         conn.close()
     time.sleep(min(.5, max(0, end-time.monotonic())))
+print("DDAK_READY_FAILURE")
 sys.exit(1)
 """
+
+
+class ReplicaUnhealthy(Exception):
+    """관측된 앱 상태 실패. Docker/SSH 전송 실패와 구분한다."""
+
+
+def health_args(config: _Tier) -> list[str]:
+    if config.ready is None:
+        return []
+    command = shlex.join(
+        ["python", "-c", _READY_SCRIPT, str(config.ready.port), config.ready.path, "1"]
+    )
+    return [
+        "--health-cmd",
+        command,
+        "--health-interval",
+        "1s",
+        "--health-timeout",
+        "2s",
+        "--health-retries",
+        "1",
+        "--health-start-period",
+        "0s",
+    ]
 
 
 def names(config: _Tier) -> list[tuple[int, str]]:
@@ -60,12 +87,13 @@ def check_ready(
         or state["Config"]["Image"] != ref
         or not host.matches(state, local, observation)
     ):
-        raise fail("배포 이미지 실행 관측 실패")
+        raise ReplicaUnhealthy("배포 이미지 실행 관측 실패")
     if config.ready is None:
         return
     wait = min(config.ready.timeout_s, host.deadline - time.monotonic() - 30)
     if wait <= 0:
-        raise fail("replica 준비 확인 시간 부족")
+        raise ReplicaUnhealthy("replica 준비 확인 시간 부족")
+    end = time.monotonic() + wait
     result = host.run(
         "container",
         "exec",
@@ -80,15 +108,27 @@ def check_ready(
         timeout=wait + 10,
     )
     if result.returncode:
-        raise fail("replica 준비 확인 실패")
-    checked = host.inspect_container(state["Id"])
-    host.owned(checked, project, tier)
-    if (
-        not checked["State"]["Running"]
-        or checked.get("RestartCount", 0) != 0
-        or not host.matches(checked, local, observation)
-    ):
-        raise fail("replica 준비 확인 뒤 실행 관측 실패")
+        if result.returncode == 1 and result.stdout.strip() == "DDAK_READY_FAILURE":
+            raise ReplicaUnhealthy("replica 준비 확인 실패")
+        raise fail("Docker 준비 확인 명령 실패")
+    while True:
+        checked = host.inspect_container(state["Id"])
+        host.owned(checked, project, tier)
+        if (
+            not checked["State"]["Running"]
+            or checked.get("RestartCount", 0) != 0
+            or not host.matches(checked, local, observation)
+        ):
+            raise ReplicaUnhealthy("replica 준비 확인 뒤 실행 관측 실패")
+        health = checked["State"].get("Health") or {}
+        if not health.get("Status"):
+            raise ReplicaUnhealthy("Docker healthcheck 없음")
+        if health["Status"] == "healthy":
+            return
+        remaining = end - time.monotonic()
+        if remaining <= 0:
+            raise ReplicaUnhealthy("Docker healthcheck 준비 확인 실패")
+        time.sleep(min(0.2, remaining))
 
 
 def replace_replicas(
@@ -99,6 +139,8 @@ def replace_replicas(
     ctx: RunContext,
     ref: str,
     function: str,
+    *,
+    strict_env: bool = False,
 ) -> ProviderResult:
     ref = image_ref(ref)
     base_args = provider._args(config, ctx.project, tier)
@@ -125,14 +167,16 @@ def replace_replicas(
     provider._volumes(host, config, local_image)
     release_id = ctx.run_id
     if function == "rollback":
-        release_id = ctx.previous_release.get("local", {}).get("release_id", ctx.run_id)
+        release_id = ctx.previous_release.get("local", {}).get("release_id")
     if not isinstance(release_id, str) or not release_id or any(c in release_id for c in "\n\r\0"):
-        raise fail("RELEASE_ID 형식 오류")
+        raise fail("RELEASE_ID 형식 오류", ErrorCode.CONFIG_INVALID)
     spec = {
         "config": config.model_dump(),
         "release_id": release_id,
-        "env_keys": env_key_names(Path(config.env_file)) if config.env_file else [],
     }
+    env_hash = hashlib.sha256(
+        json.dumps(env_key_names(Path(config.env_file)) if config.env_file else []).encode()
+    ).hexdigest()
     spec_hash = hashlib.sha256(json.dumps(spec, sort_keys=True).encode()).hexdigest()
     updated = []
     previous = next((s["Config"]["Image"] for s in before.values() if s), None)
@@ -149,6 +193,7 @@ def replace_replicas(
             and current["Config"]["Image"] == ref
             and host.matches(current, local_image, observation)
             and current["Config"]["Labels"].get("ddak.spec") == spec_hash
+            and (not strict_env or current["Config"]["Labels"].get("ddak.envkeys") == env_hash)
         )
         if same and current is not None:
             if not current["State"]["Running"]:
@@ -159,8 +204,17 @@ def replace_replicas(
                 *base_args,
                 "--label",
                 f"ddak.spec={spec_hash}",
+                "--label",
+                f"ddak.envkeys={env_hash}",
+                "--label",
+                f"ddak.platform={observation.platform}",
+                "--label",
+                f"ddak.platform-digest={observation.platform_digest}",
+                "--label",
+                f"ddak.config-digest={local_image['ConfigDigest']}",
                 "-e",
                 f"RELEASE_ID={release_id}",
+                *health_args(config),
             ]
             if config.replicas is not None:
                 args += ["--label", f"ddak.replica={i}"]
@@ -185,7 +239,17 @@ def replace_replicas(
         running = host.container(name)
         if not running:
             raise fail("배포 컨테이너 관측 실패")
-        check_ready(host, config, running, local_image, observation, ref, ctx.project, tier)
+        try:
+            check_ready(host, config, running, local_image, observation, ref, ctx.project, tier)
+        except ReplicaUnhealthy as error:
+            # 확인된 불량 replica는 롤백을 기다리는 동안에도 트래픽을 받지 않는다.
+            checked = host.inspect_container(running["Id"])
+            host.owned(checked, ctx.project, tier)
+            if checked["State"]["Running"]:
+                host.run("container", "stop", "--time", "1", checked["Id"])
+            if host.inspect_container(checked["Id"])["State"]["Running"]:
+                raise fail("준비 실패 replica 정지 미확인", ErrorCode.ADAPTER_TIMEOUT) from None
+            raise fail(str(error)) from None
         if changed:
             updated.append(i)
     return ProviderResult(

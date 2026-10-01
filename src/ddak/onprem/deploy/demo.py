@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import json
 import os
@@ -12,6 +13,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
+
 from ddak.core.config import AdapterMode
 from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
@@ -19,7 +22,7 @@ from ddak.core.store import Store, release_view
 from ddak.onprem.deploy.config import env_key_names, remove_demo_secret
 from ddak.onprem.deploy.containers import Runner, fail, image_ref, subprocess_runner
 from ddak.onprem.deploy.provider import OnPremProvider, _Inventory
-from ddak.onprem.deploy.replicas import names
+from ddak.onprem.deploy.replicas import names, replace_replicas
 
 DEMO_PROJECTS = frozenset({"flaskr"})
 _RELEASE_KEYS = (
@@ -72,7 +75,10 @@ def reset_demo(
     db_path = state / "ddak.sqlite"
     if state.is_symlink() or db_path.is_symlink() or not db_path.is_file():
         raise fail("실행 상태 경로 오류", ErrorCode.PRECONDITION_FAILED)
-    inventory_model = _Inventory.model_validate(inventory)
+    try:
+        inventory_model = _Inventory.model_validate(inventory)
+    except (ValidationError, TypeError):
+        raise fail("onprem 인벤토리 오류", ErrorCode.CONFIG_INVALID) from None
     fd = os.open(state / "controller.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "a") as lease:
         meta = os.fstat(lease.fileno())
@@ -144,14 +150,31 @@ def reset_demo(
             "warning": "DB 역마이그레이션 생략. 0002 적용 상태면 다음 prepare_db는 applied=[]",
         }
         _audit(audit_path, report)
+        mutated = False
         try:
             removed = False
             for tier in baseline["images"]:
                 config = inventory_model.tiers[tier]
                 if config.env_file:
+                    # 쓰기 도중 I/O 오류는 변경 여부가 불명확하므로 복구 확인을 요구한다.
+                    mutated = mutated or "SECRET_KEY" in env_key_names(Path(config.env_file))
                     removed = remove_demo_secret(Path(config.env_file)) or removed
+                    mutated = mutated or removed
             for tier in baseline["images"]:
-                result = provider.rollback(tier, ctx)
+                with provider._session(tier, ctx) as (host, config):
+                    try:
+                        result = replace_replicas(
+                            provider,
+                            host,
+                            config,
+                            tier,
+                            ctx,
+                            baseline["images"][tier],
+                            "rollback",
+                            strict_env=True,
+                        )
+                    finally:
+                        mutated = mutated or host.mutation_started
                 report["replicas"][tier] = {"changed": result.changed, "detail": result.detail}
             with store.connection() as db:
                 db.execute("BEGIN IMMEDIATE")
@@ -165,36 +188,43 @@ def reset_demo(
                 if old and json.loads(old[0] or "null") == baseline:
                     prior = old[1]
                 db.execute(
-                    "INSERT OR REPLACE INTO env_release VALUES (?, 'local', 'SUCCEEDED', ?, ?)",
+                    "INSERT OR REPLACE INTO env_release(project,target,status,current,previous) "
+                    "VALUES (?, 'local', 'SUCCEEDED', ?, ?)",
                     (project, current, prior),
                 )
                 db.execute(
                     "UPDATE env_release SET status='ROLLED_BACK' "
-                    "WHERE project=? AND target='cloud'",
+                    "WHERE project=? AND target='cloud' AND status='DIVERGED'",
                     (project,),
                 )
-            report.update(
-                status="SUCCEEDED", after=store.environments(project), secret_key_removed=removed
-            )
-            _audit(audit_path, report)
-            return report
         except Exception as error:
             # 부분 복구 뒤 다음 배포가 장부만 믿고 진행하지 못하게 남긴다.
-            with store.connection() as db:
-                db.execute(
-                    "INSERT INTO env_release(project,target,status) "
-                    "VALUES (?, 'local', 'NEEDS_HUMAN') "
-                    "ON CONFLICT(project,target) DO UPDATE SET status='NEEDS_HUMAN'",
-                    (project,),
-                )
+            if mutated:
+                with store.connection() as db:
+                    db.execute(
+                        "INSERT INTO env_release(project,target,status) "
+                        "VALUES (?, 'local', 'NEEDS_HUMAN') "
+                        "ON CONFLICT(project,target) DO UPDATE SET status='NEEDS_HUMAN'",
+                        (project,),
+                    )
             report.update(
-                status="NEEDS_HUMAN",
+                status="NEEDS_HUMAN" if mutated else "FAILED_BEFORE_CHANGE",
                 error=error.code.value
                 if isinstance(error, DdakToolError)
                 else type(error).__name__,
             )
-            _audit(audit_path, report)
+            # 저장 실패 시에도 처음 남긴 RUNNING 감사 파일과 장부는 유지한다.
+            with contextlib.suppress(OSError):
+                _audit(audit_path, report)
             raise fail(
                 "demo reset 실패: 감사 기록과 대상 상태 수동 확인 필요",
                 ErrorCode.PRECONDITION_FAILED,
             ) from None
+        # 장부 커밋 이후 감사 파일 오류로 성공 상태를 NEEDS_HUMAN으로 되돌리지 않는다.
+        report.update(status="SUCCEEDED", secret_key_removed=removed)
+        try:
+            report["after"] = store.environments(project)
+            _audit(audit_path, report)
+        except (OSError, sqlite3.Error):
+            report["warning"] += "; 복구 장부 커밋 완료, 최종 감사 기록 저장 실패"
+        return report

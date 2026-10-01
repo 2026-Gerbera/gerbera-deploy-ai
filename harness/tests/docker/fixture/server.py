@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import signal
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 
@@ -34,4 +35,10 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
-HTTPServer(("0.0.0.0", 8000), Handler).serve_forever()  # noqa: S104 - isolated container
+def stop(signum, frame):
+    raise SystemExit(0)
+
+
+signal.signal(signal.SIGTERM, stop)
+with HTTPServer(("0.0.0.0", 8000), Handler) as server:  # noqa: S104 - isolated container
+    server.serve_forever()

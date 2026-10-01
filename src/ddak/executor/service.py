@@ -32,6 +32,7 @@ from ddak.core.registry import Registry
 from ddak.core.runlog import run_dir, write_context
 from ddak.core.snapshots import digest_json, file_manifest, materialize, preview
 from ddak.core.store import Store, release_view
+from ddak.executor.approval_meta import check_infra_summary, encode_meta
 from ddak.executor.engine import Executor, RunResult, RunStatus, TrackStatus, check_signals
 from ddak.executor.events import EventBus
 
@@ -60,6 +61,8 @@ class PreparedRun:
     facts_reader: FactsReader
     context_hash: str
     source_files: dict[str, dict[str, Any]]
+    patch_meta_json: str
+    infra_summary_json: str
 
 
 class DeploymentService:
@@ -115,7 +118,15 @@ class DeploymentService:
         patch: bytes | None = None,
         subjects: Mapping[ApprovalKind, str] | None = None,
         facts_reader: FactsReader | None = None,
+        patch_meta: dict[str, Any] | None = None,
+        infra_summary: dict[str, Any] | None = None,
     ) -> str:
+        patch_meta_json = encode_meta(patch_meta)
+        infra_summary_json = encode_meta(infra_summary, infra=True)
+        if (patch_meta is not None and not patch) or (
+            infra_summary is not None and not (subjects or {}).get("infra")
+        ):
+            raise DdakToolError(ErrorCode.CONFIG_INVALID, "승인 메타에 대응하는 대상이 없다")
         if not context.project or (plan.run_id, plan.project, plan.mode) != (
             context.run_id,
             context.project,
@@ -209,6 +220,17 @@ class DeploymentService:
         (directory / "plan.json").write_text(plan.model_dump_json(by_alias=True, indent=2) + "\n")
         if patch:
             (directory / "approved.patch").write_bytes(patch)
+        (directory / "approval-meta.json").write_text(
+            json.dumps(
+                {
+                    "patch_meta": json.loads(patch_meta_json),
+                    "infra_summary": json.loads(infra_summary_json),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n"
+        )
         self._prepared[plan.run_id] = PreparedRun(
             plan,
             context,
@@ -219,6 +241,8 @@ class DeploymentService:
             facts_reader,
             digest_json(context.to_json_dict()),
             file_manifest(source),
+            patch_meta_json,
+            infra_summary_json,
         )
         self._buses[plan.run_id] = EventBus()
         return plan.run_id
@@ -232,10 +256,14 @@ class DeploymentService:
             "snapshot": p.snapshot.model_dump(mode="json"),
             "patch": p.patch.decode() if p.patch else None,
             "plan": p.plan.model_dump(mode="json", by_alias=True),
+            "patch_meta": json.loads(p.patch_meta_json),
+            "infra_summary": json.loads(p.infra_summary_json),
         }
 
     def approve(self, run_id: str, *, approver: str, approved: bool = True) -> list[ApprovalRecord]:
         p = self._prepared[run_id]
+        if approved:
+            self._check_meta(p)
         approval_id, now = uuid.uuid4().hex, datetime.now(UTC)
         records = [
             ApprovalRecord(
@@ -255,6 +283,7 @@ class DeploymentService:
         return records
 
     def _check_approval(self, p: PreparedRun) -> None:
+        self._check_meta(p)
         records = {r.kind: r for r in self.store.approvals(p.plan.run_id)}
         for kind, digest in p.requirements.items():
             record = records.get(kind)
@@ -267,6 +296,24 @@ class DeploymentService:
                 raise DdakToolError(ErrorCode.APPROVAL_REQUIRED, "해당 내용의 승인이 필요하다")
             if kind == "patch" and record.snapshot != p.snapshot:
                 raise DdakToolError(ErrorCode.APPROVAL_REQUIRED, "패치 승인 스냅샷이 다르다")
+
+    def _check_meta(self, p: PreparedRun) -> None:
+        check_infra_summary(p.infra_summary_json, p.requirements.get("infra"))
+        try:
+            saved = json.loads(
+                (run_dir(self.root / "runs", p.plan.run_id) / "approval-meta.json").read_text()
+            )
+        except (OSError, ValueError):
+            raise DdakToolError(
+                ErrorCode.APPROVAL_REQUIRED, "승인 메타 기록을 확인할 수 없다"
+            ) from None
+        if digest_json(saved) != digest_json(
+            {
+                "patch_meta": json.loads(p.patch_meta_json),
+                "infra_summary": json.loads(p.infra_summary_json),
+            }
+        ):
+            raise DdakToolError(ErrorCode.APPROVAL_REQUIRED, "승인 메타 기록이 변경됐다")
 
     def subscribe(self, run_id: str, subscriber: Any) -> Callable[[], None]:
         return self._buses[run_id].subscribe(subscriber)

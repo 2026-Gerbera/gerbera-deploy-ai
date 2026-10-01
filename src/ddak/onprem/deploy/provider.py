@@ -140,6 +140,15 @@ class _Tier(_Config):
     def replicas_ports(self) -> _Tier:
         if self.replicas and self.replicas > 1 and self.ports:
             raise ValueError("복수 replica는 publish 포트를 사용할 수 없다")
+        if self.replicas:
+            for key in self.traefik_labels:
+                if key.startswith("traefik.http.routers.") and key.endswith(".rule"):
+                    service = self.traefik_labels.get(key.removesuffix(".rule") + ".service", "")
+                    port = self.traefik_labels.get(
+                        f"traefik.http.services.{service}.loadbalancer.server.port", ""
+                    )
+                    if not service or not port.isdecimal() or not 0 < int(port) <= 65535:
+                        raise ValueError("replica router에는 명시적 service와 port가 필요하다")
         return self
 
     @field_validator("public_env")
@@ -368,6 +377,13 @@ class OnPremProvider:
             if not isinstance(images, Mapping) or tier not in images:
                 raise fail("이전 릴리스의 tier image가 없다", ErrorCode.CONFIG_INVALID)
             if images[tier] is not None:
+                release_id = previous.get("release_id")
+                if (
+                    not isinstance(release_id, str)
+                    or not release_id
+                    or any(c in release_id for c in "\n\r\0")
+                ):
+                    raise fail("이전 릴리스 RELEASE_ID 형식 오류", ErrorCode.CONFIG_INVALID)
                 return self._replace(tier, ctx, image_ref(images[tier]), "rollback")
         with self._session(tier, ctx) as (host, config):
             return self._remove_on_host(host, config, tier, ctx)

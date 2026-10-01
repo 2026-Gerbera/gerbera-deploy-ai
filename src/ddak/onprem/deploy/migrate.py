@@ -64,7 +64,7 @@ def migrate_db(
         for phase in ("precheck", "up", "verify"):
             leftover = host.container(name)
             if leftover:
-                host.remove(leftover, ctx.project, "was")
+                host.remove(leftover, ctx.project, "was", stop_seconds=1)
             try:
                 host.mutation_started = True
                 work.run(
@@ -114,7 +114,7 @@ def migrate_db(
                 # 소유 라벨을 검사한 뒤 제거한다. 정리 실패도 성공으로 숨기지 않는다.
                 leftover = host.container(name)
                 if leftover:
-                    host.remove(leftover, ctx.project, "was")
+                    host.remove(leftover, ctx.project, "was", stop_seconds=1)
         return ProviderResult(
             provider=provider.name,
             function="migrate_db",

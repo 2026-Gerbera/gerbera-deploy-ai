@@ -20,6 +20,7 @@ from ddak.core.config import AdapterMode
 from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.release import ImageArtifact
 from ddak.onprem.deploy import preflight_inventory
+from ddak.onprem.deploy.config import env_key_names
 from tests.docker.service_rehearsal import service_rehearsals
 
 _INPUTS = ("DDAK_TEST_VM_INVENTORY", "DDAK_TEST_VM_IMAGES", "DDAK_TEST_VM_URL")
@@ -35,6 +36,11 @@ pytestmark = [
 def test_vm_fixture_update_failure_reset(tmp_path):
     inventory = json.loads(Path(os.environ["DDAK_TEST_VM_INVENTORY"]).read_text())
     assert inventory["mode"] == "vm"
+    env_file = inventory["tiers"]["was"].get("env_file")
+    if env_file and "SECRET_KEY" in env_key_names(Path(env_file)):
+        pytest.fail(
+            "VM 리허설 시작 전 전용 데모 상태를 v1로 reset해야 한다: SECRET_KEY가 남아 있음"
+        )
     supplied = json.loads(Path(os.environ["DDAK_TEST_VM_IMAGES"]).read_text())
     artifacts = [ImageArtifact.model_validate(supplied[key]) for key in ("v1", "v2", "broken")]
     url = os.environ["DDAK_TEST_VM_URL"].rstrip("/") + "/version"
