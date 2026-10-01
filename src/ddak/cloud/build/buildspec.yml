@@ -1,14 +1,18 @@
 # 플랫폼 소유 buildspec(C2). 앱 소스의 buildspec.yml은 쓰지 않는다.
-# CodeBuild 프로젝트(C1 AI Terraform)는 코드 소유 틀의 변수로 이 파일 내용을 받는다(💭 C1과 확정).
+# CodeBuild 프로젝트(Terraform, 정준우)는 코드 소유 틀의 변수로 이 파일 내용을 받는다(💭 확정 필요).
 #
-# 프로젝트 쪽 전제(C1 Terraform):
+# 프로젝트 쪽 전제(Terraform):
 #   - privileged mode 켬(docker buildx), 이미지 aws/codebuild/standard(x86_64)
 #   - 프로젝트 env IMAGE_REPO = docker.io/<네임스페이스>/<저장소>(PLAINTEXT, 값은 설정에서)
 #   - 서비스 역할은 ddak-platform/dockerhub-push 시크릿 하나만 읽는다
-# StartBuild override(codebuild.py): BUILD_TIERS, RELEASE_ID 두 개만, PLAINTEXT로.
+# 소스(10/1): 기본은 공개 GitHub 앱 저장소의 ai-prod 커밋 SHA, 대체는 S3 zip(버전 ID). codebuild.py가 고른다.
+# StartBuild override(codebuild.py): BUILD_TIERS, RELEASE_ID, SOURCE_REVISION 세 개만, PLAINTEXT로.
 #
 # 결과: tier마다 DDAK_<TIER>_INDEX / _AMD64 / _ARM64(exported-variables, codebuild.exported_names와 같은 규칙).
-# tier의 Dockerfile은 docker/<tier>.Dockerfile, 빌드 컨텍스트는 소스 루트(deploy.yaml 예시와 같음).
+# 이미지 라벨 org.opencontainers.image.revision = SOURCE_REVISION(ai-prod 커밋 SHA).
+# 빌드 캐시: 같은 저장소의 cache-<tier> 태그(registry 캐시). 배포 참조로 쓰지 않는다.
+# tier의 Dockerfile은 docker/<tier>.Dockerfile, 빌드 컨텍스트는 소스 루트(공통 계약 C-02 샘플 앱 예시와 같음).
+# deploy.yaml tiers.<tier>.dockerfile 경로 지원은 후속 작업이다.
 version: 0.2
 
 env:
@@ -35,6 +39,7 @@ phases:
         # override 값 형식 검사. 값을 출력하지 않는다(env 타입을 바꿔 시크릿을 끌어온 경우 노출 방지, research/IAM E32).
         tier_re='^[a-z][a-z0-9_-]{0,31}$'
         [[ "${RELEASE_ID:-}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || { echo "RELEASE_ID 형식 오류"; exit 1; }
+        [[ "${SOURCE_REVISION:-}" =~ ^[0-9a-f]{40}$ ]] || { echo "SOURCE_REVISION 형식 오류"; exit 1; }
         [[ "${IMAGE_REPO:-}" =~ ^docker\.io/[a-z0-9]+([._-][a-z0-9]+)*/[a-z0-9]+([._-][a-z0-9]+)*$ ]] || { echo "IMAGE_REPO 형식 오류"; exit 1; }
         IFS=',' read -r -a TIERS <<< "${BUILD_TIERS:-}"
         [ "${#TIERS[@]}" -gt 0 ] || { echo "BUILD_TIERS 비어 있음"; exit 1; }
@@ -43,9 +48,10 @@ phases:
           [ -f "docker/$t.Dockerfile" ] || { echo "docker/$t.Dockerfile 없음"; exit 1; }
         done
       - echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USER" --password-stdin
-      # arm64를 x86 빌드 서버에서 만들기 위한 QEMU 등록(P0 방식). 💭 이미지 digest 고정 필요
-      - docker run --privileged --rm tonistiigi/binfmt --install arm64
-      - docker buildx create --name ddak --driver docker-container --use
+      # arm64를 x86 빌드 서버에서 만들기 위한 QEMU 등록(P0 방식). privileged로 뜨므로 digest로 고정한다.
+      # binfmt qemu-v10.2.3, buildkit v0.33.1(2026-10-02 Docker Hub 기준). 올릴 때 test_buildspec.py도 고친다.
+      - docker run --privileged --rm tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0 --install arm64
+      - docker buildx create --name ddak --driver docker-container --driver-opt image=moby/buildkit@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea --use
       - docker buildx inspect --bootstrap > /dev/null
 
   build:
@@ -57,9 +63,13 @@ phases:
         for t in "${TIERS[@]}"; do
           start=$(date +%s)
           # provenance·sbom을 끄면 index에 amd64·arm64 두 플랫폼만 남는다(attestation 항목 없음)
+          # 첫 빌드는 캐시 태그가 없어 cache-from이 경고만 내고 계속한다
           docker buildx build \
             --platform linux/amd64,linux/arm64 \
             --provenance=false --sbom=false \
+            --label "org.opencontainers.image.revision=$SOURCE_REVISION" \
+            --cache-from "type=registry,ref=$IMAGE_REPO:cache-$t" \
+            --cache-to "type=registry,ref=$IMAGE_REPO:cache-$t,mode=max" \
             -f "docker/$t.Dockerfile" \
             -t "$IMAGE_REPO:$t-$RELEASE_ID" \
             --metadata-file "/tmp/ddak-meta-$t.json" \
