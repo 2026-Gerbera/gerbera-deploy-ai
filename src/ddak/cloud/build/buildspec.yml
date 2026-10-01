@@ -1,0 +1,90 @@
+# 플랫폼 소유 buildspec(C2). 앱 소스의 buildspec.yml은 쓰지 않는다.
+# CodeBuild 프로젝트(C1 AI Terraform)는 코드 소유 틀의 변수로 이 파일 내용을 받는다(💭 C1과 확정).
+#
+# 프로젝트 쪽 전제(C1 Terraform):
+#   - privileged mode 켬(docker buildx), 이미지 aws/codebuild/standard(x86_64)
+#   - 프로젝트 env IMAGE_REPO = docker.io/<네임스페이스>/<저장소>(PLAINTEXT, 값은 설정에서)
+#   - 서비스 역할은 ddak-platform/dockerhub-push 시크릿 하나만 읽는다
+# StartBuild override(codebuild.py): BUILD_TIERS, RELEASE_ID 두 개만, PLAINTEXT로.
+#
+# 결과: tier마다 DDAK_<TIER>_INDEX / _AMD64 / _ARM64(exported-variables, codebuild.exported_names와 같은 규칙).
+# tier의 Dockerfile은 docker/<tier>.Dockerfile, 빌드 컨텍스트는 소스 루트(deploy.yaml 예시와 같음).
+version: 0.2
+
+env:
+  shell: bash
+  secrets-manager:
+    DOCKERHUB_USER: ddak-platform/dockerhub-push:username
+    DOCKERHUB_TOKEN: ddak-platform/dockerhub-push:password
+  # exported-variables는 정적으로 선언해야 한다. flaskr tier(web, was)만 둔다.
+  # tier가 늘면 여기와 테스트(test_buildspec.py)를 함께 고친다.
+  exported-variables:
+    - DDAK_WEB_INDEX
+    - DDAK_WEB_AMD64
+    - DDAK_WEB_ARM64
+    - DDAK_WAS_INDEX
+    - DDAK_WAS_AMD64
+    - DDAK_WAS_ARM64
+
+phases:
+  pre_build:
+    on-failure: ABORT
+    commands:
+      - |
+        set -eo pipefail
+        # override 값 형식 검사. 값을 출력하지 않는다(env 타입을 바꿔 시크릿을 끌어온 경우 노출 방지, research/IAM E32).
+        tier_re='^[a-z][a-z0-9_-]{0,31}$'
+        [[ "${RELEASE_ID:-}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || { echo "RELEASE_ID 형식 오류"; exit 1; }
+        [[ "${IMAGE_REPO:-}" =~ ^docker\.io/[a-z0-9]+([._-][a-z0-9]+)*/[a-z0-9]+([._-][a-z0-9]+)*$ ]] || { echo "IMAGE_REPO 형식 오류"; exit 1; }
+        IFS=',' read -r -a TIERS <<< "${BUILD_TIERS:-}"
+        [ "${#TIERS[@]}" -gt 0 ] || { echo "BUILD_TIERS 비어 있음"; exit 1; }
+        for t in "${TIERS[@]}"; do
+          [[ "$t" =~ $tier_re ]] || { echo "BUILD_TIERS 형식 오류"; exit 1; }
+          [ -f "docker/$t.Dockerfile" ] || { echo "docker/$t.Dockerfile 없음"; exit 1; }
+        done
+      - echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USER" --password-stdin
+      # arm64를 x86 빌드 서버에서 만들기 위한 QEMU 등록(P0 방식). 💭 이미지 digest 고정 필요
+      - docker run --privileged --rm tonistiigi/binfmt --install arm64
+      - docker buildx create --name ddak --driver docker-container --use
+      - docker buildx inspect --bootstrap > /dev/null
+
+  build:
+    on-failure: ABORT
+    commands:
+      - |
+        set -eo pipefail
+        IFS=',' read -r -a TIERS <<< "$BUILD_TIERS"
+        for t in "${TIERS[@]}"; do
+          start=$(date +%s)
+          # provenance·sbom을 끄면 index에 amd64·arm64 두 플랫폼만 남는다(attestation 항목 없음)
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --provenance=false --sbom=false \
+            -f "docker/$t.Dockerfile" \
+            -t "$IMAGE_REPO:$t-$RELEASE_ID" \
+            --metadata-file "/tmp/ddak-meta-$t.json" \
+            --push .
+          echo "BUILD_SECONDS tier=$t s=$(( $(date +%s) - start ))"
+        done
+
+  post_build:
+    commands:
+      - |
+        set -eo pipefail
+        [ "$CODEBUILD_BUILD_SUCCEEDING" = "1" ] || exit 1
+        digest_re='^sha256:[a-f0-9]{64}$'
+        IFS=',' read -r -a TIERS <<< "$BUILD_TIERS"
+        for t in "${TIERS[@]}"; do
+          # index digest는 push 결과 메타데이터에서, 플랫폼 digest는 저장소에서 그 index를 다시 읽어 얻는다
+          index=$(jq -r '."containerimage.digest"' "/tmp/ddak-meta-$t.json")
+          [[ "$index" =~ $digest_re ]] || { echo "$t index digest 형식 오류"; exit 1; }
+          raw=$(docker buildx imagetools inspect --raw "$IMAGE_REPO@$index")
+          amd64=$(printf '%s' "$raw" | jq -r '.manifests[] | select(.platform.os=="linux" and .platform.architecture=="amd64") | .digest')
+          arm64=$(printf '%s' "$raw" | jq -r '.manifests[] | select(.platform.os=="linux" and .platform.architecture=="arm64") | .digest')
+          for d in "$amd64" "$arm64"; do
+            [[ "$d" =~ $digest_re ]] || { echo "$t digest 형식 오류"; exit 1; }
+          done
+          name="DDAK_$(printf '%s' "$t" | tr 'a-z-' 'A-Z_')"
+          export "${name}_INDEX=$index" "${name}_AMD64=$amd64" "${name}_ARM64=$arm64"
+          echo "DIGEST tier=$t index=$index"
+        done

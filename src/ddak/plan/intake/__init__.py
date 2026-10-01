@@ -1,23 +1,42 @@
-"""plan/intake: 배포 요청 접수·소스 스냅샷. 담당 김준석(O2).
+"""plan/intake: 배포 요청 접수(GitHub 가져오기·커밋 고정·deploy.yaml·소스 해시). 담당 김준석(O2).
 
-공개 함수: receive_deploy_request. 다른 디렉토리는 이 파일의 공개 함수만 쓴다.
-AI를 import하지 않는다(import-linter 계약).
-빈 구현이다. 구현이 끝나면 이 디렉토리에 tool.py를 만들고 @tool("<이름>")으로 등록한다
-(시그니처: inp: <Tool>Input, ctx: RunContext -> <Tool>Output, 모델은 ddak.core.contracts.tools).
+공개 이름: receive_deploy_request, cleanup_stale_sources, FetchPolicy, WatchTarget, Watcher,
+load_watch_targets, resolve_head, warm_cache.
+AI를 import하지 않는다(import-linter 계약). tool.py는 여기서 import하지 않는다(ddak.app이 탐색).
 """
 
 from __future__ import annotations
 
 from ddak.core.contracts.context import RunContext
+from ddak.core.contracts.tools.receive_deploy_request import (
+    ReceiveDeployRequestInput,
+    ReceiveDeployRequestOutput,
+)
+from ddak.plan.intake.fetch import resolve_head, warm_cache
+from ddak.plan.intake.logic import Fetcher, cleanup_stale_sources, receive
+from ddak.plan.intake.policy import FetchPolicy
+from ddak.plan.intake.watch import Watcher, WatchTarget, load_watch_targets
 
-_TODO = "plan/intake 미구현: 담당 김준석"
+__all__ = [
+    "FetchPolicy",
+    "WatchTarget",
+    "Watcher",
+    "cleanup_stale_sources",
+    "load_watch_targets",
+    "receive_deploy_request",
+    "resolve_head",
+    "warm_cache",
+]
 
 
-def receive_deploy_request(inp: object, ctx: RunContext) -> object:
-    """receive_deploy_request 빈 구현.
-
-    입력(모델 미정, core/contracts/deploy_request.py 자리): 채팅 의도 JSON을 코드가 확인한 배포
-    요청(대상 local|cloud|both, 프로젝트, 소스 위치). 출력: 요청 ID + 소스 스냅샷
-    (SnapshotBinding, core/contracts/release.py). 스냅샷은 ddak.core.snapshots를 쓴다.
-    """
-    raise NotImplementedError(_TODO)
+def receive_deploy_request(
+    inp: ReceiveDeployRequestInput,
+    ctx: RunContext,
+    *,
+    policy: FetchPolicy | None = None,
+    fetcher: Fetcher | None = None,
+) -> ReceiveDeployRequestOutput:
+    """policy·fetcher는 호출자(flow)·테스트 주입용. 없으면 환경변수 정책과 GitHub fetch."""
+    if fetcher is None:
+        return receive(inp, ctx, policy=policy)
+    return receive(inp, ctx, policy=policy, fetcher=fetcher)

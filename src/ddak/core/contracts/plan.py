@@ -93,12 +93,12 @@ class Planner(ContractModel):
 
 
 class Invalidated(ContractModel):
-    """AI가 빼려 했으나 계획 검증이 무효화한 것(강제 포함)."""
+    """AI가 시도한 것(뺌/포함 요청)을 계획 검증이 무효화한 기록(강제 포함/강제 제외)."""
 
     id: str
-    attempt: Literal["skip"] = "skip"
+    attempt: Literal["skip", "include"] = "skip"
     by: By = By.AI
-    result: Literal["forced_include"] = "forced_include"
+    result: Literal["forced_include", "forced_skip"] = "forced_include"
     why: str = Field(max_length=200)
 
 

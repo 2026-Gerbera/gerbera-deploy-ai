@@ -1,0 +1,120 @@
+{
+  "$defs": {
+    "RunMode": {
+      "description": "run 종류. 초기 배포도 같은 파이프라인으로 한다(✅ 장부 14).",
+      "enum": [
+        "update",
+        "bootstrap"
+      ],
+      "title": "RunMode",
+      "type": "string"
+    },
+    "SnapshotBinding": {
+      "additionalProperties": false,
+      "properties": {
+        "build_snapshot_hash": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Build Snapshot Hash",
+          "type": "string"
+        },
+        "patch_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Patch Sha256"
+        },
+        "source_snapshot_hash": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Source Snapshot Hash",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_snapshot_hash",
+        "build_snapshot_hash"
+      ],
+      "title": "SnapshotBinding",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "commit": {
+      "pattern": "^[0-9a-f]{40}$",
+      "title": "Commit",
+      "type": "string"
+    },
+    "deploy_config": {
+      "additionalProperties": true,
+      "title": "Deploy Config",
+      "type": "object"
+    },
+    "file_count": {
+      "minimum": 0,
+      "title": "File Count",
+      "type": "integer"
+    },
+    "ignored_symlinks": {
+      "minimum": 0,
+      "title": "Ignored Symlinks",
+      "type": "integer"
+    },
+    "mode": {
+      "$ref": "#/$defs/RunMode"
+    },
+    "project": {
+      "title": "Project",
+      "type": "string"
+    },
+    "repo_url": {
+      "maxLength": 300,
+      "minLength": 1,
+      "title": "Repo Url",
+      "type": "string"
+    },
+    "run_id": {
+      "description": "실행 ID. 모든 툴의 필수 입력",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+      "title": "Run Id",
+      "type": "string"
+    },
+    "snapshot": {
+      "$ref": "#/$defs/SnapshotBinding"
+    },
+    "source_dir": {
+      "title": "Source Dir",
+      "type": "string"
+    },
+    "target": {
+      "enum": [
+        "local",
+        "cloud",
+        "both"
+      ],
+      "title": "Target",
+      "type": "string"
+    }
+  },
+  "required": [
+    "run_id",
+    "project",
+    "mode",
+    "target",
+    "repo_url",
+    "commit",
+    "source_dir",
+    "snapshot",
+    "file_count",
+    "ignored_symlinks",
+    "deploy_config"
+  ],
+  "title": "ReceiveDeployRequestOutput",
+  "type": "object"
+}

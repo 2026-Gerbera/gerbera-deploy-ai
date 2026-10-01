@@ -1,23 +1,43 @@
-"""plan/detect: 변경 탐지·스냅샷 해시. 담당 김준석(O2).
+"""plan/detect: 변경 탐지·스냅샷 해시. 담당 김준석(O2). AI를 import하지 않는다.
 
-공개 함수: detect_changed_tiers. 다른 디렉토리는 이 파일의 공개 함수만 쓴다.
-AI를 import하지 않는다(import-linter 계약).
-빈 구현이다. 구현이 끝나면 이 디렉토리에 tool.py를 만들고 @tool("<이름>")으로 등록한다
-(시그니처: inp: <Tool>Input, ctx: RunContext -> <Tool>Output, 모델은 ddak.core.contracts.tools).
+공개: detect_changed_tiers(툴 본체), facts_reader(DeploymentService.prepare 용).
 """
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from ddak.core.contracts.context import RunContext
+from ddak.core.contracts.errors import DdakToolError, ErrorCode
+from ddak.core.contracts.tools.detect_changed_tiers import (
+    DetectChangedTiersInput,
+    DetectChangedTiersOutput,
+)
+from ddak.core.snapshots import digest_json, file_manifest
+from ddak.plan.detect import logic
 
-_TODO = "plan/detect 미구현: 담당 김준석"
+__all__ = ["detect_changed_tiers", "facts_reader"]
 
 
-def detect_changed_tiers(inp: object, ctx: RunContext) -> object:
-    """detect_changed_tiers 빈 구현.
+def facts_reader(source: Path) -> str:
+    """source_facts 와 같은 식(소스 manifest 해시)."""
+    return digest_json(file_manifest(source))
 
-    입력(모델 미정): 소스 스냅샷(SnapshotBinding) + 환경별 마지막 성공 배포의 file manifest
-    (ddak.core.store). 출력: 바뀐 tier 목록과 스냅샷 해시(ddak.core.snapshots.file_manifest,
-    digest_json). git 커밋은 필수가 아니다.
-    """
-    raise NotImplementedError(_TODO)
+
+def detect_changed_tiers(
+    inp: DetectChangedTiersInput, ctx: RunContext, *, root: Path | None = None
+) -> DetectChangedTiersOutput:
+    cfg = logic.parse_config(ctx.deploy_config)
+    manifest = logic.read_manifest(logic.resolve_source(inp.source_dir, root))
+    if digest_json({k: v.model_dump(mode="json") for k, v in manifest.items()}) != (
+        inp.snapshot.source_snapshot_hash
+    ):
+        raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "접수 이후 소스가 변경됐다")
+    return DetectChangedTiersOutput(
+        changed=logic.changed_tiers(cfg, manifest, inp.previous),
+        new_migrations=logic.new_migrations(cfg, manifest, inp.previous),
+        modified_migrations=logic.modified_migrations(cfg, manifest, inp.previous),
+        changed_paths=logic.changed_paths(manifest, inp.previous),
+        facts_hash=logic.facts_hash(manifest),
+        manifest=manifest,
+    )
