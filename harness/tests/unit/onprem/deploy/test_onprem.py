@@ -182,7 +182,7 @@ def runtime(tmp_path: Path):
         },
     )
     provider = OnPremProvider(fake)
-    provider.inject_config([], ctx)
+    provider.inject_config(["SECRET_KEY"], ctx)
     return fake, provider, ctx
 
 
@@ -425,7 +425,7 @@ def test_health_remains_injected_and_old_result_defaults_work() -> None:
     result = ProviderResult(provider="custom", function="health_check")
     assert result.observation is None and result.passed
     assert OnPremProvider(health_checker=lambda ctx: result).health_check(RunContext("r")) == result
-    with pytest.raises(DdakToolError, match="O3"):
+    with pytest.raises(DdakToolError, match="health 대상 이미지"):
         OnPremProvider().health_check(RunContext("r"))
 
 
