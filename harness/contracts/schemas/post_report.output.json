@@ -1,0 +1,122 @@
+{
+  "$defs": {
+    "ReportIssue": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "maxLength": 80,
+          "minLength": 1,
+          "title": "Code",
+          "type": "string"
+        },
+        "env": {
+          "enum": [
+            "local",
+            "cloud",
+            "both"
+          ],
+          "title": "Env",
+          "type": "string"
+        },
+        "severity": {
+          "enum": [
+            "info",
+            "warning",
+            "high",
+            "critical"
+          ],
+          "title": "Severity",
+          "type": "string"
+        },
+        "suggested_next": {
+          "default": "",
+          "maxLength": 200,
+          "title": "Suggested Next",
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "severity",
+        "code",
+        "env",
+        "title"
+      ],
+      "title": "ReportIssue",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "image_index_digests": {
+      "additionalProperties": {
+        "pattern": "^sha256:[0-9a-f]{64}$",
+        "type": "string"
+      },
+      "title": "Image Index Digests",
+      "type": "object"
+    },
+    "issues": {
+      "items": {
+        "$ref": "#/$defs/ReportIssue"
+      },
+      "title": "Issues",
+      "type": "array"
+    },
+    "passed": {
+      "default": true,
+      "title": "Passed",
+      "type": "boolean"
+    },
+    "platform_digests": {
+      "additionalProperties": {
+        "additionalProperties": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "type": "object"
+      },
+      "title": "Platform Digests",
+      "type": "object"
+    },
+    "run_id": {
+      "description": "실행 ID. 모든 툴의 필수 입력",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+      "title": "Run Id",
+      "type": "string"
+    },
+    "source": {
+      "default": "rule",
+      "enum": [
+        "rule",
+        "live",
+        "cache",
+        "replay"
+      ],
+      "title": "Source",
+      "type": "string"
+    },
+    "status": {
+      "const": "ready",
+      "default": "ready",
+      "title": "Status",
+      "type": "string"
+    },
+    "summary": {
+      "maxLength": 400,
+      "title": "Summary",
+      "type": "string"
+    }
+  },
+  "required": [
+    "run_id",
+    "summary"
+  ],
+  "title": "PostReportOutput",
+  "type": "object"
+}

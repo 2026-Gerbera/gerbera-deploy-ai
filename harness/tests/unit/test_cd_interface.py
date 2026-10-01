@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.util
 import inspect
 from collections.abc import Callable
 
@@ -10,6 +9,7 @@ import pytest
 
 from ddak.cd.dispatch import AwsProvider, FakeProvider, OnPremProvider, select_provider
 from ddak.cd.interface import INTERFACE_FUNCTIONS, CdProvider, ProviderName
+from ddak.cloud.deploy import AzureProvider, GcpProvider, cloud_provider
 from ddak.core.config import AdapterMode
 from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.enums import Target
@@ -20,7 +20,9 @@ def _params(fn: Callable[..., object]) -> list[str]:
     return [p for p in inspect.signature(fn).parameters if p != "self"]
 
 
-@pytest.mark.parametrize("cls", [AwsProvider, OnPremProvider, FakeProvider])
+@pytest.mark.parametrize(
+    "cls", [AwsProvider, GcpProvider, AzureProvider, OnPremProvider, FakeProvider]
+)
 def test_providers_implement_all_interface_functions(cls: type) -> None:
     for name in INTERFACE_FUNCTIONS:
         proto, impl = getattr(CdProvider, name), getattr(cls, name, None)
@@ -31,7 +33,9 @@ def test_providers_implement_all_interface_functions(cls: type) -> None:
 def test_provider_targets() -> None:
     assert AwsProvider.target is Target.CLOUD
     assert OnPremProvider.target is Target.LOCAL
-    assert {p.value for p in ProviderName} == {"aws", "onprem"}
+    assert GcpProvider.target is Target.CLOUD
+    assert AzureProvider.target is Target.CLOUD
+    assert {p.value for p in ProviderName} == {"aws", "gcp", "azure", "onprem"}
 
 
 def test_onprem_ensure_tls_is_not_applicable_not_a_failure() -> None:
@@ -56,11 +60,23 @@ def test_select_provider_uses_target_and_mode_only() -> None:
     assert local.ensure_tls("check", RunContext("run-1")).applicable is False
 
 
-def test_gcp_and_azure_have_no_provider_code_yet() -> None:
-    # CSP 우선순위 AWS 1순위, GCP·Azure는 후순위(인터페이스만, 코드 없음, ✅ 9/30).
-    # provider는 환경별 팀 디렉토리(cloud/deploy, onprem/deploy)와 cd/fake.py에만 있다.
-    assert AwsProvider.__module__ == "ddak.cloud.deploy.provider"
+def test_cloud_providers_are_split_and_selected_by_name() -> None:
+    assert AwsProvider.__module__ == "ddak.cloud.deploy.providers.aws"
+    assert GcpProvider.__module__ == "ddak.cloud.deploy.providers.gcp"
+    assert AzureProvider.__module__ == "ddak.cloud.deploy.providers.azure"
     assert OnPremProvider.__module__ == "ddak.onprem.deploy.provider"
     assert FakeProvider.__module__ == "ddak.cd.fake"
-    for name in ("ddak.cd.providers", "ddak.cloud.gcp", "ddak.cloud.azure"):
-        assert importlib.util.find_spec(name) is None, name
+    assert isinstance(cloud_provider("aws"), AwsProvider)
+    assert isinstance(cloud_provider("gcp"), GcpProvider)
+    assert isinstance(cloud_provider("azure"), AzureProvider)
+
+
+@pytest.mark.parametrize("provider", [GcpProvider(), AzureProvider()])
+def test_unimplemented_cloud_providers_fail_explicitly(provider: CdProvider) -> None:
+    with pytest.raises(DdakToolError, match="아직 지원하지 않는다"):
+        provider.health_check(RunContext("run-1"))
+
+
+def test_unknown_cloud_provider_is_rejected() -> None:
+    with pytest.raises(DdakToolError, match="지원하지 않는 cloud provider"):
+        cloud_provider("unknown")

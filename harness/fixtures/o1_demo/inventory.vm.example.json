@@ -1,0 +1,32 @@
+{
+  "mode": "vm",
+  "public_url": "https://demo.example.invalid",
+  "ssh": {
+    "host": "was.example.invalid",
+    "user": "deploy",
+    "port": 22,
+    "key_path": "/absolute/path/to/deploy-identity",
+    "host_key_fingerprint": "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "jump_host": {
+      "host": "jump.example.invalid",
+      "user": "deploy",
+      "port": 22,
+      "host_key_fingerprint": "SHA256:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+    }
+  },
+  "tiers": {
+    "was": {
+      "name": "flaskr-app", "platform": "linux/amd64", "replicas": 3,
+      "ports": [], "network": "flaskr-net",
+      "env_file": "/absolute/path/to/flaskr/was.env",
+      "public_env": {"APP_ENV": "production", "SESSION_COOKIE_SECURE": "true"},
+      "traefik_labels": {
+        "traefik.enable": "true",
+        "traefik.http.routers.flaskr.rule": "PathPrefix(`/`)",
+        "traefik.http.routers.flaskr.service": "flaskr",
+        "traefik.http.services.flaskr.loadbalancer.server.port": "8000"
+      },
+      "ready": {"port": 8000, "path": "/health/ready", "timeout_s": 30.0}
+    }
+  }
+}

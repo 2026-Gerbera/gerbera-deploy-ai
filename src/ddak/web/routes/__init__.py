@@ -2,3 +2,16 @@
 
 라우터를 여기로 나누면 app.py에서 include_router로 붙인다. 툴 모듈을 import하지 않는다(계약 4).
 """
+
+from ddak.web.routes import approvals, events, pages, patches, results, settings
+
+ROUTERS = (
+    pages.router,
+    settings.router,
+    approvals.router,
+    patches.router,
+    events.router,
+    results.router,
+)
+
+__all__ = ["ROUTERS"]
