@@ -12,7 +12,8 @@ provider는 대상 환경 하나(aws = cloud, onprem = local)의 배포 방법�
 | inject_config | inject_env_config(설정) · sync_env_to_cloud(시크릿 값) |
 | ensure_tls | ensure_tls (클라우드만. 온프렘은 applicable=False를 돌려준다) |
 
-GCP·Azure(후순위)는 이 Protocol을 구현하는 provider 파일을 나중에 더한다. 지금은 코드가 없다.
+AWS·GCP·Azure는 cloud/deploy/providers에서 이 Protocol을 구현한다. 실제 동작은 AWS가 우선이며
+GCP·Azure는 지원 전까지 명시적인 CONFIG_INVALID 오류를 돌려준다.
 """
 
 from __future__ import annotations
@@ -39,9 +40,11 @@ INTERFACE_FUNCTIONS = (
 
 
 class ProviderName(StrEnum):
-    """구현이 있는 provider. CSP 우선순위 AWS 1순위(✅ 9/30). GCP·Azure는 인터페이스만."""
+    """CD provider 이름. 실제 클라우드 동작의 우선순위는 AWS다."""
 
     AWS = "aws"  # target cloud
+    GCP = "gcp"  # target cloud, 인터페이스 구현만
+    AZURE = "azure"  # target cloud, 인터페이스 구현만
     ONPREM = "onprem"  # target local
 
 

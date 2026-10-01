@@ -15,7 +15,7 @@ from ddak.core.contracts.context import RunContext
 
 
 def test_cloud_deploy_skeleton_raises_not_implemented() -> None:
-    assert AwsProvider.__module__ == "ddak.cloud.deploy.provider"
+    assert AwsProvider.__module__ == "ddak.cloud.deploy.providers.aws"
     with pytest.raises(NotImplementedError, match="cloud/deploy 미구현: 담당 안승환"):
         deploy_service("was", RunContext("run-1"))
     with pytest.raises(NotImplementedError, match="cloud/deploy 미구현: 담당 안승환"):
