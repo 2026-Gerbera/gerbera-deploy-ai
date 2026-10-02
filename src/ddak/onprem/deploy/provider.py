@@ -368,12 +368,17 @@ class OnPremProvider:
             raise
 
     @staticmethod
-    def _args(config: _Tier, project: str, tier: str) -> list[str]:
+    def _args(config: _Tier, project: str, tier: str, *, migration: bool = False) -> list[str]:
         args = ["--platform", config.platform, "--network", config.network]
         for key, value in {"managed": "true", "project": project, "tier": tier}.items():
             args.extend(["--label", f"ddak.{key}={value}"])
         if config.env_file:
             _private_env(Path(config.env_file))
+            if not migration and tier == "was":
+                from ddak.onprem.deploy.config import env_key_names
+
+                if "DATABASE_URL_MIGRATOR" in env_key_names(Path(config.env_file)):
+                    raise fail("앱 env에 마이그레이션 계정 키가 있다", ErrorCode.CONFIG_INVALID)
             args.extend(["--env-file", config.env_file])
         for key, value in config.public_env.items():
             args.extend(["-e", f"{key}={value}"])

@@ -75,6 +75,7 @@ def initialize(directory: Path, layout: str, base_url: str, platform: str) -> di
         migration["DATABASE_URL_MIGRATOR"] = (
             f"mysql+pymysql://flaskr_migrator:{migration_password}@192.168.10.3:3306/flaskr?charset=utf8mb4"
         )
+        migration["DATABASE_URL"] = migration["DATABASE_URL_MIGRATOR"]
         db = {
             "MYSQL_DATABASE": "flaskr",
             "MYSQL_ROOT_PASSWORD": secrets.token_hex(32),

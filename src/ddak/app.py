@@ -14,25 +14,35 @@ import asyncio
 import contextlib
 import importlib
 import os
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any
+from dataclasses import replace
+from pathlib import Path
+from typing import Any, Literal
 
 from fastapi import FastAPI
 
 from ddak.cd import configure_cloud_tls
+from ddak.cloud.infra import has_infra_binding
 from ddak.cloud.tls import ensure_tls
 from ddak.core.ai.status import llm_status
 from ddak.core.config import Settings
+from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.deploy_request import DeployRequest
 from ddak.core.contracts.enums import RunMode
+from ddak.core.contracts.errors import DdakToolError, ErrorCode
+from ddak.core.contracts.plan import Plan
 from ddak.core.contracts.plan_facts import FileMeta
 from ddak.core.logging import get_logger
 from ddak.core.registry import REGISTRY, Registry, import_tools
+from ddak.core.snapshots import copy_source
+from ddak.executor.approval_meta import check_infra_summary, encode_meta
 from ddak.executor.infra import refresh_infra_context
 from ddak.executor.service import DeploymentService
+from ddak.onprem.inventory import load_inventory
 from ddak.plan import new_run_id, plan_deployment
-from ddak.plan.intake import FetchPolicy, Watcher, WatchTarget, load_watch_targets
+from ddak.plan.intake import FetchPolicy, Watcher, WatchTarget, load_watch_targets, resolve_head
 from ddak.web.app import create_app
 
 _log = get_logger("plan")
@@ -68,6 +78,33 @@ def _previous_manifests(store: Any, project: str) -> dict[Any, dict[str, FileMet
     return out
 
 
+async def _infra_approval(service: DeploymentService, plan: Plan, ctx: RunContext):
+    if ctx.targets == "onprem" or not any(s.tool == "apply_infra" for s in plan.deploy.cloud.steps):
+        return {}, None
+    if not has_infra_binding(ctx.run_id):
+        raise DdakToolError(
+            ErrorCode.INFRA_MISSING, "generate_infra 번들 및 run별 인프라 세션 연결이 없다"
+        )
+    # 이미 조립된 번들만 검증한다. 생성기 입출력 계약을 임의로 추정하거나 가짜 plan을 만들지 않는다.
+    output = {}
+    for name in ("validate_infra", "plan_infra"):
+        tool = service.registry.get(name)
+        inp = tool.input_model.model_validate({"run_id": ctx.run_id})
+        bounded = replace(ctx, deadline=time.monotonic() + tool.spec.timeout_s)
+        if tool.is_async:
+            result = await asyncio.wait_for(tool.fn(inp, bounded), tool.spec.timeout_s)
+        else:
+            # 동기 실행기의 자식 프로세스 제한 시간은 C1 runtime이 관리한다.
+            result = await asyncio.to_thread(tool.fn, inp, bounded)
+        if not isinstance(result, tool.output_model) or getattr(result, "passed", None) is not True:
+            raise DdakToolError(ErrorCode.INFRA_MISSING, f"{name} 검사 불합격")
+        output = result.model_dump(mode="json")
+    digest = output["plan_sha256"]
+    summary = output["summary"]
+    check_infra_summary(encode_meta(summary, infra=True), digest)
+    return {"infra": digest}, summary
+
+
 def _attach_watch(app: FastAPI, settings: Settings) -> None:
     """DDAK_WATCH_REPO_URL이 있을 때만 앱 lifespan에 저장소 감시를 붙인다(web/app.py는 그대로)."""
     if not os.environ.get("DDAK_WATCH_REPO_URL"):
@@ -77,29 +114,11 @@ def _attach_watch(app: FastAPI, settings: Settings) -> None:
     inner = app.router.lifespan_context
 
     async def on_new_commit(t: WatchTarget, sha: str) -> None:
-        # 계획 생성·검증까지만 자동. 배포는 사람 승인 뒤 실행기 몫이다(승인 UI 연결은 C3).
-        store = app.state.deployment.store
-        prev = _previous_manifests(store, t.project)
-        mode = RunMode.UPDATE if any(v is not None for v in prev.values()) else RunMode.BOOTSTRAP
-        request = DeployRequest(
-            project=t.project, repo_url=t.repo_url, ref=t.ref, target=t.target, mode=mode
-        )
-        run_id = new_run_id()
-        bundle = await asyncio.to_thread(
-            plan_deployment,
-            request,
-            run_id=run_id,
-            settings=settings,
-            previous_manifests=lambda project: _previous_manifests(store, project),
-            fetch_policy=policy,
-        )
-        _log.info(
-            "새 커밋 계획 생성, 승인 대기",
-            run_id=run_id,
-            project=t.project,
-            commit=sha,
-            plan_fallback=bool(bundle.plan.planner and bundle.plan.planner.fallback),
-        )
+        service = app.state.deployment
+        rid = await _prepare_commit(service, settings, t, sha, policy=policy)
+        if service.get_run(rid)["status"] == "FAILED_BEFORE_DEPLOY":
+            # Watcher의 제한 재시도를 유지한다. 외부 예외 원문은 넘기지 않는다.
+            raise DdakToolError(ErrorCode.PRECONDITION_FAILED, f"배포 준비 실패: {rid}")
 
     @asynccontextmanager
     async def lifespan(a: FastAPI) -> AsyncIterator[Any]:
@@ -116,13 +135,128 @@ def _attach_watch(app: FastAPI, settings: Settings) -> None:
     app.router.lifespan_context = lifespan
 
 
+async def _prepare_commit(
+    service: DeploymentService,
+    settings: Settings,
+    target: WatchTarget,
+    sha: str | None,
+    *,
+    policy: FetchPolicy,
+    trigger: Literal["auto", "manual"] = "auto",
+) -> str:
+    """감지한 SHA를 계획·승인에 연결한다. 실행은 승인 이후에만 가능하다."""
+    run_id = new_run_id()
+    context = None
+    phase = "request"
+    try:
+        saved = service.get_project_settings(target.project) or {}
+        previous = _previous_manifests(service.store, target.project)
+        mode = (
+            RunMode.UPDATE if any(v is not None for v in previous.values()) else RunMode.BOOTSTRAP
+        )
+        request = DeployRequest(
+            project=target.project,
+            repo_url=target.repo_url,
+            ref=target.ref,
+            target=target.target,
+            mode=mode,
+        )
+        context = RunContext(
+            run_id=run_id,
+            project=request.project,
+            mode=mode,
+            adapter_mode=settings.adapter_mode,
+            repo_url=request.repo_url,
+            ref=request.ref,
+            source_sha=sha,
+            trigger=trigger,
+            cloud_domain=saved.get("cloud_domain"),
+            targets="onprem" if request.target == "local" else request.target,
+        )
+        if sha is None:
+            phase = "resolve"
+            ref = request.ref
+            if ref and not ref.startswith("refs/tags/"):
+                ref = "refs/heads/" + ref
+            sha = await asyncio.to_thread(resolve_head, request.repo_url, ref, policy=policy)
+            context = replace(context, source_sha=sha)
+        platform: dict[str, Any] = {}
+        phase = "inventory"
+        path = os.environ.get("DDAK_ONPREM_INVENTORY")
+        if request.target != "cloud" and path:
+            platform["onprem"] = load_inventory(Path(path))
+        context = replace(context, platform=platform)
+        # 브랜치가 다음 poll 전에 움직여도 감지된 커밋만 intake한다.
+        phase = "plan"
+        bundle = await asyncio.to_thread(
+            plan_deployment,
+            request.model_copy(update={"ref": sha}),
+            run_id=run_id,
+            settings=settings,
+            fetch_policy=policy,
+            previous_manifests=lambda project: _previous_manifests(service.store, project),
+            cloud_domain=context.cloud_domain,
+            platform=platform,
+        )
+        _log.info("새 커밋 계획 생성", run_id=run_id, project=target.project, commit=sha)
+        latest = service.get_project_settings(target.project) or {}
+        phase = "settings"
+        if latest.get("version") != saved.get("version"):
+            raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "계획 중 프로젝트 설정이 변경됐다")
+        context = replace(
+            bundle.context,
+            repo_url=context.repo_url,
+            ref=context.ref,
+            source_sha=sha,
+            trigger=trigger,
+            targets=context.targets,
+            platform=platform,
+        )
+        phase = "infra"
+        subjects, infra_summary = await _infra_approval(service, bundle.plan, context)
+        # intake 캐시는 TTL로 정리된다. 승인 대기 소스는 컨트롤러 수명과 분리해 보관한다.
+        source = service.root / "sources" / run_id
+        phase = "source"
+        await asyncio.to_thread(copy_source, bundle.source, source)
+        phase = "prepare"
+        service.prepare(
+            bundle.plan,
+            context,
+            source,
+            subjects=subjects,
+            infra_summary=infra_summary,
+            expected_settings_version=saved.get("version", 0),
+        )
+    except Exception as exc:
+        service.record_preparation_failure(
+            run_id, target.project, exc, context=context, phase=phase
+        )
+        _log.warning("배포 준비 실패: 실행 기록 확인", run_id=run_id, error_type=type(exc).__name__)
+    else:
+        _log.info("새 커밋 승인 대기", run_id=run_id, project=target.project, commit=sha)
+    return run_id
+
+
+def _manual_planning(settings: Settings, policy: FetchPolicy):
+    async def prepare(service: DeploymentService, request: DeployRequest) -> str:
+        target = WatchTarget(request.project, request.repo_url, request.ref, request.target)
+        return await _prepare_commit(
+            service, settings, target, None, policy=policy, trigger="manual"
+        )
+
+    return prepare
+
+
 def create() -> FastAPI:
     registry = load_tools()
     settings = Settings.from_env()
     app = create_app(
         llm_status=llm_status,
         deployment_factory=lambda: DeploymentService(
-            registry, settings.run_dir.parent, refresh=refresh_infra_context
+            registry,
+            settings.run_dir.parent,
+            refresh=refresh_infra_context,
+            planning_flow=_manual_planning(settings, FetchPolicy.from_env()),
         ),
         settings=settings,
     )

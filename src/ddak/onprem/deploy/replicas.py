@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shlex
 import time
 from pathlib import Path
@@ -195,10 +196,17 @@ def replace_replicas(
             raise fail("빌드 산출물과 실제 플랫폼 manifest 불일치")
     provider._volumes(host, config, local_image)
     release_id = ctx.run_id
+    source_sha = ctx.candidate_sha
     if function == "rollback":
         release_id = ctx.previous_release.get("local", {}).get("release_id")
+        source_sha = ctx.previous_release.get("local", {}).get("candidate_sha")
     if not isinstance(release_id, str) or not release_id or any(c in release_id for c in "\n\r\0"):
         raise fail("RELEASE_ID 형식 오류", ErrorCode.CONFIG_INVALID)
+    if source_sha is not None and (
+        not isinstance(source_sha, str)
+        or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", source_sha)
+    ):
+        raise fail("SOURCE_SHA 형식 오류", ErrorCode.CONFIG_INVALID)
     spec: dict[str, Any] = {
         "config": config.model_dump(),
     }
@@ -264,6 +272,8 @@ def replace_replicas(
                 f"ddak.config-digest={local_image['ConfigDigest']}",
                 "-e",
                 f"RELEASE_ID={release_id}",
+                "-e",
+                f"SOURCE_SHA={source_sha or ''}",
                 *health_args(config),
             ]
             if config.replicas is not None:

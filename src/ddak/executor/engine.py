@@ -444,10 +444,18 @@ class Executor:
         failures = [r for r in state.records if r.status in {"failed", "check_failed"}]
         verify_ids = {s.id for s in plan.verify.steps if s.run is None}
         parity_failed = any(
-            r.step_id in verify_ids and r.tool in {"compare_env_results", "diagnose_parity_gap"}
+            r.step_id in verify_ids
+            and r.status == "check_failed"
+            and r.tool in {"compare_env_results", "diagnose_parity_gap"}
             for r in failures
         )
-        for target in {r.target for r in failures if r.step_id in verify_ids and r.target}:
+        for target in {
+            r.target
+            for r in failures
+            if r.step_id in verify_ids
+            and r.target
+            and r.tool not in {"compare_env_results", "diagnose_parity_gap"}
+        }:
             if state.tracks[target.value] is TrackStatus.DONE:
                 state.tracks[target.value] = (
                     await self._rollback_track(target, state)
@@ -530,6 +538,10 @@ class Executor:
                     and state.tracks.get(step.target.value) is TrackStatus.DONE
                 )
             )
+            if step.tool == "diagnose_parity_gap" and any(
+                r.tool == "compare_env_results" and r.status == "failed" for r in state.records
+            ):
+                eligible = False
             if not eligible:
                 skipped = True
                 await self._skip(step, state)
@@ -806,6 +818,8 @@ class Executor:
             if not passed:
                 raise StepFailed(step.id, None, "검사 불합격")
             return record
+        if step.tool in {"compare_env_results", "diagnose_parity_gap"}:
+            message = "검증 실패(비교 불가): " + message
         message = redact(message)
         record = self._record_failure(step, target, state, started, f"{code.value}: {message}")
         await state.emit(

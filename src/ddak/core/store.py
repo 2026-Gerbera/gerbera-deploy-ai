@@ -37,6 +37,8 @@ CREATE TABLE IF NOT EXISTS env_release (
 CREATE TABLE IF NOT EXISTS project_settings (
  project TEXT PRIMARY KEY, version INTEGER NOT NULL, data TEXT NOT NULL,
  updated_by TEXT NOT NULL, updated_at REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS prepared_runs (
+ run_id TEXT PRIMARY KEY, payload TEXT NOT NULL);
 """
 
 
@@ -105,6 +107,33 @@ class Store:
         if result["result"]:
             result["result"] = json.loads(result["result"])
         return result
+
+    def preparation_failed(self, run_id: str, project: str, result: dict[str, Any]) -> bool:
+        """계획/prepare 실패도 목록에 남긴다. 이미 승인·실행한 run은 덮어쓰지 않는다."""
+        with self.connection() as db:
+            cursor = db.execute(
+                "INSERT INTO runs VALUES (?, ?, 'FAILED_BEFORE_DEPLOY', '', ?, ?, ?) "
+                "ON CONFLICT(run_id) DO UPDATE SET status='FAILED_BEFORE_DEPLOY', "
+                "finished=excluded.finished, result=excluded.result "
+                "WHERE runs.status='AWAITING_APPROVAL' AND runs.project=excluded.project",
+                (run_id, project, time.time(), time.time(), _json(result)),
+            )
+            return cursor.rowcount == 1
+
+    def save_prepared(self, run_id: str, payload: dict[str, Any]) -> None:
+        # 실행 입력의 해시가 바뀌면 안 된다. 표시용 redact 데이터와 구분해 0600 DB에 보관한다.
+        with self.connection() as db:
+            db.execute(
+                "INSERT INTO prepared_runs VALUES (?, ?)",
+                (run_id, json.dumps(payload, ensure_ascii=False, sort_keys=True)),
+            )
+
+    def prepared(self, run_id: str) -> dict[str, Any] | None:
+        with self.connection() as db:
+            row = db.execute(
+                "SELECT payload FROM prepared_runs WHERE run_id=?", (run_id,)
+            ).fetchone()
+        return json.loads(row[0]) if row else None
 
     def list_runs(self, limit: int = 20) -> list[dict[str, Any]]:
         """관리 화면용 최근 실행 목록. 저장된 결과는 이미 redact된 값이다."""
@@ -340,7 +369,8 @@ class Store:
             )
             db.execute(
                 "UPDATE runs SET status='CANCELLED', finished=? "
-                "WHERE status IN ('AWAITING_APPROVAL','APPROVED')",
+                "WHERE status IN ('AWAITING_APPROVAL','APPROVED') "
+                "AND run_id NOT IN (SELECT run_id FROM prepared_runs)",
                 (time.time(),),
             )
         return [r[0] for r in rows]

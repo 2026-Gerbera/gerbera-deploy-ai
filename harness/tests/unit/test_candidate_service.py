@@ -217,3 +217,44 @@ async def test_merge_conflicts_are_available_in_sealed_release(rig, repository, 
         assert reopened.get_release(rid)["merge_conflicts"] == ["app.py"]
     finally:
         reopened.close()
+
+
+@pytest.mark.anyio
+async def test_comparison_error_keeps_deployments_but_does_not_advance_main(
+    rig,
+    repository,
+    operator_identity,
+):
+    from ddak.core.contracts.errors import DdakToolError, ErrorCode
+    from ddak.core.registry import Registry
+    from ddak.executor.engine import TrackStatus
+
+    service, source, calls = rig
+    repo, bare, v1, _ = repository
+    repo.secret_scan = lambda path: None
+    service.repositories["demo"] = repo
+    (source / "app.py").write_text("version = 1\n")
+    registry = Registry(service.registry.specs)
+    for name in service.registry.registered() - {"compare_env_results"}:
+        registry.tool(name)(service.registry.get(name).fn)
+
+    @registry.tool("compare_env_results")
+    async def compare(inp: service_tests.Input, ctx: RunContext) -> service_tests.Output:
+        raise DdakToolError(ErrorCode.ADAPTER_FAILED, "fixture comparison unavailable")
+
+    service.registry = registry
+    p = service_tests.plan()
+    rid = service.prepare(p, RunContext(p.run_id, project=p.project, source_sha=v1), source)
+    service.approve(rid, approver="operator")
+    service.start(rid)
+    result = await service.wait(rid)
+    assert result.status is RunStatus.FAILED_VERIFY
+    assert result.tracks["local"] is result.tracks["cloud"] is TrackStatus.DONE
+    assert not any(name.startswith("rollback") for name, _ in calls.contexts)
+    assert git_tests.git(bare, "rev-parse", "main") == v1
+    for target in ("onprem", "cloud"):
+        assert (
+            git_tests.git(bare, "rev-parse", "refs/tags/deployed/" + target)
+            == result.context.candidate_sha
+        )
+    assert service.get_release(rid)["git"]["main_skip_reason"] == "verification_failed"

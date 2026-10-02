@@ -96,7 +96,12 @@ class AppRepository:
         validate_candidate(self, *args)
 
     def publish(
-        self, candidate_sha: str, selected: set[str], succeeded: set[str]
+        self,
+        candidate_sha: str,
+        selected: set[str],
+        succeeded: set[str],
+        *,
+        update_main: bool = True,
     ) -> dict[str, Any]:
         """성공 환경 태그부터 기록한다. main은 전체 선택 성공 때만 fast-forward 한다."""
         started = time.monotonic()
@@ -132,7 +137,9 @@ class AppRepository:
                 *(candidate_sha + ":" + tag for tag in tags),
             )
             result.update(status="SUCCEEDED", tags=tags)
-            if succeeded == selected:
+            if not update_main:
+                result["main_skip_reason"] = "verification_failed"
+            if succeeded == selected and update_main:
                 if "refs/heads/main" in refs:
                     self.git(
                         "fetch", "--no-tags", "origin", "refs/heads/main:refs/remotes/origin/main"

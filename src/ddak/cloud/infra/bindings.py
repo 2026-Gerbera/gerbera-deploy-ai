@@ -45,6 +45,11 @@ def unbind_infra(run_id: str) -> None:
     _BINDINGS.pop(run_id, None)
 
 
+def has_infra_binding(run_id: str) -> bool:
+    """조립부용 존재 조회. 번들 내용·자격증명은 노출하지 않는다."""
+    return run_id in _BINDINGS
+
+
 def _binding(run_id: str, ctx: RunContext) -> InfraBinding:
     binding = _BINDINGS.get(run_id)
     if (

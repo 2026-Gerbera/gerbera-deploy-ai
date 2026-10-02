@@ -429,3 +429,22 @@ async def test_local_verify_failure_still_runs_cloud_verify_and_skips_compare():
     )
     assert next(r for r in result.records if r.step_id == "verify.compare").status == "skipped"
     assert any(e.type is EventType.STEP_SKIPPED and e.step == "verify.compare" for e in events)
+
+
+@pytest.mark.parametrize("failure", ["error", "missing"])
+@pytest.mark.parametrize("target", [None, Target.CLOUD])
+async def test_unavailable_comparison_does_not_rollback_cloud(failure, target):
+    registry = REG
+    if failure == "missing":
+        registry = Registry(REG.specs)
+        for name in REG.registered() - {"compare_env_results"}:
+            registry.tool(name)(REG.get(name).fn)
+    p = plan(compare_mode="raise" if failure == "error" else "ok")
+    p.verify.steps[0] = p.verify.steps[0].model_copy(update={"target": target})
+    rollbacks = Rollbacks()
+    result = await Executor(registry, rollback=rollbacks).run(p, RunContext("run-1"))
+    assert result.status is RunStatus.FAILED_VERIFY
+    assert result.tracks["local"] is result.tracks["cloud"] is TrackStatus.DONE
+    assert rollbacks.targets == []
+    record = next(r for r in result.records if r.tool == "compare_env_results")
+    assert record.status == "failed" and "비교 불가" in record.error

@@ -26,7 +26,7 @@ def test_initialization_keeps_credentials_separate_and_refuses_regeneration(tmp_
         for p in (directory / "private").glob("*.env")
     }
     assert "DATABASE_URL_MIGRATOR" not in envs["was"] and "MYSQL_ROOT_PASSWORD" not in envs["was"]
-    assert "DATABASE_URL" not in envs["migrate"]
+    assert envs["migrate"]["DATABASE_URL"] == envs["migrate"]["DATABASE_URL_MIGRATOR"]
     assert (
         len(
             {

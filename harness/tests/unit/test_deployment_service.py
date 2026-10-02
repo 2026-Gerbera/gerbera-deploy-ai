@@ -1004,6 +1004,8 @@ async def test_legacy_approval_without_new_export_is_readable(rig: Any):
     service.start(rid)
     await service.wait(rid)
     (service.root / "runs" / rid / "approval-view.json").unlink()
+    with service.store.connection() as db:
+        db.execute("DELETE FROM prepared_runs WHERE run_id=?", (rid,))
     service.close()
     reopened = DeploymentService(service.registry, service.root)
     try:

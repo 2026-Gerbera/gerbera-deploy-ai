@@ -15,9 +15,10 @@ import sqlite3
 import threading
 import time
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -25,16 +26,17 @@ from ddak.core.app_repository import AppRepository
 from ddak.core.config import AdapterMode
 from ddak.core.contracts.approval import ApprovalRecord
 from ddak.core.contracts.context import RunContext
+from ddak.core.contracts.deploy_request import DeployRequest
 from ddak.core.contracts.enums import Effect, Layer, RunMode, Target
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.contracts.events import EventType, RunEvent
 from ddak.core.contracts.plan import Plan, PlanStep
 from ddak.core.contracts.release import ReleaseArtifacts, SnapshotBinding
 from ddak.core.project_settings import ProjectSettings
-from ddak.core.redact import redact_obj
-from ddak.core.registry import Registry
+from ddak.core.redact import redact, redact_obj
+from ddak.core.registry import Registry, UnknownToolError
 from ddak.core.runlog import run_dir, write_context
-from ddak.core.snapshots import digest_json, file_manifest, materialize, preview
+from ddak.core.snapshots import digest_bytes, digest_json, file_manifest, materialize, preview
 from ddak.core.store import Store, release_view
 from ddak.executor.approval_meta import check_infra_summary, encode_meta
 from ddak.executor.engine import Executor, RunResult, RunStatus, TrackStatus, check_signals
@@ -44,6 +46,7 @@ from ddak.executor.selection import select_plan
 ApprovalKind = Literal["patch", "deploy", "infra", "dockerfile", "foundation"]
 FactsReader = Callable[[Path], str]
 ContextRefresh = Callable[[PlanStep, dict[str, Any], RunContext], RunContext]
+PlanningFlow = Callable[["DeploymentService", DeployRequest], Awaitable[str]]
 _HEARTBEAT_INTERVAL_S = 10.0
 
 
@@ -80,9 +83,12 @@ class DeploymentService:
         *,
         refresh: ContextRefresh | None = None,
         repositories: Mapping[str, AppRepository] | None = None,
+        facts_readers: Mapping[str, FactsReader] | None = None,
+        planning_flow: PlanningFlow | None = None,
     ) -> None:
         self.registry, self.root, self.refresh = registry, root, refresh
         self.repositories = dict(repositories or {})
+        self.planning_flow = planning_flow
         root.mkdir(parents=True, exist_ok=True)
         self._lease = (root / "controller.lock").open("a")
         try:
@@ -94,7 +100,7 @@ class DeploymentService:
             ) from None
         self.store = Store(root / "ddak.sqlite")
         self.interrupted = self.store.recover_interrupted()
-        self._prepared: dict[str, PreparedRun] = {}
+        self._facts_readers = {"source_manifest": source_facts, **(facts_readers or {})}
         self._tasks: dict[str, asyncio.Task[RunResult]] = {}
         self._buses: dict[str, EventBus] = {}
         self._entered: set[str] = set()
@@ -111,7 +117,7 @@ class DeploymentService:
             if run_id not in self._entered:
                 # create_task 이후 첫 실행 전 취소는 대상 변경이 없으므로 수동 복구가 필요 없다.
                 task.cancel()
-                project = self._prepared[run_id].plan.project
+                project = self.store.run(run_id)["project"]
                 self.store.mark_stopped(run_id, "CANCELLED")
                 self.store.release(project, run_id, self._tokens[run_id])
             else:
@@ -131,8 +137,13 @@ class DeploymentService:
         facts_reader: FactsReader | None = None,
         patch_meta: dict[str, Any] | None = None,
         infra_summary: dict[str, Any] | None = None,
+        expected_settings_version: int | None = None,
     ) -> str:
         settings = self.store.project_settings(context.project)
+        if expected_settings_version is not None and (
+            (settings or {}).get("version", 0) != expected_settings_version
+        ):
+            raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "계획 중 프로젝트 설정이 변경됐다")
         if settings is not None:
             settings_data = {k: v for k, v in settings.items() if k in ProjectSettings.model_fields}
             validated = ProjectSettings.model_validate(settings_data)
@@ -256,18 +267,26 @@ class DeploymentService:
             )
             + "\n"
         )
-        self._prepared[plan.run_id] = PreparedRun(
-            plan,
-            context,
-            source.resolve(),
-            snapshot,
-            patch,
-            required,
-            facts_reader,
-            digest_json(context.to_json_dict()),
-            file_manifest(source),
-            patch_meta_json,
-            infra_summary_json,
+        reader_key = next(
+            (key for key, reader in self._facts_readers.items() if reader is facts_reader),
+            f"custom:{plan.run_id}",
+        )
+        self._facts_readers[reader_key] = facts_reader
+        self.store.save_prepared(
+            plan.run_id,
+            {
+                "plan": plan.model_dump(mode="json", by_alias=True),
+                "context": context.to_json_dict(),
+                "source": str(source.resolve()),
+                "snapshot": snapshot.model_dump(mode="json"),
+                "patch": patch.decode("utf-8") if patch else None,
+                "requirements": required,
+                "facts_reader": reader_key,
+                "context_hash": digest_json(context.to_json_dict()),
+                "source_files": file_manifest(source),
+                "patch_meta_json": patch_meta_json,
+                "infra_summary_json": infra_summary_json,
+            },
         )
         write_context(self.root / "runs", plan.run_id, context.to_json_dict())
         (directory / "approval-view.json").write_text(
@@ -275,6 +294,54 @@ class DeploymentService:
         )
         self._buses[plan.run_id] = EventBus()
         return plan.run_id
+
+    def _load_prepared(self, run_id: str) -> PreparedRun:
+        data = self.store.prepared(run_id)
+        if data is None:
+            raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "복원 가능한 승인 대기 입력이 없다")
+        reader = self._facts_readers.get(data["facts_reader"])
+        if reader is None:
+            raise DdakToolError(
+                ErrorCode.PRECONDITION_FAILED,
+                "원래 facts_reader를 조립 지점에서 다시 주입해야 한다",
+            )
+        context_data = dict(data["context"])
+        context_data["adapter_mode"] = AdapterMode(context_data["adapter_mode"])
+        context_data["mode"] = RunMode(context_data["mode"])
+        if context_data.get("release_artifacts"):
+            context_data["release_artifacts"] = ReleaseArtifacts.model_validate(
+                context_data["release_artifacts"]
+            )
+        p = PreparedRun(
+            plan=Plan.model_validate(data["plan"]),
+            context=RunContext(**context_data),
+            source=Path(data["source"]),
+            snapshot=SnapshotBinding.model_validate(data["snapshot"]),
+            patch=data["patch"].encode("utf-8") if data["patch"] else None,
+            requirements=data["requirements"],
+            facts_reader=reader,
+            context_hash=data["context_hash"],
+            source_files=data["source_files"],
+            patch_meta_json=data["patch_meta_json"],
+            infra_summary_json=data["infra_summary_json"],
+        )
+        row = self.store.run(run_id)
+        if (
+            p.plan.run_id != run_id
+            or p.context.run_id != run_id
+            or p.plan.project != row["project"]
+            or p.context.project != row["project"]
+            or plan_digest(p.plan) != row["plan_hash"]
+            or p.plan.plan_hash != row["plan_hash"]
+            or p.requirements.get("deploy") != row["plan_hash"]
+            or digest_json(p.context.to_json_dict()) != p.context_hash
+            or (digest_bytes(p.patch) if p.patch else None) != p.snapshot.patch_sha256
+            or p.requirements.get("patch") != p.snapshot.patch_sha256
+            or digest_json(p.source_files) != p.snapshot.source_snapshot_hash
+        ):
+            raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "저장된 승인 입력의 해시가 다르다")
+        self._buses.setdefault(run_id, EventBus())
+        return p
 
     @staticmethod
     async def _repository_work(
@@ -308,6 +375,31 @@ class DeploymentService:
             for target, row in self.store.environments(project).items()
         }
 
+    def record_preparation_failure(
+        self,
+        run_id: str,
+        project: str,
+        error: Exception,
+        *,
+        context: RunContext | None = None,
+        phase: str = "prepare",
+    ) -> None:
+        # 외부 예외 문자열에는 저장소 URL·소스·자격증명이 있을 수 있다.
+        result = {
+            "phase": phase,
+            "code": error.code.value if isinstance(error, DdakToolError) else "INTERNAL",
+            "error_type": type(error).__name__,
+        }
+        if isinstance(error, DdakToolError):
+            result["detail"] = redact(error.message)
+        elif isinstance(error, UnknownToolError) and error.args:
+            name = str(error.args[0])
+            if re.fullmatch(r"[a-z][a-z0-9_]*", name):
+                result["missing_tool"] = name
+        saved = self.store.preparation_failed(run_id, project, result)
+        if saved and context is not None:
+            write_context(self.root / "runs", run_id, context.to_json_dict())
+
     def get_run(self, run_id: str) -> dict[str, Any]:
         result = self.store.run(run_id)
         path = run_dir(self.root / "runs", run_id) / "context.json"
@@ -322,6 +414,8 @@ class DeploymentService:
                     "candidate_sha",
                     "project_settings",
                     "cloud_domain",
+                    "repo_url",
+                    "ref",
                 )
             }
         return result
@@ -343,6 +437,43 @@ class DeploymentService:
     def get_project_settings(self, project: str) -> dict[str, Any] | None:
         return self.store.project_settings(project)
 
+    async def request_deployment(
+        self,
+        project: str,
+        *,
+        targets: Literal["onprem", "cloud", "both"] | None = None,
+        ref: str | None = None,
+    ) -> str:
+        """수동 요청 → 주입된 계획 흐름 → 승인 대기 run_id. 승인·실행은 별도 동작이다."""
+        data = self.store.project_settings(project) or {}
+        settings = ProjectSettings.model_validate(
+            {k: v for k, v in data.items() if k in ProjectSettings.model_fields}
+        )
+        if not settings.repo_url or self.planning_flow is None:
+            raise DdakToolError(ErrorCode.CONFIG_INVALID, "저장소 설정과 계획 흐름 연결이 필요하다")
+        chosen = targets if targets is not None else settings.default_targets
+        if chosen not in {"onprem", "cloud", "both"}:
+            raise DdakToolError(ErrorCode.CONFIG_INVALID, "targets는 onprem/cloud/both만 허용한다")
+        ref = settings.watch_branch if ref is None else ref
+        if ref != settings.watch_branch:
+            tag = ref.removeprefix("refs/tags/")
+            if (
+                not re.fullmatch(r"v[A-Za-z0-9._/-]{0,189}", tag)
+                or any(part in tag for part in ("..", "//", "@{"))
+                or tag.endswith(("/", ".", ".lock"))
+            ):
+                raise DdakToolError(
+                    ErrorCode.CONFIG_INVALID, "감시 브랜치 또는 v* 태그만 배포할 수 있다"
+                )
+            ref = "refs/tags/" + tag  # 같은 이름의 브랜치가 있어도 태그만 선택한다.
+        request = DeployRequest(
+            project=project,
+            repo_url=settings.repo_url,
+            ref=ref,
+            target="local" if chosen == "onprem" else chosen,
+        )
+        return await self.planning_flow(self, request)
+
     def save_project_settings(
         self, project: str, data: dict[str, Any], *, updated_by: str, expected_version: int | None
     ) -> dict[str, Any]:
@@ -362,7 +493,7 @@ class DeploymentService:
         )
 
     def approval_view(self, run_id: str) -> dict[str, Any]:
-        if run_id not in self._prepared:
+        if self.store.prepared(run_id) is None:
             self.store.run(run_id)
             directory = run_dir(self.root / "runs", run_id)
             saved = directory / "approval-view.json"
@@ -397,7 +528,7 @@ class DeploymentService:
                 ],
             }
 
-        p = self._prepared[run_id]
+        p = self._load_prepared(run_id)
         return {
             "run_id": run_id,
             "project": p.plan.project,
@@ -413,7 +544,7 @@ class DeploymentService:
         }
 
     def approve(self, run_id: str, *, approver: str, approved: bool = True) -> list[ApprovalRecord]:
-        p = self._prepared[run_id]
+        p = self._load_prepared(run_id)
         if approved:
             self._check_meta(p)
         approval_id, now = uuid.uuid4().hex, datetime.now(UTC)
@@ -466,9 +597,21 @@ class DeploymentService:
             }
         ):
             raise DdakToolError(ErrorCode.APPROVAL_REQUIRED, "승인 메타 기록이 변경됐다")
+        directory = run_dir(self.root / "runs", p.plan.run_id)
+        try:
+            saved_plan = Plan.model_validate_json((directory / "plan.json").read_text())
+            patch_path = directory / "approved.patch"
+            saved_patch = patch_path.read_bytes() if patch_path.exists() else None
+            if plan_digest(saved_plan) != p.requirements["deploy"] or saved_patch != p.patch:
+                raise ValueError("changed")
+        except (OSError, ValueError):
+            raise DdakToolError(
+                ErrorCode.APPROVAL_REQUIRED, "승인 계획·패치 기록이 변경됐다"
+            ) from None
 
     def subscribe(self, run_id: str, subscriber: Any) -> Callable[[], None]:
-        return self._buses[run_id].subscribe(subscriber)
+        self.store.run(run_id)
+        return self._buses.setdefault(run_id, EventBus()).subscribe(subscriber)
 
     def events(self, run_id: str, *, after: int = -1) -> list[dict[str, Any]]:
         path = run_dir(self.root / "runs", run_id) / "events.jsonl"
@@ -483,7 +626,7 @@ class DeploymentService:
     def start(self, run_id: str) -> asyncio.Task[RunResult]:
         if run_id in self._tasks:
             raise DdakToolError(ErrorCode.LOCK_HELD, "동일 run은 한 번만 실행한다")
-        p = self._prepared[run_id]
+        p = self._load_prepared(run_id)
         self._check_approval(p)
         if p.context.adapter_mode is AdapterMode.REAL and p.context.mode is RunMode.UPDATE:
             environments = self.store.environments(p.plan.project)
@@ -842,8 +985,12 @@ class DeploymentService:
                 }
                 try:
                     self.store.check_lock(ctx.project, ctx.run_id, token)
+                    publish = repository.publish
+                    if result.status is RunStatus.FAILED_VERIFY:
+                        # 환경별 배포 태그는 남기되 비교 불가를 main 승격 성공으로 숨기지 않는다.
+                        publish = partial(repository.publish, update_main=False)
                     git_record = await self._repository_work(
-                        repository.publish,
+                        publish,
                         final_context.candidate_sha,
                         selected,
                         succeeded,

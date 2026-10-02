@@ -29,6 +29,8 @@ def _private_env(
     path: Path,
     keys: Sequence[str] | None = None,
     public_env: Mapping[str, str] | None = None,
+    *,
+    migration_alias: bool = False,
 ) -> bool:
     """0600 단일 소유 일반 파일만 허용한다. keys=None이면 내용은 읽지 않는다."""
     changed = False
@@ -73,6 +75,13 @@ def _private_env(
                 values[key] = value
             old_values = dict(values)
             values.update(public_env or {})
+            if migration_alias:
+                if "DATABASE_URL_MIGRATOR" in values:
+                    if not values["DATABASE_URL_MIGRATOR"]:
+                        raise fail("마이그레이션 DB URL이 비어 있다", ErrorCode.CONFIG_INVALID)
+                    values["DATABASE_URL"] = values["DATABASE_URL_MIGRATOR"]
+                if not values.get("DATABASE_URL"):
+                    raise fail("마이그레이션 DB URL이 없다", ErrorCode.CONFIG_INVALID)
             if any(key != "SECRET_KEY" and not values.get(key) for key in keys):
                 raise fail("요청한 환경 키가 host env 파일에 없다", ErrorCode.CONFIG_INVALID)
             if "SECRET_KEY" in keys:
@@ -110,7 +119,13 @@ def inject_config(provider: OnPremProvider, keys: Sequence[str], ctx: RunContext
     wanted = sorted(set(keys) | set(config.public_env))
     if any(not _IDENTIFIER.fullmatch(key) for key in wanted) or not config.env_file:
         raise fail("env key 또는 env_file 설정 오류", ErrorCode.CONFIG_INVALID)
-    changed = _private_env(Path(config.env_file), wanted, config.public_env)
+    if "DATABASE_URL_MIGRATOR" in wanted:
+        raise fail("앱 런타임에는 마이그레이션 계정을 주입할 수 없다", ErrorCode.CONFIG_INVALID)
+    if "SOURCE_SHA" in wanted and ctx.candidate_sha is None:
+        raise fail("SOURCE_SHA를 공급할 후보 커밋이 없다", ErrorCode.PRECONDITION_FAILED)
+    # 이 두 값은 컨테이너 생성 시 실행기가 공급한다. 사용자 env 파일의 필수 키가 아니다.
+    host_keys = [key for key in wanted if key not in {"RELEASE_ID", "SOURCE_SHA"}]
+    changed = _private_env(Path(config.env_file), host_keys, config.public_env)
     host.check_deadline()
     return ProviderResult(
         provider=provider.name,

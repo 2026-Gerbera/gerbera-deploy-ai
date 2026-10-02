@@ -183,3 +183,78 @@ def test_patch_counts_only_lf_as_hunk_line_separator(
     binding = preview(source, patch)
     materialize(source, tmp_path / "build", binding, patch)
     assert (tmp_path / "build" / "app.py").read_text() == after
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [
+        b"diff --git a/Dockerfile b/Dockerfile\nindex 1111111..2222222 100644\n"
+        b"@@ -1 +1 @@\n-FROM scratch\n+FROM fixture\n",
+        b"diff --git a/app.py b/app.py\nold mode 100644\nnew mode 100755\n",
+        b"--- a/app.py\n+++ b/app.py\nindex 1111111..2222222 100644\n"
+        b"@@ -1 +1 @@\n-VERSION = 1\n+VERSION = 2\n",
+    ],
+)
+def test_git_extended_patch_headers_cannot_bypass_path_checks(source, patch):
+    from ddak.core.snapshots import apply_diff
+
+    (source / "Dockerfile").write_text("FROM scratch\n")
+    before = file_manifest(source)
+    with pytest.raises(ValueError, match="일반 텍스트"):
+        apply_diff(source, patch)
+    assert file_manifest(source) == before
+
+
+def test_headerless_hunk_is_rejected(source):
+    from ddak.core.snapshots import apply_diff
+
+    with pytest.raises(ValueError, match="쌍"):
+        apply_diff(source, b"@@ -1 +1 @@\n-VERSION = 1\n+VERSION = 2\n")
+
+
+def test_actual_changed_paths_must_equal_parsed_paths(source, monkeypatch):
+    from ddak.core import snapshots
+
+    real_run = snapshots.subprocess.run
+
+    def mutate_extra(args, **kwargs):
+        result = real_run(args, **kwargs)
+        if "--check" not in args:
+            (source / "extra.txt").write_text("unexpected fixture change\n")
+        return result
+
+    monkeypatch.setattr(snapshots.subprocess, "run", mutate_extra)
+    with pytest.raises(ValueError, match="실제 변경 파일"):
+        snapshots.apply_diff(source, PATCH)
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        b"index 1111111..2222222 100644\n",
+        b"old mode 100644\nnew mode 100755\n",
+        b"similarity index 100%\n",
+        b"rename from app.py\nrename to other.py\n",
+        b"copy from app.py\ncopy to other.py\n",
+    ],
+)
+def test_extended_metadata_is_rejected_without_diff_git_prefix(source, metadata):
+    from ddak.core.snapshots import apply_diff
+
+    with pytest.raises(ValueError, match="일반 텍스트"):
+        apply_diff(source, metadata + PATCH)
+    assert (source / "app.py").read_bytes() == b"VERSION = 1\n"
+
+
+def test_each_additional_hunk_requires_its_own_headers(source):
+    from ddak.core.snapshots import apply_diff
+
+    (source / "app.py").write_text("one\n")
+    (source / "second.py").write_text("three\n")
+    second = b"@@ -1 +1 @@\n-three\n+THREE\n"
+    first = b"--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-one\n+ONE\n"
+    with pytest.raises(ValueError, match="쌍"):
+        apply_diff(source, first + second)
+    apply_diff(source, first + b"--- a/second.py\n+++ b/second.py\n" + second)
+    assert (source / "app.py").read_text() == "ONE\n"
+    assert (source / "second.py").read_text() == "THREE\n"

@@ -45,6 +45,8 @@ class RunContext:
     candidate_sha: str | None = None  # 실제 빌드·배포한 ai-prod 커밋
 
     project_settings: Mapping[str, Any] = field(default_factory=dict)  # 승인 시 설정 스냅샷
+    repo_url: str | None = None  # 요청한 앱 저장소(자격증명 없는 URL)
+    ref: str | None = None  # 요청한 감시 브랜치. 실제 소스는 source_sha로 고정한다
 
     def __post_init__(self) -> None:
         for value in (self.source_sha, self.candidate_sha):
