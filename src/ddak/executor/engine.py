@@ -587,6 +587,39 @@ class Executor:
         if section.signal:
             own.add(section.signal)
         try:
+            if target is not None and state.ctx.preparation_errors.get(target.value):
+                error = state.ctx.preparation_errors[target.value]
+                detail = f"{error['code']}: {error['detail']}"
+                sid = f"prepare.infra.{target.value}"
+                state.records.append(
+                    StepRecord(sid, "apply_infra", target, "failed", 0, error=detail)
+                )
+                await state.emit(
+                    EventType.STEP_FINISHED,
+                    step=sid,
+                    tool="apply_infra",
+                    target=target,
+                    status="failed",
+                    detail=detail,
+                )
+                raise DdakToolError(ErrorCode(error["code"]), error["detail"])
+            if target is not None and state.ctx.preparation_failures.get(target.value):
+                missing = state.ctx.preparation_failures[target.value]
+                for step in section.steps:
+                    if step.tool in missing:
+                        detail = f"CONFIG_INVALID: 준비 실패, 미등록 툴 {step.tool}"
+                        state.records.append(
+                            StepRecord(step.id, step.tool, target, "failed", 0, error=detail)
+                        )
+                        await state.emit(
+                            EventType.STEP_FINISHED,
+                            step=step.id,
+                            tool=step.tool,
+                            target=target,
+                            status="failed",
+                            detail=detail,
+                        )
+                raise DdakToolError(ErrorCode.CONFIG_INVALID, "해당 환경의 준비 실패")
             for step in section.steps:
                 if state.stopping:
                     raise asyncio.CancelledError

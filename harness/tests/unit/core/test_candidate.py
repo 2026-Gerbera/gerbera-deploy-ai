@@ -1,12 +1,13 @@
 """로컬 Git 후보 경로. fixture 검사와 선택적인 실제 CLI 검사를 구분한다."""
 
 import hashlib
+import json
 import shutil
 import subprocess
 
 import pytest
 
-from ddak.core.candidate import scan_staged, tree_manifest
+from ddak.core.candidate import preflight_source, scan_staged, tree_manifest
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.snapshots import file_manifest, materialize, preview
 from tests.unit.core import test_app_repository as shared
@@ -410,3 +411,261 @@ def test_mixed_case_dot_env_paths_remain_blocked(repository, name):
     git(repo.path, "commit", "-m", "Excluded fixture path")
     with pytest.raises(DdakToolError):
         tree_manifest(repo, "HEAD")
+
+
+def synthetic_token(seed=b"preflight fixture"):
+    return "gh" + "p_" + hashlib.sha256(seed).hexdigest()[:36]
+
+
+def ignored_prod(repo, *, name="legacy.py", hashed=False, ignore=None):
+    git(repo.path, "switch", "-c", "prod", "origin/prod")
+    (repo.path / name).write_text("TOKEN = " + repr(synthetic_token()) + "\n")
+    # 앱의 설정과 inline allow는 trusted 검사를 끄지 못한다.
+    (repo.path / ".gitleaks.toml").write_text('[allowlist]\npaths = [".*"]\n')
+    git(repo.path, "add", "--all")
+    git(repo.path, "commit", "-m", "Synthetic finding")
+    finding_sha = git(repo.path, "rev-parse", "HEAD")
+    fingerprint = (finding_sha + ":" if hashed else "") + name + ":github-pat:1"
+    (repo.path / ".gitleaksignore").write_text(fingerprint if ignore is None else ignore)
+    git(repo.path, "add", ".gitleaksignore")
+    git(repo.path, "commit", "-m", "Exact fixture exception")
+    git(repo.path, "push", "origin", "prod")
+    return git(repo.path, "rev-parse", "HEAD"), fingerprint
+
+
+@pytest.mark.parametrize("patch", [None, PATCH])
+def test_preflight_injected_scanner_exports_pinned_source_and_labels_fixture(repository, patch):
+    repo, _bare, v1, _v2 = repository
+    seen = []
+    repo.secret_scan = lambda path: seen.append(
+        ((path / "app.py").read_text(), (path / ".git").exists())
+    )
+    assert repo.preflight_source(v1, patch=patch) == {
+        "source": "fixture",
+        "ignored_count": 0,
+        "findings": [],
+    }
+    assert seen == [("version = 1\n", False)] + ([("version = 2\n", False)] if patch else [])
+    assert {t["operation"] for t in repo.timings} <= {"fetch", "merge-base", "cat-file", "ls-tree"}
+
+
+def test_preflight_fetches_missing_sha_in_reused_no_checkout(repository, tmp_path):
+    repo, bare, _v1, _v2 = repository
+    checkout = shared.AppRepository.connect(tmp_path / "reused", bare.as_uri(), allow_local=True)
+    sha = advance_prod(repo)
+    with pytest.raises(DdakToolError):
+        checkout.git("cat-file", "-e", sha + "^{commit}")
+    seen = []
+    checkout.secret_scan = lambda path: seen.append((path / "README").read_text())
+    assert preflight_source(checkout, sha) == {
+        "source": "fixture",
+        "ignored_count": 0,
+        "findings": [],
+    }
+    assert seen == ["New feature\n"]
+    assert checkout.git("rev-parse", "refs/remotes/origin/prod") == sha
+    assert not (checkout.path / "app.py").exists()
+
+
+def test_preflight_rejects_sha_outside_prod_before_scan(repository):
+    repo, _bare, _v1, candidate = repository
+    seen = []
+    repo.secret_scan = seen.append
+    with pytest.raises(DdakToolError):
+        preflight_source(repo, candidate)
+    assert seen == []
+
+
+@pytest.mark.parametrize("name", [".env", ".env.example", "deploy.yaml", "config/link.py"])
+def test_preflight_rejects_symlinks_before_export_or_scan(repository, name):
+    repo, _bare, _v1, _v2 = repository
+    git(repo.path, "switch", "-c", "prod", "origin/prod")
+    path = repo.path / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.symlink_to("missing-fixture-target")
+    git(repo.path, "add", "--force", name)
+    git(repo.path, "commit", "-m", "Unsupported link fixture")
+    git(repo.path, "push", "origin", "prod")
+    scans = []
+    repo.secret_scan = scans.append
+    with pytest.raises(DdakToolError):
+        preflight_source(repo, git(repo.path, "rev-parse", "HEAD"))
+    assert scans == []
+
+
+@pytest.mark.parametrize("name", [".env", ".ENV", "private.key", ".secrets/file.py"])
+def test_preflight_rejects_forbidden_files_before_scan(repository, name):
+    repo, _bare, _v1, _v2 = repository
+    git(repo.path, "switch", "-c", "prod", "origin/prod")
+    path = repo.path / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("synthetic fixture only\n")
+    git(repo.path, "add", "--force", name)
+    git(repo.path, "commit", "-m", "Unsupported path fixture")
+    git(repo.path, "push", "origin", "prod")
+    scans = []
+    repo.secret_scan = scans.append
+    with pytest.raises(DdakToolError, match="지원하지 않는 파일"):
+        preflight_source(repo, git(repo.path, "rev-parse", "HEAD"))
+    assert scans == []
+
+
+@pytest.mark.skipif(not shutil.which("gitleaks"), reason="Gitleaks 설치 필요")
+@pytest.mark.parametrize("hashed", [False, True])
+@pytest.mark.parametrize("name", ["legacy.py", ".env.example"])
+def test_exact_prod_exception_survives_unchanged_candidate_and_validation(
+    repository, tmp_path, hashed, name
+):
+    repo, _bare, _v1, _v2 = repository
+    sha, _fingerprint = ignored_prod(repo, name=name, hashed=hashed)
+    expected = {
+        "source": "gitleaks",
+        "ignored_count": 1,
+        "findings": [{"count": 1, "rule": "github-pat", "path": name}],
+    }
+    assert preflight_source(repo, sha) == expected
+    assert preflight_source(repo, sha, patch=PATCH) == expected
+    source = file_manifest(repo.path)
+    (repo.path / "app.py").write_text("version = 2\n")
+    build = file_manifest(repo.path)
+    result = repo.prepare_candidate(sha, source, build, PATCH, tmp_path / "candidate", lambda: None)
+    assert result["source_preflight"] == expected
+    assert (
+        repo.validate_candidate(
+            sha, result["candidate_sha"], source, build, tmp_path / "check", lambda: None
+        )
+        == expected
+    )
+    assert synthetic_token() not in json.dumps(result)
+    assert synthetic_token() not in json.dumps(expected)
+
+
+@pytest.mark.skipif(not shutil.which("gitleaks"), reason="Gitleaks 설치 필요")
+@pytest.mark.parametrize(
+    "ignore",
+    ["", "legacy.py:github-pat:2", "other.py:github-pat:1", "legacy.py:other-rule:1"],
+)
+def test_preflight_does_not_match_inexact_fingerprint(repository, ignore):
+    repo, _bare, _v1, _v2 = repository
+    sha, _fingerprint = ignored_prod(repo, ignore=ignore)
+    with pytest.raises(DdakToolError, match="비밀값 검사 실패") as caught:
+        preflight_source(repo, sha)
+    assert synthetic_token() not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "ignore",
+    [
+        "*",
+        "*.py:github-pat:1",
+        "legacy.py:*:1",
+        "legacy.py:github-pat:*",
+        "../legacy.py:github-pat:1",
+    ],
+)
+def test_preflight_rejects_path_or_wildcard_ignore(repository, ignore):
+    repo, _bare, _v1, _v2 = repository
+    sha, _fingerprint = ignored_prod(repo, ignore=ignore)
+    scans = []
+    repo.secret_scan = scans.append
+    with pytest.raises(DdakToolError, match="정확한 fingerprint"):
+        preflight_source(repo, sha)
+    assert scans == []
+
+
+@pytest.mark.skipif(not shutil.which("gitleaks"), reason="Gitleaks 설치 필요")
+@pytest.mark.parametrize("change", ["new_secret", "unrelated_line", "new_file", "new_ignore"])
+def test_modified_or_added_candidate_content_never_inherits_exception(repository, tmp_path, change):
+    repo, bare, _v1, previous = repository
+    sha, _fingerprint = ignored_prod(repo)
+    source = file_manifest(repo.path)
+    if change == "new_secret":
+        (repo.path / "legacy.py").write_text("TOKEN = " + repr(synthetic_token(b"new")) + "\n")
+    elif change == "unrelated_line":
+        with (repo.path / "legacy.py").open("a") as stream:
+            stream.write("OTHER = 2\n")
+    else:
+        (repo.path / "new.py").write_text("TOKEN = " + repr(synthetic_token(b"new")) + "\n")
+        if change == "new_ignore":
+            with (repo.path / ".gitleaksignore").open("a") as stream:
+                stream.write("\nnew.py:github-pat:1\n")
+    build = file_manifest(repo.path)
+    with pytest.raises(DdakToolError, match="비밀값 검사 실패"):
+        repo.prepare_candidate(
+            sha, source, build, None, tmp_path / "candidate", lambda: None, repo.path
+        )
+    assert git(bare, "rev-parse", "ai-prod") == previous
+    assert json.loads((tmp_path / "candidate-attempt.json").read_text())["phase"] == "MERGED"
+
+    # 외부에서 주어진 후보 SHA에도 동일 규칙이 적용된다.
+    git(repo.path, "add", "--all")
+    git(repo.path, "commit", "-m", "Rejected synthetic candidate")
+    candidate = git(repo.path, "rev-parse", "HEAD")
+    git(bare, "fetch", "--no-tags", str(repo.path), candidate)
+    git(bare, "update-ref", "refs/heads/ai-prod", candidate)
+    git(repo.path, "update-ref", "refs/remotes/origin/ai-prod", candidate)
+    with pytest.raises(DdakToolError, match="비밀값 검사 실패"):
+        repo.validate_candidate(sha, candidate, source, build, tmp_path / "check", lambda: None)
+
+
+@pytest.mark.skipif(not shutil.which("gitleaks"), reason="Gitleaks 설치 필요")
+@pytest.mark.parametrize("stale", ["changed_blob", "unrelated_commit"])
+def test_commit_fingerprint_cannot_ignore_different_blob_or_history(repository, stale):
+    repo, _bare, _v1, unrelated = repository
+    _sha, fingerprint = ignored_prod(repo, hashed=True)
+    if stale == "changed_blob":
+        (repo.path / "legacy.py").write_text("TOKEN = " + repr(synthetic_token(b"new")) + "\n")
+    else:
+        (repo.path / ".gitleaksignore").write_text(unrelated + ":" + fingerprint.split(":", 1)[1])
+    git(repo.path, "add", "--all")
+    git(repo.path, "commit", "-m", "Stale exception fixture")
+    git(repo.path, "push", "origin", "prod")
+    with pytest.raises(DdakToolError, match="비밀값 검사 실패"):
+        preflight_source(repo, git(repo.path, "rev-parse", "HEAD"))
+
+
+@pytest.mark.skipif(not shutil.which("gitleaks"), reason="Gitleaks 설치 필요")
+def test_standalone_strict_scan_does_not_use_app_ignore(tmp_path):
+    (tmp_path / "legacy.py").write_text("TOKEN = " + repr(synthetic_token()) + "\n")
+    (tmp_path / ".gitleaksignore").write_text("legacy.py:github-pat:1\n")
+    with pytest.raises(DdakToolError, match="비밀값 검사 실패"):
+        scan_staged(tmp_path)
+
+
+@pytest.mark.skipif(not shutil.which("gitleaks"), reason="Gitleaks 설치 필요")
+@pytest.mark.parametrize("existing_exception", [False, True])
+def test_preflight_patch_rejects_changed_exception_and_new_finding(repository, existing_exception):
+    repo, _bare, _v1, _v2 = repository
+    sha, _fingerprint = ignored_prod(repo)
+    name = "legacy.py" if existing_exception else "app.py"
+    before = (repo.path / name).read_text()
+    after = (
+        before.rstrip() + "  \n"
+        if existing_exception
+        else "TOKEN = " + repr(synthetic_token()) + "\n"
+    )
+    patch = f"--- a/{name}\n+++ b/{name}\n@@ -1 +1 @@\n-{before}+{after}".encode()
+    with pytest.raises(DdakToolError, match="비밀값 검사 실패"):
+        preflight_source(repo, sha, patch=patch)
+    assert (repo.path / name).read_text() == before
+    assert git(repo.path, "rev-parse", "HEAD") == sha
+
+
+@pytest.mark.parametrize("name", ["config/env.template", "missing.py"])
+def test_preflight_patch_rejects_template_changes_and_nonexisting_files(repository, name):
+    repo, _bare, _v1, _v2 = repository
+    git(repo.path, "switch", "-c", "prod", "origin/prod")
+    (repo.path / "config").mkdir()
+    (repo.path / "config/env.template").write_text("VALUE=old\n")
+    (repo.path / "deploy.yaml").write_text("tiers: {was: {}}\nenv_example: config/env.template\n")
+    git(repo.path, "add", "--all")
+    git(repo.path, "commit", "-m", "Template patch fixture")
+    git(repo.path, "push", "origin", "prod")
+    sha = git(repo.path, "rev-parse", "HEAD")
+    scans = []
+    repo.secret_scan = scans.append
+    patch = f"--- a/{name}\n+++ b/{name}\n@@ -1 +1 @@\n-VALUE=old\n+VALUE=new\n".encode()
+    with pytest.raises(DdakToolError, match=r"템플릿|패치 형식/대상"):
+        repo.preflight_source(sha, patch=patch)
+    assert len(scans) == 1
+    assert (repo.path / "config/env.template").read_text() == "VALUE=old\n"

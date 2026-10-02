@@ -24,6 +24,7 @@ from botocore.config import Config
 
 from ddak.cloud.build.codebuild import CodeBuildClient, GitSource, docker_hub_repo
 from ddak.cloud.build.fake import FakeCodeBuild
+from ddak.cloud.build.local import build_local_tier
 from ddak.cloud.build.release import build_tier
 from ddak.core.config import AdapterMode
 from ddak.core.contracts.context import RunContext
@@ -43,6 +44,17 @@ def build_image(tier: str, ctx: RunContext) -> BuildImageOutput:
     fake = ctx.adapter_mode is AdapterMode.FAKE
     if ctx.source_binding is None:
         raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "승인 스냅샷(source_binding)이 없다")
+    backend = ctx.build_backend
+    if backend == "local":
+        local = build_local_tier(tier, ctx)
+        return BuildImageOutput(
+            release_artifacts=local.artifacts,
+            candidate_sha=local.revision,
+            build_id=local.build_id,
+            source=Source.FIXTURE if fake else Source.LIVE,
+        )
+    if backend != "codebuild":
+        raise DdakToolError(ErrorCode.CONFIG_INVALID, "build_backend은 codebuild/local만 허용한다")
     cloud = _cloud(ctx)
     if fake:
         # FakeCodeBuild는 소스를 받지 않는다. 로컬(file://) 리허설 저장소·SHA-256 커밋도 통과

@@ -52,6 +52,7 @@ from ddak.executor.approval_meta import check_infra_summary, encode_meta
 from ddak.executor.engine import Executor, RunResult, RunStatus, TrackStatus, check_signals
 from ddak.executor.events import EventBus
 from ddak.executor.images import carried_image_source, carried_images, locked_database
+from ddak.executor.preparation import MissingToolsError, missing_track_tools
 from ddak.executor.selection import select_plan
 
 ApprovalKind = Literal["patch", "deploy", "infra", "dockerfile", "foundation"]
@@ -139,12 +140,14 @@ class DeploymentService:
         facts_readers: Mapping[str, FactsReader] | None = None,
         planning_flow: PlanningFlow | None = None,
         repository_factory: Callable[[RunContext], AppRepository] | None = None,
+        build_preflight: Callable[[RunContext], list[str] | None] | None = None,
     ) -> None:
         root = root.expanduser().resolve()
         self.registry, self.root, self.refresh = registry, root, refresh
         self.repositories = dict(repositories or {})
         self.repository_factory = repository_factory
         self.planning_flow = planning_flow
+        self.build_preflight = build_preflight
         root.mkdir(parents=True, exist_ok=True)
         self._lease = (root / "controller.lock").open("a")
         try:
@@ -161,13 +164,22 @@ class DeploymentService:
         self._buses: dict[str, EventBus] = {}
         self._entered: set[str] = set()
         self._tokens: dict[str, str] = {}
+        self._preparation_tasks: dict[str, asyncio.Task[None]] = {}
+        self._preparation_requests: dict[str, dict[str, Any]] = {}
+        self._preparing_runs: dict[str, str] = {}
+        self._preparation_locks: dict[str, asyncio.Lock] = {}
 
     def close(self) -> None:
-        if any(not t.done() for t in self._tasks.values()):
+        if any(not t.done() for t in (*self._tasks.values(), *self._preparation_tasks.values())):
             raise RuntimeError("실행 중인 배포가 있다")
         self._lease.close()
 
     async def shutdown(self) -> None:
+        preparing = [t for t in self._preparation_tasks.values() if not t.done()]
+        for task in preparing:
+            task.cancel()
+        if preparing:
+            await asyncio.gather(*preparing, return_exceptions=True)
         pending = {run_id: task for run_id, task in self._tasks.items() if not task.done()}
         for run_id, task in pending.items():
             if run_id not in self._entered:
@@ -238,7 +250,32 @@ class DeploymentService:
                 ErrorCode.PRECONDITION_FAILED, "요청 저장소와 프로젝트 설정이 다르다"
             )
         plan = select_plan(plan, context)
-        if context.adapter_mode is AdapterMode.REAL and plan.deploy.local.steps:
+        failures = missing_track_tools(plan, self.registry)
+        for target in context.preparation_errors:
+            if getattr(plan.deploy, target).steps:
+                failures.setdefault(target, []).append("apply_infra")
+        context = replace(context, preparation_failures=failures)
+        selected = {t for t in ("local", "cloud") if getattr(plan.deploy, t).steps}
+        if selected and selected <= failures.keys():
+            if selected == {"cloud"} and context.preparation_errors.get("cloud"):
+                error = context.preparation_errors["cloud"]
+                raise DdakToolError(ErrorCode(error["code"]), error["detail"])
+            raise MissingToolsError(
+                [n for names in failures.values() for n in names], "선택한 환경의 툴 미등록"
+            )
+        if context.build_backend == "local" and any(
+            s.tool == "build_image" for s in plan.build.steps
+        ):
+            if not context.image_repository or self.build_preflight is None:
+                raise DdakToolError(
+                    ErrorCode.CONFIG_INVALID, "local 빌드 저장소와 사전 점검 연결이 필요하다"
+                )
+            context = replace(context, preparation_warnings=self.build_preflight(context) or [])
+        if (
+            context.adapter_mode is AdapterMode.REAL
+            and plan.deploy.local.steps
+            and "local" not in failures
+        ):
             inventory = context.platform.get("onprem")
             tiers = inventory.get("tiers") if isinstance(inventory, Mapping) else None
             if not isinstance(tiers, Mapping) or not tiers:
@@ -254,9 +291,16 @@ class DeploymentService:
                     "온프렘 인벤토리 tier 누락: " + ", ".join(sorted(missing)),
                 )
         snapshot = preview(source, patch)
+        if patch and context.source_sha:
+            repository = self.connect_repository(context)
+            if repository is not None:
+                context = replace(
+                    context,
+                    source_checks=repository.preflight_source(context.source_sha, patch=patch),
+                )
         if context.release_artifacts and context.release_artifacts.snapshot != snapshot:
             raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "입력 이미지의 소스 결합이 다르다")
-        database_deploy = any(
+        database_deploy = "local" not in failures and any(
             s.tool == "deploy_tier" and s.tier == "db" for s in plan.deploy.local.steps
         )
         if database_deploy and any(
@@ -304,7 +348,7 @@ class DeploymentService:
         }
         supplied = context.release_artifacts
         carried = carried_images(
-            plan, previous, context.adapter_mode, supplied.images if supplied else ()
+            plan, previous, context.adapter_mode, supplied.images if supplied else (), failures
         )
         if any(set(context.images) & set(tiers) for tiers in carried.values()):
             raise DdakToolError(
@@ -342,7 +386,12 @@ class DeploymentService:
             for s in section.steps
         ]
         for step in steps:
-            spec = self.registry.get(step.tool).spec
+            try:
+                spec = self.registry.get(step.tool).spec
+            except UnknownToolError:
+                if step in plan.build.steps:
+                    raise
+                continue  # 환경 트랙은 위에서 차단, 공통 비교 불가는 실행 결과로 기록한다.
             if spec.layer in {Layer.BUILTIN, Layer.OUTSIDE}:
                 raise DdakToolError(
                     ErrorCode.PLAN_INVALID, "내장/계획 밖 툴은 계획에서 실행할 수 없다"
@@ -366,12 +415,22 @@ class DeploymentService:
         required["deploy"] = cast(str, plan.plan_hash)
         if snapshot.patch_sha256:
             required["patch"] = snapshot.patch_sha256
-        if any(s.tool == "apply_infra" for s in steps) and "infra" not in required:
+        if (
+            "cloud" not in failures
+            and any(s.tool == "apply_infra" for s in steps)
+            and "infra" not in required
+        ):
             raise DdakToolError(ErrorCode.APPROVAL_REQUIRED, "인프라 plan 해시가 필요하다")
-        if any(s.tool == "apply_infra" for s in steps) and self.refresh is None:
+        if (
+            "cloud" not in failures
+            and any(s.tool == "apply_infra" for s in steps)
+            and self.refresh is None
+        ):
             raise DdakToolError(ErrorCode.INFRA_MISSING, "인프라 출력 갱신 연결이 필요하다")
         if context.adapter_mode is AdapterMode.REAL:
             for target, section in (("local", plan.deploy.local), ("cloud", plan.deploy.cloud)):
+                if target in failures:
+                    continue
                 expected_signal = f"{target}_verified"
                 if section.steps and not (
                     section.signal == expected_signal
@@ -454,9 +513,16 @@ class DeploymentService:
             json.dumps(self.approval_view(plan.run_id), ensure_ascii=False)
         )
         self._buses[plan.run_id] = EventBus()
+        if context.source_sha:
+            self.store.supersede_awaiting(context.project, context.run_id, context.source_sha)
         return plan.run_id
 
     def _load_prepared(self, run_id: str) -> PreparedRun:
+        if self.store.run(run_id)["status"] == "SUPERSEDED":
+            raise DdakToolError(
+                ErrorCode.PRECONDITION_FAILED,
+                "새 prod 커밋의 계획으로 대체된 승인 요청이다(SUPERSEDED)",
+            )
         data = self.store.prepared(run_id)
         if data is None:
             raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "복원 가능한 승인 대기 입력이 없다")
@@ -560,6 +626,10 @@ class DeploymentService:
             name = str(error.args[0])
             if re.fullmatch(r"[a-z][a-z0-9_]*", name):
                 result["missing_tool"] = name
+        if isinstance(error, MissingToolsError):
+            result["missing_tools"] = error.missing_tools
+            if len(error.missing_tools) == 1:
+                result["missing_tool"] = error.missing_tools[0]
         saved = self.store.preparation_failed(run_id, project, result)
         if saved and context is not None:
             write_context(self.root / "runs", run_id, context.to_json_dict())
@@ -602,6 +672,18 @@ class DeploymentService:
     def get_environments(self, project: str) -> dict[str, Any]:
         return self.store.environments(project)
 
+    def project_state(self, project: str) -> dict[str, Any]:
+        return self.store.project_state(self.resolve_project(project))
+
+    def unlock_project(self, project: str, *, actor: str, reason: str) -> dict[str, Any]:
+        project = self.resolve_project(project)
+        if any(
+            not task.done() and self.store.run(rid)["project"] == project
+            for rid, task in self._tasks.items()
+        ):
+            raise DdakToolError(ErrorCode.LOCK_HELD, "실행 중인 프로젝트는 해제할 수 없다")
+        return self.store.unlock_project(project, actor, reason)
+
     def get_release(self, run_id: str) -> dict[str, Any] | None:
         self.store.run(run_id)
         return self.store.release_record(run_id)
@@ -612,6 +694,16 @@ class DeploymentService:
 
     def list_project_settings(self) -> list[dict[str, Any]]:
         return self.store.list_project_settings()
+
+    def resolve_project(self, project: str) -> str:
+        # 이전 demo 장부를 다른 프로젝트로 복사하지 않는다. 명시 설정이 있으면 언제나 우선.
+        if (
+            project == "flaskr"
+            and self.store.project_settings(project) is None
+            and self.store.project_settings("demo") is not None
+        ):
+            return "demo"
+        return project
 
     def get_project_settings(self, project: str) -> dict[str, Any] | None:
         return self.store.project_settings(project)
@@ -630,6 +722,113 @@ class DeploymentService:
             raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "인프라 실행 상태가 다르다")
         self.store.check_lock(project, run_id, self._tokens.get(run_id))
 
+    async def begin_preparation(self, project: str, run_id: str) -> None:
+        # 자동 감시는 충돌을 재시도 실패로 세지 않고 현재 준비가 끝날 때까지 기다린다.
+        lock = self._preparation_locks.setdefault(project, asyncio.Lock())
+        await lock.acquire()
+        self._preparing_runs[project] = run_id
+
+    def end_preparation(self, project: str, run_id: str) -> None:
+        if self._preparing_runs.get(project) == run_id:
+            del self._preparing_runs[project]
+            self._preparation_locks[project].release()
+
+    def list_preparations(self, project: str) -> list[dict[str, Any]]:
+        project = self.resolve_project(project)
+        return [
+            self.get_preparation(key)
+            for key, r in self._preparation_requests.items()
+            if r["project"] == project
+        ]
+
+    def get_preparation(self, request_id: str) -> dict[str, Any]:
+        if request_id in self._preparation_requests:
+            record = dict(self._preparation_requests[request_id])
+            if record["run_id"]:
+                record["status"] = self.get_run(record["run_id"])["status"]
+            return record
+        if request_id in self._preparing_runs.values():
+            return {"request_id": request_id, "status": "PREPARING", "run_id": None}
+        run = self.get_run(request_id)
+        return {"request_id": request_id, "status": run["status"], "run_id": request_id}
+
+    def enqueue_deployment(
+        self,
+        project: str,
+        *,
+        targets: Literal["onprem", "cloud", "both"] | None = None,
+        ref: str | None = None,
+    ) -> dict[str, Any]:
+        """HTTP 수명과 분리된 준비 요청. 같은 프로젝트·ref·대상의 대기만 재사용한다."""
+        project = self.resolve_project(project)
+        settings = self.get_project_settings(project) or {}
+        requested_ref = (ref or settings.get("watch_branch", "prod")).removeprefix("refs/tags/")
+        requested_targets = targets or settings.get("default_targets", "onprem")
+
+        def require_same(existing_ref: str | None, existing_targets: str | None) -> None:
+            if (existing_ref or "prod").removeprefix(
+                "refs/tags/"
+            ) != requested_ref or existing_targets != requested_targets:
+                raise DdakToolError(
+                    ErrorCode.LOCK_HELD,
+                    "다른 ref/대상의 준비 또는 승인이 대기 중이다. 기존 요청을 먼저 처리하세요",
+                )
+
+        for request_id, task in self._preparation_tasks.items():
+            if not task.done() and self._preparation_requests[request_id]["project"] == project:
+                existing = self._preparation_requests[request_id]
+                require_same(existing["ref"], existing["targets"])
+                return self.get_preparation(request_id)
+        if project in self._preparing_runs:
+            raise DdakToolError(
+                ErrorCode.LOCK_HELD, "자동 계획 준비 중이다. 완료 후 다시 요청하세요"
+            )
+        for row in self.list_runs():
+            if row["project"] == project and row["status"] == "AWAITING_APPROVAL":
+                prepared = self._load_prepared(row["run_id"])
+                selected = prepared.context.targets or (
+                    "both"
+                    if prepared.plan.deploy.local.steps and prepared.plan.deploy.cloud.steps
+                    else "onprem"
+                    if prepared.plan.deploy.local.steps
+                    else "cloud"
+                )
+                require_same(prepared.context.ref or settings.get("watch_branch"), selected)
+                return {
+                    "request_id": row["run_id"],
+                    "run_id": row["run_id"],
+                    "status": row["status"],
+                }
+        request_id = "prepare-" + uuid.uuid4().hex
+        record: dict[str, Any] = {
+            "request_id": request_id,
+            "project": project,
+            "ref": requested_ref,
+            "targets": requested_targets,
+            "status": "PREPARING",
+            "run_id": None,
+        }
+        self._preparation_requests[request_id] = record
+
+        async def prepare() -> None:
+            try:
+                run_id = await self.request_deployment(project, targets=targets, ref=ref)
+                record.update(run_id=run_id, status=self.get_run(run_id)["status"])
+            except asyncio.CancelledError:
+                record.update(status="CANCELLED", detail="컨트롤러 종료로 준비가 중단됐다")
+                raise
+            except Exception as exc:
+                record.update(
+                    status="FAILED_BEFORE_DEPLOY",
+                    code=exc.code.value if isinstance(exc, DdakToolError) else "INTERNAL",
+                    detail=redact(exc.message)
+                    if isinstance(exc, DdakToolError)
+                    else "계획 요청 실패",
+                )
+
+        self._preparation_tasks[request_id] = asyncio.create_task(prepare(), name=request_id)
+        return dict(record)
+
     async def request_deployment(
         self,
         project: str,
@@ -638,6 +837,7 @@ class DeploymentService:
         ref: str | None = None,
     ) -> str:
         """수동 요청 → 주입된 계획 흐름 → 승인 대기 run_id. 승인·실행은 별도 동작이다."""
+        project = self.resolve_project(project)
         data = self.store.project_settings(project) or {}
         settings = ProjectSettings.model_validate(
             {k: v for k, v in data.items() if k in ProjectSettings.model_fields}
@@ -736,6 +936,12 @@ class DeploymentService:
             "repo_url": p.context.repo_url,
             "ref": p.context.ref,
             "project_settings": dict(p.context.project_settings),
+            "preparation_failures": dict(p.context.preparation_failures),
+            "preparation_errors": dict(p.context.preparation_errors),
+            "preparation_warnings": list(p.context.preparation_warnings),
+            "build_backend": p.context.build_backend,
+            "image_repository": p.context.image_repository,
+            "source_checks": dict(p.context.source_checks),
             "subjects": dict(p.requirements),
             "snapshot": p.snapshot.model_dump(mode="json"),
             "patch": p.patch.decode() if p.patch else None,
@@ -836,7 +1042,11 @@ class DeploymentService:
         }
         supplied = p.context.release_artifacts
         carried_images(
-            p.plan, previous, p.context.adapter_mode, supplied.images if supplied else ()
+            p.plan,
+            previous,
+            p.context.adapter_mode,
+            supplied.images if supplied else (),
+            p.context.preparation_failures,
         )
         if any(previous.get(t) != old for t, old in p.context.previous_release.items()):
             raise DdakToolError(
@@ -845,7 +1055,7 @@ class DeploymentService:
         if p.context.adapter_mode is AdapterMode.REAL and p.context.mode is RunMode.UPDATE:
             environments = self.store.environments(p.plan.project)
             for target, section in (("local", p.plan.deploy.local), ("cloud", p.plan.deploy.cloud)):
-                if not section.steps:
+                if not section.steps or target in p.context.preparation_failures:
                     continue
                 previous = environments.get(target, {}).get("current")
                 if not previous or previous.get("source_mode") != AdapterMode.REAL.value:
@@ -853,7 +1063,15 @@ class DeploymentService:
                         ErrorCode.PRECONDITION_FAILED,
                         "실제 초기 배포의 성공 기록이 필요하다. 가짜 기록으로 복구할 수 없다",
                     )
-        token = self.store.acquire(p.plan.project, run_id)
+        token = self.store.acquire(
+            p.plan.project,
+            run_id,
+            targets=[
+                t
+                for t in ("local", "cloud")
+                if getattr(p.plan.deploy, t).steps and t not in p.context.preparation_failures
+            ],
+        )
         self._tokens[run_id] = token
         task = asyncio.create_task(self._execute(p, token), name=f"deploy:{run_id}")
         self._tasks[run_id] = task
@@ -882,6 +1100,7 @@ class DeploymentService:
             p.context.previous_release,
             p.context.adapter_mode,
             supplied.images if supplied else (),
+            p.context.preparation_failures,
         )
         carried_observations: dict[str, dict[str, Any]] = {}
         # 이전 형식의 장부도 provider에는 동일한 검증된 경로로 전달한다.
@@ -1076,6 +1295,12 @@ class DeploymentService:
                     or updated.candidate_sha != current.candidate_sha
                     or updated.build_source != current.build_source
                     or updated.source_binding != current.source_binding
+                    or updated.build_backend != current.build_backend
+                    or updated.image_repository != current.image_repository
+                    or updated.preparation_failures != current.preparation_failures
+                    or updated.preparation_errors != current.preparation_errors
+                    or updated.preparation_warnings != current.preparation_warnings
+                    or updated.source_checks != current.source_checks
                 ):
                     raise DdakToolError(
                         ErrorCode.PRECONDITION_FAILED, "환경 갱신이 실행 식별자를 바꿨다"

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
+
 from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.enums import By, Layer
 from ddak.core.contracts.plan import (
@@ -15,12 +17,17 @@ from ddak.core.contracts.plan import (
 )
 from ddak.core.contracts.step_catalog import StepDef, catalog_steps
 from ddak.core.contracts.tools.validate_plan import ValidatePlanInput
+from ddak.core.registry import REGISTRY
 from ddak.plan.validate import rules as R
 
 TOGGLE = "strict_ai_check"  # 없으면 False = 기본 검사
 
 
-def assemble(inp: ValidatePlanInput, ctx: RunContext) -> Plan:
+def assemble(
+    inp: ValidatePlanInput, ctx: RunContext, *, registered_tools: Collection[str] | None = None
+) -> Plan:
+    # 앱의 load_tools 이후 호출 시점에 조회한다. import 시점의 빈 레지스트리를 고정하지 않는다.
+    registered = set(REGISTRY.registered() if registered_tools is None else registered_tools)
     facts = inp.facts
     strict = ctx.toggles.get(TOGGLE, False)
     catalog = catalog_steps(facts.tiers, facts.target)
@@ -65,6 +72,13 @@ def assemble(inp: ValidatePlanInput, ctx: RunContext) -> Plan:
             inc = bool(want)
             why = "AI 결정" if want is not None else "기본 제외"
             by, rid = (By.AI if want is not None else By.RULE), "optional"
+            if s.tool not in registered:
+                inc, by, why = False, By.RULE, f"미등록 선택 툴: {s.tool} ({s.id})"
+                warns.append(R.warning("unregistered_optional_tool", why))
+                if want is True:
+                    invalid.append(
+                        Invalidated(id=s.id, attempt="include", result="forced_skip", why=why)
+                    )
         chosen[s.id] = (inc, params, why, by, rid)
 
     # 2) R-couple

@@ -154,8 +154,12 @@ def test_params_filled_and_secret_keys_only() -> None:
     assert cloud["deploy.config.cloud"].params["keys"] == ["SECRET_KEY", "SESSION_COOKIE_SECURE"]
 
 
-def test_optional_follows_ai() -> None:
-    p = run(facts(), draft(("verify.watch.cloud", True)))
+def test_optional_follows_ai_when_registered() -> None:
+    p = validate_plan(
+        ValidatePlanInput(run_id="run-1", facts=facts(), draft=draft(("verify.watch.cloud", True))),
+        RunContext("run-1"),
+        registered_tools={"watch_post_deploy"},
+    )
     assert "verify.watch.cloud" in ids(p)
     assert [s.id for s in run(facts()).verify.skipped] == ["verify.watch.cloud"]
 

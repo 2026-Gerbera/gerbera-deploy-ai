@@ -37,19 +37,26 @@ class WatchTarget:
 
     project: str
     repo_url: str
-    ref: str = "main"
-    target: Literal["local", "cloud", "both"] = "both"
+    ref: str = "prod"
+    target: Literal["local", "cloud", "both"] = "local"
 
 
-HARDCODED_TARGETS = (WatchTarget(project="demo", repo_url=PLACEHOLDER_URL),)
+HARDCODED_TARGETS = (WatchTarget(project="flaskr", repo_url=PLACEHOLDER_URL),)
 
 
 def load_watch_targets(environ: Mapping[str, str] | None = None) -> list[WatchTarget]:
     """교체 지점: 나중에 프로젝트 설정(Store)에서 읽도록 이 함수 본문만 바꾼다."""
     env = os.environ if environ is None else environ
     url = env.get("DDAK_WATCH_REPO_URL") or None
+    project = env.get("DDAK_WATCH_PROJECT") or "flaskr"
+    selected = env.get("DDAK_WATCH_TARGETS") or "local"
+    selected = "local" if selected == "onprem" else selected
+    if selected not in {"local", "cloud", "both"} or not _PROJECT.fullmatch(project):
+        raise DdakToolError(ErrorCode.CONFIG_INVALID, "감시 프로젝트/대상 형식 오류")
     targets = [
-        WatchTarget(t.project, url or t.repo_url, t.ref, t.target) for t in HARDCODED_TARGETS
+        WatchTarget(
+            project, url or PLACEHOLDER_URL, env.get("DDAK_WATCH_BRANCH") or "prod", selected
+        )
     ]
     if any(t.repo_url == PLACEHOLDER_URL for t in targets):
         raise DdakToolError(

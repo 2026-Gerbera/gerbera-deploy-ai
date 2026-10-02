@@ -20,7 +20,7 @@ import subprocess
 import tempfile
 import time
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Literal
 
 from ddak.core.ai.providers import AIRequest, AIResponse
 from ddak.core.contracts.base import AIUsage
@@ -63,12 +63,21 @@ ENV_ALLOW: tuple[str, ...] = ("PATH", "HOME", "USER", "LANG")
 
 
 def build_argv(
-    claude_bin: str, *, system: str, json_schema: Mapping[str, Any], model: str | None
+    claude_bin: str,
+    *,
+    system: str,
+    json_schema: Mapping[str, Any],
+    model: str | None,
+    effort: Literal["low", "medium"] = "low",
 ) -> list[str]:
+    if effort not in ("low", "medium"):
+        raise DdakToolError(ErrorCode.CONFIG_INVALID, "CLI effort는 low/medium만 허용한다")
     argv = [claude_bin, *HARDENED_FLAGS]
     if model:
         argv += ["--model", model]
     argv += [
+        "--effort",
+        effort,
         "--system-prompt",
         system,
         "--json-schema",
@@ -117,12 +126,19 @@ def parse_result(stdout: str, *, model: str | None) -> AIResponse:
 class ClaudeCliProvider:
     name = "cli"
 
-    def __init__(self, claude_bin: str = "claude") -> None:
+    def __init__(
+        self, claude_bin: str = "claude", *, effort: Literal["low", "medium"] = "low"
+    ) -> None:
         self._bin = claude_bin
+        self._effort: Literal["low", "medium"] = effort
 
     def complete(self, req: AIRequest) -> AIResponse:
         argv = build_argv(
-            self._bin, system=req.system, json_schema=req.json_schema, model=req.model
+            self._bin,
+            system=req.system,
+            json_schema=req.json_schema,
+            model=req.model,
+            effort=self._effort,
         )
         started = time.monotonic()
         with tempfile.TemporaryDirectory(prefix="llm-") as cwd:

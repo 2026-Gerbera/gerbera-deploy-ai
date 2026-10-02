@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import tempfile
@@ -107,13 +108,15 @@ def tree_manifest(
     return result
 
 
-def scan_staged(repository: Path) -> None:
-    """trusted 설정과 빈 ignore 목록으로 커밋 직전 검사. 도구가 없으면 실패한다."""
+def _scan_findings(repository: Path) -> set[tuple[str, str, int]]:
+    """앱 설정/ignore 없이 검사하고 값이 없는 위치 정보만 보존한다."""
+    repository = repository.resolve()
     with tempfile.TemporaryDirectory(prefix="ddak-secret-scan-") as root:
         config = Path(root) / "gitleaks.toml"
         config.write_text("[extend]\nuseDefault = true\n")
         ignore = Path(root) / "empty.ignore"
         ignore.write_text("")
+        report = Path(root) / "report.json"
         try:
             result = subprocess.run(
                 [
@@ -126,6 +129,10 @@ def scan_staged(repository: Path) -> None:
                     str(ignore),
                     "--config",
                     str(config),
+                    "--report-format",
+                    "json",
+                    "--report-path",
+                    str(report),
                     str(repository),
                 ],
                 cwd=root,
@@ -136,8 +143,212 @@ def scan_staged(repository: Path) -> None:
             raise DdakToolError(
                 ErrorCode.PRECONDITION_FAILED, "비밀값 검사 도구 실행 실패; 커밋하지 않음"
             ) from None
-        if result.returncode:
+        if result.returncode not in (0, 1):
             raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "비밀값 검사 실패; 커밋하지 않음")
+        try:
+            raw = json.loads(report.read_text())
+            if not isinstance(raw, list) or bool(raw) != (result.returncode == 1):
+                raise ValueError
+            findings = set()
+            for finding in raw:
+                path = Path(finding["File"])
+                name = path.relative_to(repository).as_posix() if path.is_absolute() else str(path)
+                rule, line = finding["RuleID"], finding["StartLine"]
+                if (
+                    not _safe_fingerprint_path(name)
+                    or not isinstance(rule, str)
+                    or not re.fullmatch(r"[A-Za-z0-9_-]+", rule)
+                    or type(line) is not int
+                    or line < 1
+                ):
+                    raise ValueError
+                findings.add((name, rule, line))
+            return findings
+        except (OSError, ValueError, KeyError, TypeError):
+            raise DdakToolError(
+                ErrorCode.PRECONDITION_FAILED, "비밀값 검사 보고서 형식 오류; 원문 출력은 숨김"
+            ) from None
+
+
+def scan_staged(repository: Path) -> None:
+    """trusted 설정과 빈 ignore 목록으로 엄격 검사. 도구가 없으면 실패한다."""
+    if _scan_findings(repository):
+        raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "비밀값 검사 실패; 커밋하지 않음")
+
+
+def _safe_fingerprint_path(name: str) -> bool:
+    path = PurePosixPath(name)
+    return (
+        bool(name)
+        and not path.is_absolute()
+        and path.as_posix() == name
+        and ".." not in path.parts
+        and not any(c in name for c in "*?[]\\:")
+        and not any(ord(c) < 32 or ord(c) == 127 for c in name)
+    )
+
+
+def _export_tree(
+    repository: AppRepository, revision: str, destination: Path
+) -> dict[str, dict[str, Any]]:
+    # 두 manifest 모두 링크/금지 파일을 검증한 뒤에만 파일을 생성한다.
+    configured = _template_paths(repository, revision)
+    files = tree_manifest(repository, revision, configured=configured)
+    files.update(tree_manifest(repository, revision, templates=True, configured=configured))
+    try:
+        for name, metadata in files.items():
+            target = destination / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            # 대소문자/Unicode 정규화로 충돌하는 이름도 덮어써서 검사에서 누락하지 않는다.
+            with target.open("xb") as stream:
+                stream.write(repository.git_bytes("cat-file", "blob", revision + ":" + name))
+            target.chmod(0o755 if metadata["executable"] else 0o644)
+    except OSError:
+        raise DdakToolError(
+            ErrorCode.PRECONDITION_FAILED, "Git 검사 사본을 안전하게 내보낼 수 없다"
+        ) from None
+    return files
+
+
+def _source_ignores(
+    repository: AppRepository, source_sha: str, root: Path, files: dict[str, Any]
+) -> set[tuple[str, str, int]]:
+    if ".gitleaksignore" not in files:
+        return set()
+    allowed = set()
+    try:
+        entries = (root / ".gitleaksignore").read_text().splitlines()
+        for entry in entries:
+            entry = entry.strip()
+            if not entry or entry.startswith("#"):
+                continue
+            name, rule, line = entry.rsplit(":", 2)
+            commit = None
+            if ":" in name:
+                commit, name = name.split(":", 1)
+                git_sha(commit)
+            if (
+                not _safe_fingerprint_path(name)
+                or not re.fullmatch(r"[A-Za-z0-9_-]+", rule)
+                or not re.fullmatch(r"[1-9][0-9]*", line)
+            ):
+                raise ValueError
+            if name not in files:
+                continue
+            if commit:
+                # git 모드 fingerprint의 SHA를 버리지 않는다. 조상 관계와 동일 blob을
+                # 함께 확인해야 다른 커밋의 같은 경로/줄에 새 비밀값이 들어와도 차단된다.
+                try:
+                    repository.git("merge-base", "--is-ancestor", commit, source_sha)
+                    old = repository.git_bytes("ls-tree", "-z", commit, "--", name)
+                    current = repository.git_bytes("ls-tree", "-z", source_sha, "--", name)
+                except DdakToolError:
+                    continue
+                if old != current:
+                    continue
+            allowed.add((name, rule, int(line)))
+    except (OSError, UnicodeError, ValueError):
+        raise DdakToolError(
+            ErrorCode.PRECONDITION_FAILED, ".gitleaksignore에는 정확한 fingerprint만 허용한다"
+        ) from None
+    return allowed
+
+
+def _scan_summary(findings: set[tuple[str, str, int]], *, fixture: bool = False) -> dict[str, Any]:
+    counts: dict[tuple[str, str], int] = {}
+    for path, rule, _line in findings:
+        counts[path, rule] = counts.get((path, rule), 0) + 1
+    return {
+        "source": "fixture" if fixture else "gitleaks",
+        "ignored_count": len(findings),
+        "findings": [
+            {"count": count, "rule": rule, "path": path}
+            for (path, rule), count in sorted(counts.items())
+        ],
+    }
+
+
+def _source_policy(
+    repository: AppRepository, source_sha: str, *, patch: bytes | None = None
+) -> tuple[dict[str, Any], set[tuple[str, str, int]], dict[str, Any]]:
+    source_sha = git_sha(source_sha)
+    repository.git("cat-file", "-e", source_sha + "^{commit}")
+    with tempfile.TemporaryDirectory(prefix="ddak-source-preflight-") as directory:
+        root = Path(directory)
+        files = _export_tree(repository, source_sha, root)
+        allowed = _source_ignores(repository, source_sha, root, files)
+        if repository.secret_scan is not None:
+            repository.secret_scan(root)
+            findings: set[tuple[str, str, int]] = set()
+        else:
+            findings = _scan_findings(root)
+            if findings - allowed:
+                raise DdakToolError(
+                    ErrorCode.PRECONDITION_FAILED, "비밀값 검사 실패; 커밋하지 않음"
+                )
+        if patch is not None:
+            try:
+                apply_diff(root, patch)
+            except ValueError:
+                raise DdakToolError(
+                    ErrorCode.PRECONDITION_FAILED, "승인 전 패치 형식/대상 검사 실패"
+                ) from None
+            patched_files = file_manifest(root)
+            configured = _template_paths(repository, source_sha)
+            for name, metadata in files.items():
+                if template_file(Path(name), configured):
+                    if digest_bytes((root / name).read_bytes()) != metadata["sha256"]:
+                        raise DdakToolError(
+                            ErrorCode.PRECONDITION_FAILED, "템플릿은 prod 원본을 유지해야 한다"
+                        )
+                    patched_files[name] = metadata
+            if repository.secret_scan is not None:
+                repository.secret_scan(root)
+            else:
+                _require_source_exceptions(_scan_findings(root), patched_files, files, findings)
+        return files, findings, _scan_summary(findings, fixture=repository.secret_scan is not None)
+
+
+def preflight_source(
+    repository: AppRepository, source_sha: str, *, patch: bytes | None = None
+) -> dict[str, Any]:
+    """승인 전 고정 prod 트리를 검사한다. 반환값에는 예외 count/rule/path만 담는다.
+
+    재사용 checkout에도 최신 prod 객체를 가져오고 SHA를 확인한다. worktree는 만들지
+    않는다. patch가 있으면 사본에 적용해 후보와 같은 규칙으로 추가 검사한다.
+    주입된 검사 결과는 fixture로 표시한다. 예외 요약은 prod 원본 기준이다.
+    """
+    source_sha = git_sha(source_sha)
+    repository.git("fetch", "--no-tags", "origin", "refs/heads/prod:refs/remotes/origin/prod")
+    repository.git("merge-base", "--is-ancestor", source_sha, "refs/remotes/origin/prod")
+    return _source_policy(repository, source_sha, patch=patch)[2]
+
+
+def _require_source_exceptions(
+    findings: set[tuple[str, str, int]],
+    files: dict[str, Any],
+    source_files: dict[str, Any],
+    allowed: set[tuple[str, str, int]],
+) -> None:
+    for finding in findings:
+        name = finding[0]
+        if finding not in allowed or files.get(name) != source_files.get(name):
+            raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "비밀값 검사 실패; 커밋하지 않음")
+
+
+def _scan_candidate(
+    repository: AppRepository, source_sha: str, revision: str, workspace: Path
+) -> dict[str, Any]:
+    if repository.secret_scan is not None:
+        # 기존 fixture는 Git HEAD/인덱스를 관찰하므로 동일 worktree 호출 계약을 유지한다.
+        repository.secret_scan(workspace)
+        return _scan_summary(set(), fixture=True)
+    source_files, allowed, summary = _source_policy(repository, source_sha)
+    with tempfile.TemporaryDirectory(prefix="ddak-candidate-scan-") as directory:
+        root = Path(directory)
+        files = _export_tree(repository, revision, root)
+        _require_source_exceptions(_scan_findings(root), files, source_files, allowed)
+    return summary
 
 
 def _check_template_binding(
@@ -192,7 +403,7 @@ def validate_candidate(
     build_files: dict[str, Any],
     workspace: Path,
     guard: Callable[[], None],
-) -> None:
+) -> dict[str, Any]:
     for branch in ("prod", "ai-prod"):
         repository.git(
             "fetch", "--no-tags", "origin", f"refs/heads/{branch}:refs/remotes/origin/{branch}"
@@ -208,10 +419,11 @@ def validate_candidate(
     repository.git("worktree", "add", "--detach", str(workspace), candidate_sha)
     if _manifest(workspace, configured) != build_files:
         raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "후보 검사 사본이 승인 트리와 다르다")
-    (repository.secret_scan or scan_staged)(workspace)
+    summary = _scan_candidate(repository, source_sha, candidate_sha, workspace)
     if _manifest(workspace, configured) != build_files:
         raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "검사 중 후보 사본이 바뀌었다")
     guard()
+    return summary
 
 
 def prepare_candidate(
@@ -263,7 +475,6 @@ def prepare_candidate(
         secret_scan=repository.secret_scan,
         expected_url=repository.expected_url,
     )
-    scanner = repository.secret_scan or scan_staged
     audit = workspace.parent / "candidate-attempt.json"
 
     conflicts: list[str] = []
@@ -344,7 +555,7 @@ def prepare_candidate(
     tree = work.git("write-tree")
     if tree_manifest(work, tree, configured=configured) != build_files:
         raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "승인 수정본과 staged 트리가 다르다")
-    scanner(workspace)  # commit-tree에도 커밋 직전 검사를 명시적으로 적용한다.
+    summary = _scan_candidate(work, source_sha, tree, workspace)
     if work.git("write-tree") != tree or _manifest(workspace, configured) != build_files:
         raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "검사 중 staged 트리가 변경됐다")
     guard()
@@ -357,7 +568,7 @@ def prepare_candidate(
     record("LOCAL_COMMIT", candidate_sha)
     _validate_trees(work, source_sha, candidate_sha, *approved_manifests)
     # 확정한 후보를 검사하며 모든 push 직전 승인을 다시 확인한다.
-    scanner(workspace)
+    _scan_candidate(work, source_sha, candidate_sha, workspace)
     if _manifest(workspace, configured) != build_files:
         raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "검사 중 후보 사본이 바뀌었다")
     guard()
@@ -370,4 +581,5 @@ def prepare_candidate(
         "source_sha": source_sha,
         "workspace": str(workspace),
         "merge_conflicts": conflicts,
+        "source_preflight": summary,
     }

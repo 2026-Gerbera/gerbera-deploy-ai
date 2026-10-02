@@ -29,6 +29,7 @@ from urllib.parse import urlsplit
 from fastapi import FastAPI
 
 from ddak.cd import configure_cloud_tls
+from ddak.cloud.build import preflight_local_build
 from ddak.cloud.infra import (
     bind_infra,
     create_binding,
@@ -39,7 +40,7 @@ from ddak.cloud.infra import (
 from ddak.cloud.tls import ensure_tls
 from ddak.core.ai.status import llm_status
 from ddak.core.app_repository import AppRepository, FakeAppRepository
-from ddak.core.config import AdapterMode, Settings
+from ddak.core.config import AdapterMode, Settings, require_local_cli
 from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.deploy_request import DeployRequest
 from ddak.core.contracts.enums import RunMode
@@ -52,9 +53,11 @@ from ddak.core.project_settings import ProjectSettings
 from ddak.core.redact import redact_obj
 from ddak.core.registry import REGISTRY, Registry, import_tools
 from ddak.core.runlog import run_dir
+from ddak.core.runtime import tool_context
 from ddak.core.snapshots import copy_source
 from ddak.executor.approval_meta import check_infra_summary, encode_meta
 from ddak.executor.infra import refresh_infra_context
+from ddak.executor.preparation import missing_track_tools
 from ddak.executor.service import DeploymentService
 from ddak.onprem.inventory import load_inventory
 from ddak.plan import new_run_id, plan_deployment
@@ -62,6 +65,7 @@ from ddak.plan.intake import FetchPolicy, Watcher, WatchTarget, load_watch_targe
 from ddak.web.app import create_app
 
 _log = get_logger("plan")
+ADMIN_HOST = "127.0.0.1"
 
 # 이 패키지들 바로 아래 <디렉토리>/tool.py를 자동 탐색한다(tool.py가 없는 디렉토리는 건너뜀).
 TOOL_PACKAGES = (
@@ -117,7 +121,11 @@ def _platform_bootstrap_plan(plan: Plan, ctx: RunContext, summary: dict | None) 
 
 
 async def _infra_approval(service: DeploymentService, plan: Plan, ctx: RunContext):
-    if ctx.targets == "onprem" or not any(s.tool == "apply_infra" for s in plan.deploy.cloud.steps):
+    if (
+        ctx.targets == "onprem"
+        or "cloud" in ctx.preparation_failures
+        or not any(s.tool == "apply_infra" for s in plan.deploy.cloud.steps)
+    ):
         return {}, None
     if not has_infra_binding(ctx.run_id) and ctx.adapter_mode is AdapterMode.FAKE:
         bind_infra(
@@ -141,12 +149,13 @@ async def _infra_approval(service: DeploymentService, plan: Plan, ctx: RunContex
         )
         bounded = replace(ctx, deadline=time.monotonic() + tool.spec.timeout_s)
         try:
-            result = await asyncio.wait_for(
-                tool.fn(request, bounded)
-                if tool.is_async
-                else asyncio.to_thread(tool.fn, request, bounded),
-                tool.spec.timeout_s,
-            )
+            with tool_context("generate_infra", ctx.run_id):
+                result = await asyncio.wait_for(
+                    tool.fn(request, bounded)
+                    if tool.is_async
+                    else asyncio.to_thread(tool.fn, request, bounded),
+                    tool.spec.timeout_s,
+                )
         except TimeoutError:
             # 동기 생성기의 스레드를 강제 종료하지 않는다. 이 run 번들은 재사용/적용하지 않는다.
             raise DdakToolError(
@@ -192,13 +201,19 @@ def _watch_targets(service: DeploymentService) -> list[WatchTarget]:
             project,
             s["repo_url"],
             s.get("watch_branch", "prod"),
-            "local" if s.get("default_targets") == "onprem" else s.get("default_targets", "both"),
+            "local"
+            if s.get("default_targets", "onprem") == "onprem"
+            else s.get("default_targets", "onprem"),
         )
         for project, s in saved.items()
         if s.get("auto_detect") and s.get("repo_url")
     ]
     if os.environ.get("DDAK_WATCH_REPO_URL"):
-        targets += [replace(t, ref="prod") for t in load_watch_targets() if t.project not in saved]
+        targets += [
+            replace(t, project=service.resolve_project(t.project))
+            for t in load_watch_targets()
+            if service.resolve_project(t.project) not in saved
+        ]
     return targets
 
 
@@ -272,6 +287,7 @@ async def _prepare_commit(
     facts = None
     phase = "request"
     try:
+        await service.begin_preparation(target.project, run_id)
         saved = service.get_project_settings(target.project) or {}
         if saved.get("repo_url") and saved["repo_url"] != target.repo_url:
             raise DdakToolError(
@@ -306,6 +322,10 @@ async def _prepare_commit(
             ref=request.ref,
             source_sha=sha,
             trigger=trigger,
+            build_backend=settings.build_backend,
+            image_repository=settings.image_repository
+            if settings.build_backend == "local"
+            else None,
             cloud_domain=saved.get("cloud_domain"),
             targets="onprem" if request.target == "local" else request.target,
             project_settings={
@@ -343,7 +363,7 @@ async def _prepare_commit(
         platform: dict[str, Any] = {}
         phase = "inventory"
         cloud_outputs = service.get_platform_outputs(target.project, settings.adapter_mode)
-        if cloud_outputs or request.target != "onprem":
+        if cloud_outputs or request.target != "local":
             # region은 Terraform 출력·사용자 입력이 아니라 제품의 서울 고정 규약이다.
             platform["cloud"] = {**cloud_outputs, "region": "ap-northeast-2"}
         path = os.environ.get("DDAK_ONPREM_INVENTORY")
@@ -374,6 +394,7 @@ async def _prepare_commit(
         phase = "settings"
         if latest.get("version") != saved.get("version"):
             raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "계획 중 프로젝트 설정이 변경됐다")
+        phase = "prepare"
         context = replace(
             bundle.context,
             repo_url=context.repo_url,
@@ -384,12 +405,31 @@ async def _prepare_commit(
             platform=platform,
             project_settings=context.project_settings,
             cloud_domain=context.cloud_domain,
+            build_backend=context.build_backend,
+            image_repository=context.image_repository,
+            preparation_failures=missing_track_tools(plan, service.registry),
         )
         if service.repository_factory is not None:
-            phase = "repository"
-            await asyncio.to_thread(service.connect_repository, context)
+            phase = "source_preflight"
+            context = await _source_preflight(service, context)
         phase = "infra"
-        subjects, infra_summary = await _infra_approval(service, bundle.plan, context)
+        try:
+            subjects, infra_summary = await _infra_approval(service, bundle.plan, context)
+        except DdakToolError as exc:
+            if request.target != "both" or not bundle.plan.deploy.local.steps:
+                raise
+            context = replace(
+                context,
+                preparation_failures={**context.preparation_failures, "cloud": ["apply_infra"]},
+                preparation_errors={
+                    "cloud": {
+                        "phase": "infra",
+                        "code": exc.code.value,
+                        "detail": str(redact_obj(exc.message))[:1000],
+                    }
+                },
+            )
+            subjects, infra_summary = {}, None
         # intake 캐시는 TTL로 정리된다. 승인 대기 소스는 컨트롤러 수명과 분리해 보관한다.
         source = service.root / "sources" / run_id
         phase = "source"
@@ -449,6 +489,7 @@ async def _prepare_commit(
     else:
         _log.info("새 커밋 승인 대기", run_id=run_id, project=target.project, commit=sha)
     finally:
+        service.end_preparation(target.project, run_id)
         if facts is not None:
             try:
                 directory = run_dir(service.root / "runs", run_id)
@@ -495,21 +536,76 @@ def _repository_factory(root: Path, *, allow_local: bool = False):
     return connect
 
 
-def create() -> FastAPI:
-    registry = load_tools()
+def _local_build_preflight(ctx: RunContext) -> list[str]:
+    if ctx.adapter_mode is AdapterMode.REAL:
+        return preflight_local_build(ctx.image_repository or "")
+    return []
+
+
+async def _source_preflight(service: DeploymentService, context: RunContext) -> RunContext:
+    repository = await asyncio.to_thread(service.connect_repository, context)
+    if repository is None or not context.source_sha:
+        if context.adapter_mode is AdapterMode.REAL:
+            raise DdakToolError(
+                ErrorCode.CONFIG_INVALID, "승인 전 소스 검사에 Git 연결과 SHA가 필요하다"
+            )
+        return context
+    summary = (
+        {"source": "fixture", "ignored_count": 0, "findings": []}
+        if isinstance(repository, FakeAppRepository)
+        else await asyncio.to_thread(repository.preflight_source, context.source_sha)
+    )
+    return replace(context, source_checks=summary)
+
+
+def _configure_onprem(service: DeploymentService) -> None:
+    project = service.resolve_project(os.environ.get("DDAK_WATCH_PROJECT") or "flaskr")
+    saved = service.get_project_settings(project) or {}
+    if saved.get("repo_url"):
+        return  # 저장된 사람이 정한 설정은 프로필이 덮어쓰지 않는다.
+    repo = os.environ.get("DDAK_WATCH_REPO_URL")
+    if repo:
+        service.save_project_settings(
+            project,
+            {
+                "repo_url": repo,
+                "watch_branch": os.environ.get("DDAK_WATCH_BRANCH") or "prod",
+                "default_targets": "onprem",
+                "auto_detect": True,
+            },
+            updated_by="local-profile",
+            expected_version=saved.get("version", 0),
+        )
+
+
+def create(*, cli_host: str | None = None, onprem_profile: bool = False) -> FastAPI:
     settings = Settings.from_env()
-    app = create_app(
-        llm_status=llm_status,
-        deployment_factory=lambda: DeploymentService(
+    # 직접 ASGI factory 기동은 실제 바인드를 알 수 없으므로 CLI에서 거부한다.
+    require_local_cli(settings, host=cli_host)
+    registry = load_tools()
+
+    def deployment_factory():
+        service = DeploymentService(
             registry,
             settings.run_dir.parent,
             refresh=refresh_infra_context,
             planning_flow=_manual_planning(settings, FetchPolicy.from_env()),
             repository_factory=_repository_factory(settings.run_dir.parent / "repositories"),
-        ),
+            build_preflight=_local_build_preflight,
+        )
+        if onprem_profile:
+            _configure_onprem(service)
+        return service
+
+    app = create_app(
+        llm_status=llm_status,
+        deployment_factory=deployment_factory,
         settings=settings,
     )
     _attach_watch(app, settings)
+    from ddak.web.routes.ops import router as ops_router
+
+    app.include_router(ops_router)
     return app
 
 
@@ -519,4 +615,4 @@ def main() -> None:
     settings = Settings.from_env()
     # 외부에 열지 않는다(127.0.0.1). 온프렘 앱 기본 주소 8080과 겹치지 않게 8765.
     # 포트는 💭(설계 문서 00 N21, 하네스 I-26).
-    uvicorn.run(create(), host="127.0.0.1", port=settings.admin_port)
+    uvicorn.run(create(cli_host=ADMIN_HOST), host=ADMIN_HOST, port=settings.admin_port)

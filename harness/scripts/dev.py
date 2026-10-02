@@ -341,6 +341,10 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("ci", help="check에서 attribution만 뺀 것(CI quality 잡)")
     sub.add_parser("run", help="앱 1개(관리 웹 + 실행기 + 레지스트리), real 어댑터")
     sub.add_parser("run-fake", help="같은 기동, 모든 어댑터 Fake")
+    for name in ("onprem-run", "onprem-plan", "unlock"):
+        p = sub.add_parser(name, help="온프렘 운영 진입점")
+        p.add_argument("--project")
+        p.add_argument("--ref")
     sub.add_parser("contract-smoke", help="레지스트리 구현 현황(등록/미구현) + Fake 1회 호출")
     p = sub.add_parser("demo-reset", help="O1 fixture 전용 상태 초기화(클라우드 미지원)")
     p.add_argument("--cloud", action="store_true")
@@ -369,6 +373,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 def dispatch(args: argparse.Namespace) -> int:
     task = args.task
+    if task in {"onprem-run", "onprem-plan", "unlock"}:
+        action = {"onprem-run": "run", "onprem-plan": "plan", "unlock": "unlock"}[task]
+        extra = (["--project", args.project] if args.project else []) + (
+            ["--ref", args.ref] if args.ref else []
+        )
+        return run(py("scripts/onprem_fullchain.py", action, *extra))
     simple: dict[str, Callable[[], int]] = {
         "fmt": task_fmt,
         "lint": task_lint,

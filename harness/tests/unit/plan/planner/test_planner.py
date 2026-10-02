@@ -91,8 +91,8 @@ def test_jev_path_probability_and_clean_state() -> None:
     draft = run(inp(), jev_client=jev)
     ids = [d.id for d in draft.decisions]
     assert ids == ["deploy.storage.local", "deploy.storage.cloud", "verify.watch.cloud"]
-    assert all(d.include and d.reason == "jev 확률 0.90" for d in draft.decisions)
-    assert draft.planner.provider == "jev" and draft.planner.model == "m-jev"
+    assert all(d.include and d.reason == "FakeJev 확률 0.90" for d in draft.decisions)
+    assert draft.planner.provider == "FakeJev" and draft.planner.model is None
     state, qs = jev.calls[0]
     assert qs[0].id == "step.deploy_storage_local"
     blob = state + " ".join(q.text for q in qs)
@@ -116,7 +116,7 @@ def test_claude_path_filters_out_of_scope_ids() -> None:
     )
     assert [d.id for d in draft.decisions] == ["verify.watch.cloud"]
     p = draft.planner
-    assert (p.provider, p.model, p.source, p.by) == ("claude-api", "m-claude", Source.REPLAY, By.AI)
+    assert (p.provider, p.model, p.source, p.by) == ("fake", "m-claude", Source.REPLAY, By.AI)
     sent = prov.seen[0]
     assert sent.prompt_version == "plan-v1"
     # feedback은 데이터 구역 안, 운영자 지시 구역 밖
@@ -125,12 +125,17 @@ def test_claude_path_filters_out_of_scope_ids() -> None:
 
 
 @pytest.mark.parametrize(
-    ("backend", "label"),
-    [(LLMBackend.API, "claude-api"), (LLMBackend.CLI, "claude-cli"), (LLMBackend.REPLAY, "replay")],
+    ("backend", "name", "label"),
+    [
+        (LLMBackend.API, "api", "groq"),
+        (LLMBackend.CLI, "cli", "claude-cli"),
+        (LLMBackend.REPLAY, "replay", "replay"),
+    ],
 )
-def test_claude_labels(backend: LLMBackend, label: str) -> None:
+def test_claude_labels(backend: LLMBackend, name: str, label: str) -> None:
     cfg = Settings(ai_retries=0, llm_backend=backend, llm_model="x")
     prov = FakeProvider('{"decisions": []}')
+    prov.name = name
     with tool_context("generate_plan", "run-1"):
         out = generate_plan(
             inp(), CTX, jev_client=FakeJev(UNAVAILABLE), provider=prov, settings=cfg
@@ -155,3 +160,33 @@ def test_not_allowed_outside_tool_context_propagates() -> None:
 
 def test_tool_registered() -> None:
     assert "generate_plan" in load_tools().registered()
+
+
+def test_actual_judgment_client_overrides_settings_provenance() -> None:
+    class NamedFake(FakeJev):
+        name = "groq"
+        model = "actual-groq-model"
+
+    draft = run(inp(), jev_client=NamedFake())
+    assert draft.planner.provider == "groq"
+    assert draft.planner.model == "actual-groq-model"
+
+
+def test_factory_claude_provenance(monkeypatch: pytest.MonkeyPatch) -> None:
+    def complete(self, req: AIRequest) -> AIResponse:
+        data = json.loads(
+            req.user.removeprefix("<untrusted_data>\n").removesuffix("\n</untrusted_data>")
+        )
+        return AIResponse(
+            text=json.dumps(
+                {"answers": [{"id": q["id"], "probability": 1} for q in data["questions"]]}
+            ),
+            source=Source.LIVE,
+        )
+
+    monkeypatch.setattr("ddak.core.ai.providers.claude.ClaudeCliProvider.complete", complete)
+    with tool_context("generate_plan", "r"):
+        result = generate_plan(inp(), CTX, settings=Settings(jev_backend="claude-cli"))
+    assert result.draft.planner.provider == "claude-cli"
+    assert result.draft.planner.model == "claude-sonnet-5-5"
+    assert all(d.reason == "claude-cli 확률 1.00" for d in result.draft.decisions)

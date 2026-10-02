@@ -692,7 +692,13 @@ async def test_finish_integrity_error_returns_needs_human_and_retains_lock(
     assert result.tracks["local"] is TrackStatus.DONE
     assert result.tracks["cloud"] is TrackStatus.DONE
     assert service.store.run(run_id)["status"] == "NEEDS_HUMAN"
-    assert service.store.environments("demo") == previous
+    current = service.store.environments("demo")
+    assert all(
+        current[t]["current"] == previous[t]["current"]
+        and current[t]["previous"] == previous[t]["previous"]
+        for t in previous
+    )
+    assert all(current[t]["status"] == "NEEDS_HUMAN" for t in previous)
     assert result.context is not None
     service.store.check_lock("demo", run_id, result.context.lock_token)
     assert not (service.root / "runs" / run_id / "release.json").exists()
