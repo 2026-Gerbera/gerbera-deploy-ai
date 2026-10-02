@@ -30,6 +30,7 @@ from ddak.core.contracts.deploy_request import DeployRequest
 from ddak.core.contracts.enums import Effect, Layer, RunMode, Target
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.contracts.events import EventType, RunEvent
+from ddak.core.contracts.infra_outputs import PLATFORM_OUTPUTS, checked_outputs
 from ddak.core.contracts.plan import Plan, PlanStep
 from ddak.core.contracts.release import ReleaseArtifacts, SnapshotBinding
 from ddak.core.project_settings import ProjectSettings
@@ -56,6 +57,45 @@ def plan_digest(plan: Plan) -> str:
 
 def source_facts(root: Path) -> str:
     return digest_json(file_manifest(root))
+
+
+def environment_release(
+    release: dict[str, Any], previous: Mapping[str, Any], target: str
+) -> dict[str, Any]:
+    """환경 장부는 미변경 tier를 보존한다. 새 빌드 snapshot에 이전 산출물을 섞지 않는다."""
+    images = {**previous.get("images", {}), **release["images"]}
+    origins = {}
+    for tier in images:
+        current = tier in release["images"]
+        origin = release if current else previous
+        inherited = (previous.get("image_sources") or {}).get(tier)
+        artifacts = origin.get("artifacts") or {}
+        origins[tier] = {
+            **(
+                inherited
+                if not current and inherited
+                else {
+                    "release_id": origin.get("release_id"),
+                    "source_sha": origin.get("source_sha"),
+                    "candidate_sha": origin.get("candidate_sha"),
+                    "snapshot": origin.get("source"),
+                    "artifact": artifacts.get("images", {}).get(tier),
+                    "observation": artifacts.get("observations", {}).get(target, {}).get(tier),
+                }
+            ),
+            "carried_forward": not current,
+        }
+    return {**release, "images": images, "image_sources": origins}
+
+
+def platform_outputs(context: RunContext) -> dict[str, Any]:
+    try:
+        return checked_outputs(
+            {k: v for k, v in context.platform.get("cloud", {}).items() if k in PLATFORM_OUTPUTS},
+            "platform",
+        )
+    except (ValueError, TypeError, AttributeError):
+        raise DdakToolError(ErrorCode.CONFIG_INVALID, "플랫폼 출력 형식 오류") from None
 
 
 @dataclass(frozen=True)
@@ -152,6 +192,11 @@ class DeploymentService:
         infra_summary: dict[str, Any] | None = None,
         expected_settings_version: int | None = None,
     ) -> str:
+        if context.source_binding is not None:
+            raise DdakToolError(
+                ErrorCode.CONFIG_INVALID, "source_binding은 승인 뒤 실행기만 채운다"
+            )
+        platform_outputs(context)
         settings = self.store.project_settings(context.project)
         if expected_settings_version is not None and (
             (settings or {}).get("version", 0) != expected_settings_version
@@ -474,6 +519,20 @@ class DeploymentService:
 
     def get_project_settings(self, project: str) -> dict[str, Any] | None:
         return self.store.project_settings(project)
+
+    def get_platform_outputs(self, project: str, mode: AdapterMode) -> dict[str, Any]:
+        return checked_outputs(self.store.platform_outputs(project, mode.value), "platform")
+
+    def guard_infra(self, run_id: str, project: str) -> None:
+        """승인 전에는 조회만 가능하고, 실행 중에는 해당 실행의 잠금을 확인한다."""
+        try:
+            row = self.store.run(run_id)
+        except KeyError:
+            self.store.assert_idle(project)
+            return
+        if row["project"] != project or row["status"] != "RUNNING":
+            raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "인프라 실행 상태가 다르다")
+        self.store.check_lock(project, run_id, self._tokens.get(run_id))
 
     async def request_deployment(
         self,
@@ -833,10 +892,19 @@ class DeploymentService:
                     or updated.source_sha != current.source_sha
                     or updated.candidate_sha != current.candidate_sha
                     or updated.build_source != current.build_source
+                    or updated.source_binding != current.source_binding
                 ):
                     raise DdakToolError(
                         ErrorCode.PRECONDITION_FAILED, "환경 갱신이 실행 식별자를 바꿨다"
                     )
+            if (
+                updated.release_artifacts
+                and updated.release_artifacts.snapshot != updated.source_binding
+            ):
+                raise DdakToolError(
+                    ErrorCode.PRECONDITION_FAILED, "승인 source_binding과 빌드 산출물이 다르다"
+                )
+            platform_outputs(updated)
             if target:
                 if self.registry.spec(step.tool).effect is Effect.STATE_CHANGE:
                     checks[target].clear()
@@ -929,7 +997,26 @@ class DeploymentService:
         run_repository = None
         git_timing_start = 0
         try:
-            run_repository = await asyncio.to_thread(self.connect_repository, ctx)
+            try:
+                run_repository = await asyncio.to_thread(self.connect_repository, ctx)
+                if (
+                    ctx.source_sha
+                    and ctx.adapter_mode is AdapterMode.REAL
+                    and run_repository is None
+                ):
+                    raise DdakToolError(
+                        ErrorCode.CONFIG_INVALID, "Git 실행에 앱 저장소 연결이 필요하다"
+                    )
+            except Exception as exc:
+                git_record = {
+                    "status": "FAILED",
+                    "phase": "repository",
+                    "code": exc.code.value
+                    if isinstance(exc, DdakToolError)
+                    else ErrorCode.CONFIG_INVALID.value,
+                    "detail": "앱 저장소 연결 또는 승인 origin 검사 실패",
+                }
+                raise
             git_timing_start = len(run_repository.timings) if run_repository else 0
             rollback_timeouts = {
                 target: len(tiers) * (self.registry.spec("rollback_tier").timeout_s + 2) + 2
@@ -945,7 +1032,9 @@ class DeploymentService:
                 )
             materialize(p.source, directory / "build-source", p.snapshot, p.patch)
             build_files = file_manifest(directory / "build-source")
-            ctx = replace(ctx, build_source=str(directory / "build-source"))
+            ctx = replace(
+                ctx, build_source=str(directory / "build-source"), source_binding=p.snapshot
+            )
             repository = run_repository
             if ctx.source_sha and repository:
                 if ctx.adapter_mode is AdapterMode.FAKE and not repository.allow_local:
@@ -1108,6 +1197,7 @@ class DeploymentService:
             "merge_conflicts": merge_conflicts,
             "infra_changes": result.infra_changes,
             "source_mode": p.context.adapter_mode.value,
+            "platform_outputs": platform_outputs(final_ctx),
             "source": p.snapshot.model_dump(mode="json"),
             "files": build_files,
             "source_files": p.source_files,
@@ -1123,7 +1213,10 @@ class DeploymentService:
                 continue
             track = result.tracks.get(target)
             if track is TrackStatus.DONE:
-                changes[target] = ("SUCCEEDED", release)
+                changes[target] = (
+                    "SUCCEEDED",
+                    environment_release(release, previous.get(target, {}), target),
+                )
             elif track is TrackStatus.ROLLED_BACK:
                 changes[target] = ("ROLLED_BACK", None)
             elif result.status is RunStatus.NEEDS_HUMAN:
@@ -1134,6 +1227,11 @@ class DeploymentService:
             "result": final_data,
             "source_mode": p.context.adapter_mode.value,
             "sealed_at": datetime.now(UTC).isoformat(),
+            "environment_images": {
+                target: {"images": entry[1]["images"], "image_sources": entry[1]["image_sources"]}
+                for target, entry in changes.items()
+                if entry[1] is not None
+            },
         }
         # SQLite 봉인이 기준이다. 파일 export 실패로 성공한 배포를 실패로 뒤집지 않는다.
         try:

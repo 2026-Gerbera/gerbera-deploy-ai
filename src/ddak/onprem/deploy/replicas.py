@@ -198,8 +198,10 @@ def replace_replicas(
     release_id = ctx.run_id
     source_sha = ctx.candidate_sha
     if function == "rollback":
-        release_id = ctx.previous_release.get("local", {}).get("release_id")
-        source_sha = ctx.previous_release.get("local", {}).get("candidate_sha")
+        previous = ctx.previous_release.get("local", {})
+        origin = (previous.get("image_sources") or {}).get(tier) or previous
+        release_id = origin.get("release_id")
+        source_sha = origin.get("candidate_sha")
     if not isinstance(release_id, str) or not release_id or any(c in release_id for c in "\n\r\0"):
         raise fail("RELEASE_ID 형식 오류", ErrorCode.CONFIG_INVALID)
     if source_sha is not None and (

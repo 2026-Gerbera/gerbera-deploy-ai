@@ -90,13 +90,16 @@ class AppRepository:
 
     def resolve_tag(self, ref: str) -> str:
         """annotated 태그 객체가 아닌 최종 커밋을 고정한다. lightweight도 지원한다."""
+        return self._resolve_tag(ref, "origin")
+
+    def _resolve_tag(self, ref: str, remote: str) -> str:
         if not ref.startswith("refs/tags/v"):
             raise DdakToolError(ErrorCode.CONFIG_INVALID, "v* 태그 ref가 필요하다")
         self.git("check-ref-format", ref)
         if self.expected_url is not None:
             self.require_origin(self.expected_url)
         refs = {}
-        for line in self.git("ls-remote", "origin", ref, ref + "^{}").splitlines():
+        for line in self.git("ls-remote", remote, ref, ref + "^{}").splitlines():
             sha, name = line.split("\t", 1)
             refs[name] = git_sha(sha)
         resolved = refs.get(ref + "^{}") or refs.get(ref)
@@ -116,6 +119,8 @@ class AppRepository:
             "git",
             "-c",
             "protocol.ext.allow=never",
+            "-c",
+            "http.followRedirects=false",
             "-c",
             "protocol.file.allow=" + ("always" if self.allow_local else "never"),
             *args,
@@ -223,3 +228,56 @@ class AppRepository:
             result["elapsed_s"] = time.monotonic() - started
             result["commands"] = self.timings[first_timing:]
         return result
+
+
+class FakeAppRepository(AppRepository):
+    """UI 리허설용 가짜 후보·게시. 원격 읽기는 허용하되 Git 쓰기는 하지 않는다."""
+
+    def require_origin(self, repo_url: str) -> None:
+        if repo_url != self.expected_url:
+            raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "가짜 저장소 승인 URL 불일치")
+
+    def git_bytes(self, *args: str, ok: tuple[int, ...] = (0,)) -> bytes:
+        if not args or args[0] not in {"ls-remote", "check-ref-format"}:
+            raise DdakToolError(
+                ErrorCode.CONFIG_INVALID, "가짜 저장소는 Git 쓰기를 실행하지 않는다"
+            )
+        return super().git_bytes(*args, ok=ok)
+
+    def resolve_tag(self, ref: str) -> str:
+        if self.expected_url is None:
+            raise DdakToolError(ErrorCode.CONFIG_INVALID, "가짜 저장소 URL이 필요하다")
+        return self._resolve_tag(ref, self.expected_url)
+
+    def prepare_candidate(self, *args: Any) -> dict[str, Any]:
+        from ddak.core.snapshots import digest_json, file_manifest
+
+        _sha, _files, build_files, _patch, _work, guard, source = args
+        guard()
+        if file_manifest(source) != build_files:
+            raise DdakToolError(
+                ErrorCode.PRECONDITION_FAILED, "가짜 후보도 승인 트리와 같아야 한다"
+            )
+        return {
+            "candidate_sha": digest_json(build_files).split(":", 1)[1][:40],
+            "merge_conflicts": [],
+            "source": "fake",
+        }
+
+    def validate_candidate(self, *args: Any) -> None:
+        from ddak.core.snapshots import digest_json
+
+        _sha, candidate_sha, _files, build_files, _work, guard = args
+        guard()
+        if candidate_sha != digest_json(build_files).split(":", 1)[1][:40]:
+            raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "가짜 후보 해시 불일치")
+
+    def publish(self, candidate_sha, selected, succeeded, *, update_main=True):
+        return {
+            "status": "SIMULATED",
+            "source": "fake",
+            "tags": [],
+            "main_updated": False,
+            "would_publish": sorted(succeeded),
+            "would_update_main": update_main and succeeded == selected,
+        }

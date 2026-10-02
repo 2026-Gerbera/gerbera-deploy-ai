@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from typing import Any
@@ -25,6 +26,7 @@ class InfraBinding:
     read_session: Callable[[], SessionKeys]
     apply_session: Callable[[], SessionKeys]
     analyzer: Callable[[], Any]
+    generation_source: Source | None = None
 
 
 _BINDINGS: dict[str, InfraBinding] = {}
@@ -85,6 +87,15 @@ def run_plan(inp: PlanInfraInput, ctx: RunContext) -> PlanInfraOutput:
         analyzer=binding.analyzer(),
         update=ctx.mode is RunMode.UPDATE,
     )
+    if binding.generation_source is not None:
+        summary = {
+            **summary,
+            "headline": summary["headline"] + f" · HCL source={binding.generation_source.value}",
+        }
+    if len(json.dumps(summary, ensure_ascii=False, sort_keys=True).encode()) > 8192:
+        raise DdakToolError(
+            ErrorCode.CONFIG_INVALID, "출처를 포함한 인프라 요약은 8KiB 이하여야 한다"
+        )
     return PlanInfraOutput(
         passed=True,
         plan_sha256=summary["plan_sha256"],

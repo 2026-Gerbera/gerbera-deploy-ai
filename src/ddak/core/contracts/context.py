@@ -18,7 +18,7 @@ from typing import Any, Literal
 
 from ddak.core.config import AdapterMode
 from ddak.core.contracts.enums import RunMode
-from ddak.core.contracts.release import ReleaseArtifacts
+from ddak.core.contracts.release import ReleaseArtifacts, SnapshotBinding
 
 
 @dataclass(frozen=True)
@@ -47,6 +47,7 @@ class RunContext:
     project_settings: Mapping[str, Any] = field(default_factory=dict)  # 승인 시 설정 스냅샷
     repo_url: str | None = None  # 요청한 앱 저장소(자격증명 없는 URL)
     ref: str | None = None  # 요청한 감시 브랜치. 실제 소스는 source_sha로 고정한다
+    source_binding: SnapshotBinding | None = None  # 승인 뒤 실행기만 주입한다.
 
     def __post_init__(self) -> None:
         for value in (self.source_sha, self.candidate_sha):
@@ -69,4 +70,6 @@ class RunContext:
         data["mode"] = self.mode.value
         if self.release_artifacts is not None:
             data["release_artifacts"] = self.release_artifacts.model_dump(mode="json")
+        if self.source_binding is not None:
+            data["source_binding"] = self.source_binding.model_dump(mode="json")
         return data

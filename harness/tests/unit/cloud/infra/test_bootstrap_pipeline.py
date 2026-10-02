@@ -236,3 +236,64 @@ def test_migration_lock_released_only_after_success(bootstrap):
     )
     assert sdk["s3"].put_object.call_args.kwargs["IfNoneMatch"] == "*"
     assert sdk["s3"].delete_object.call_args.kwargs["IfMatch"] == "fixture-etag"
+
+
+def test_partial_local_state_blocks_a_different_run_until_recovery(bootstrap, tmp_path):
+    runtime, runner, _sdk, records = bootstrap
+    records.append(f.approval(plan(runtime)["plan_sha256"]))
+    runner.apply_code = 1
+    with pytest.raises(DdakToolError) as exc:
+        runtime.apply(session=f.SESSION)
+    assert exc.value.needs_human
+    marker = runtime._bootstrap_attempt
+    proof = json.loads(marker.read_text())
+    assert proof["local_state_path"] == str(runtime.work / "terraform.tfstate")
+    assert str(marker) in str(exc.value)
+    with pytest.raises(DdakToolError, match="로컬 state 복구"):
+        f.InfraRuntime(
+            root=tmp_path,
+            run_id="run-new",
+            settings=runtime.settings,
+            lock_file=b"fixture",
+            approvals=lambda: [],
+            guard=Mock(),
+            runner=runner,
+        )
+    assert marker.exists()
+
+
+def test_success_clears_bootstrap_marker_and_migration_has_separate_budget(bootstrap):
+    import time
+
+    runtime, runner, _sdk, records = bootstrap
+    records.append(f.approval(plan(runtime)["plan_sha256"]))
+    deadlines = []
+    original = runner.run
+
+    def run(argv, **kwargs):
+        if argv[1] == "apply":
+            runtime.deadline = time.monotonic() - 1
+        if "-migrate-state" in argv:
+            deadlines.append(kwargs["deadline"] - time.monotonic())
+        return original(argv, **kwargs)
+
+    runner.run = run
+    runtime.migration_timeout = 17
+    runtime.apply(session=f.SESSION)
+    assert not runtime._bootstrap_attempt.exists()
+    assert len(deadlines) == 1 and 15 < deadlines[0] <= 17
+
+
+def test_tagging_failure_keeps_bucket_creation_evidence_without_deletion(bootstrap):
+    runtime, runner, sdk, records = bootstrap
+    records.append(f.approval(plan(runtime)["plan_sha256"]))
+    sdk["s3"].put_bucket_tagging.side_effect = missing("AccessDenied")
+    with pytest.raises(DdakToolError) as exc:
+        runtime.apply(session=f.SESSION)
+    assert exc.value.needs_human
+    evidence = list(runtime.work.parent.glob("*-foundation-bucket-created.json"))
+    assert len(evidence) == 1
+    assert json.loads(evidence[0].read_text())["bucket"] == runtime.settings.state_bucket
+    sdk["s3"].delete_bucket.assert_not_called()
+    sdk["s3"].put_public_access_block.assert_not_called()
+    assert not any(cmd[1] == "apply" for cmd, _ in runner.calls)

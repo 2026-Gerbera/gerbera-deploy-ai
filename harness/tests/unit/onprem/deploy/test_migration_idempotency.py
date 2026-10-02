@@ -196,5 +196,14 @@ def test_already_applied_still_requires_verify(migration_runtime, failure):
     fake.verify_failure = failure
     with pytest.raises(DdakToolError):
         prepare(ctx, ["0002"] if failure == "requested" else ["0001"])
-    assert fake.phases == ["precheck", "verify"] and fake.up_calls == 1
+    assert fake.phases == (["precheck"] if failure == "requested" else ["precheck", "verify"])
+    assert fake.up_calls == 1
     assert_preserved(fake, statements)
+
+
+def test_requested_version_mismatch_stops_before_first_up(migration_runtime):
+    fake, _, ctx = migration_runtime
+    with pytest.raises(DdakToolError, match="up 실행 차단"):
+        prepare(ctx, ["0002"])
+    assert fake.phases == ["precheck"] and fake.up_calls == 0
+    assert not fake.database.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()

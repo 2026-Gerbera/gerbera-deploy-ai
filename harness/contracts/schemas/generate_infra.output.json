@@ -1,0 +1,68 @@
+{
+  "$defs": {
+    "Source": {
+      "description": "AI 결과의 출처. live가 아니면 관리 페이지가 라벨을 표시한다(목업은 목업이라고 밝힘).",
+      "enum": [
+        "live",
+        "cache",
+        "fixture",
+        "replay"
+      ],
+      "title": "Source",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "directory": {
+      "title": "Directory",
+      "type": "string"
+    },
+    "files": {
+      "additionalProperties": {
+        "pattern": "^sha256:[0-9a-f]{64}$",
+        "type": "string"
+      },
+      "maxProperties": 64,
+      "minProperties": 1,
+      "title": "Files",
+      "type": "object"
+    },
+    "layer": {
+      "enum": [
+        "platform",
+        "app"
+      ],
+      "title": "Layer",
+      "type": "string"
+    },
+    "outputs": {
+      "additionalProperties": {
+        "maxItems": 2,
+        "minItems": 2,
+        "prefixItems": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "string"
+          }
+        ],
+        "type": "array"
+      },
+      "title": "Outputs",
+      "type": "object"
+    },
+    "source": {
+      "$ref": "#/$defs/Source",
+      "default": "live"
+    }
+  },
+  "required": [
+    "directory",
+    "layer",
+    "files"
+  ],
+  "title": "GenerateInfraOutput",
+  "type": "object"
+}

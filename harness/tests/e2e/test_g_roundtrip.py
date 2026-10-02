@@ -139,10 +139,22 @@ async def test_watch_manual_approval_git_roundtrip(tmp_path, monkeypatch, capsys
     monkeypatch.setattr(app, "plan_deployment", plan)
     monkeypatch.setattr(app, "resolve_head", resolve)
     monkeypatch.delenv("DDAK_ONPREM_INVENTORY", raising=False)
+    connected_repository = app._repository_factory(tmp_path / "checkouts", allow_local=True)
+    scanner_calls = []
+
+    def fixture_scanner(workspace):
+        # 이 왕복 시험은 스캐너 설치 여부와 독립적이다. 실제 탐지 능력은 검사하지 않는다.
+        scanner_calls.append(workspace)
+
+    def fixture_repository(ctx):
+        repository = connected_repository(ctx)
+        repository.secret_scan = fixture_scanner
+        return repository
+
     service = DeploymentService(
         registry,
         tmp_path / "state",
-        repository_factory=app._repository_factory(tmp_path / "checkouts", allow_local=True),
+        repository_factory=fixture_repository,
         planning_flow=app._manual_planning(Settings(), policy),
     )
     service.save_project_settings(
@@ -191,7 +203,7 @@ async def test_watch_manual_approval_git_roundtrip(tmp_path, monkeypatch, capsys
         service = DeploymentService(
             registry,
             tmp_path / "state",
-            repository_factory=app._repository_factory(tmp_path / "checkouts", allow_local=True),
+            repository_factory=fixture_repository,
             planning_flow=app._manual_planning(Settings(), policy),
         )
         assert service.approval_view(first)["repo_url"] == url
@@ -258,6 +270,7 @@ async def test_watch_manual_approval_git_roundtrip(tmp_path, monkeypatch, capsys
         assert rows[0]["image"] == rows[2]["image"] != rows[1]["image"]
         assert [r["trigger"] for r in rows] == ["manual", "auto", "manual"]
         assert len(plan_calls) == 3
+        assert len(scanner_calls) >= 3
         assert all(not p.context.toggles["code_patch"] for p in plan_calls)
         assert not any("migration" in name for name in file_manifest(dev))
         internal = {
@@ -279,6 +292,11 @@ async def test_watch_manual_approval_git_roundtrip(tmp_path, monkeypatch, capsys
         }
         report = {
             "source": "fake",
+            "secret_scanner": {
+                "source": "fixture",
+                "result": "passed",
+                "calls": len(scanner_calls),
+            },
             "roundtrip": rows,
             "total_s": time.monotonic() - started,
             "registry_missing": missing,

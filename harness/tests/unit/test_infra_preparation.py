@@ -100,3 +100,104 @@ async def test_local_selection_does_not_require_cloud_bundle(rig, monkeypatch):
     assert await app._infra_approval(
         service, p, RunContext(p.run_id, project=p.project, targets="onprem")
     ) == ({}, None)
+
+
+async def test_generated_bundle_is_assembled_validated_approved_and_applied(
+    rig, monkeypatch, tmp_path
+):
+    from dataclasses import replace
+    from unittest.mock import Mock
+
+    from ddak.cloud.infra import InfraBinding, InfraRuntime, unbind_infra
+    from ddak.core.contracts.tools.generate_infra import GenerateInfraInput, GenerateInfraOutput
+    from ddak.core.snapshots import digest_bytes
+    from ddak.executor.engine import RunStatus
+    from ddak.executor.infra import refresh_infra_context
+    from tests.unit.cloud.infra import test_runtime as fixtures
+
+    service, source, _ = rig
+    loaded = app.load_tools()
+    names = ("generate_infra", "validate_infra", "plan_infra", "apply_infra")
+    registry = Registry([*service.registry.specs, *(spec_for(n) for n in names)])
+    for name in service.registry.registered():
+        registry.tool(name)(service.registry.get(name).fn)
+    for name in names[1:]:
+        registry.tool(name)(loaded.get(name).fn)
+
+    @registry.tool("generate_infra")
+    def generate(inp: GenerateInfraInput, ctx: RunContext) -> GenerateInfraOutput:
+        directory = __import__("pathlib").Path(inp.directory)
+        (directory / "app.tf").write_text(fixtures.HCL)
+        return GenerateInfraOutput(
+            directory=str(directory),
+            layer=inp.layer,
+            files={"app.tf": digest_bytes(fixtures.HCL.encode())},
+            source="fixture",
+        )
+
+    runners = []
+
+    def factory(bundle, files, ctx, *, root, approvals, guard):
+        runner = fixtures.FakeRunner()
+        runner.raw = __import__("json").loads(
+            __import__("json").dumps(runner.raw).replace("flaskr", "demo")
+        )
+        runner.outputs = {}
+        runtime = InfraRuntime(
+            root=root,
+            run_id=ctx.run_id,
+            settings=replace(fixtures.SETTINGS, project="demo", outputs={}),
+            lock_file=b"fixture",
+            approvals=approvals,
+            guard=guard,
+            runner=runner,
+        )
+        runners.append(runner)
+        return InfraBinding(
+            runtime,
+            files,
+            ctx.adapter_mode,
+            lambda: fixtures.SESSION,
+            lambda: fixtures.SESSION,
+            lambda: Mock(validate_policy=Mock(return_value={"findings": []})),
+        )
+
+    monkeypatch.setattr(app, "create_binding", factory)
+    service.registry = registry
+    service.refresh = refresh_infra_context
+    p = infra_plan("run-generated")
+    ctx = RunContext(p.run_id, project=p.project)
+    try:
+        subjects, metadata = await app._infra_approval(service, p, ctx)
+        assert "HCL source=fixture" in metadata["headline"]
+        assert not any(c[0][1] == "apply" for c in runners[0].calls)
+        service.prepare(p, ctx, source, subjects=subjects, infra_summary=metadata)
+        service.approve(p.run_id, approver="operator")
+        service.start(p.run_id)
+        assert (await service.wait(p.run_id)).status is RunStatus.SUCCEEDED
+        assert any(c[0][1] == "apply" for c in runners[0].calls)
+    finally:
+        unbind_infra(p.run_id)
+
+
+async def test_sync_generator_timeout_never_creates_binding(rig, monkeypatch):
+    import time
+
+    from ddak.core.contracts.errors import DdakToolError
+    from ddak.core.contracts.tools.generate_infra import GenerateInfraInput, GenerateInfraOutput
+
+    service, _, _ = rig
+    registry = Registry(
+        [*service.registry.specs, spec_for("generate_infra").model_copy(update={"timeout_s": 0.01})]
+    )
+
+    @registry.tool("generate_infra")
+    def slow(inp: GenerateInfraInput, ctx: RunContext) -> GenerateInfraOutput:
+        time.sleep(0.05)
+        raise RuntimeError("late fixture result must not be used")
+
+    service.registry = registry
+    monkeypatch.setattr(app, "bind_infra", lambda *_: pytest.fail("must not bind timeout result"))
+    p = infra_plan("generator-timeout")
+    with pytest.raises(DdakToolError, match="generate_infra 제한 시간"):
+        await app._infra_approval(service, p, RunContext(p.run_id, project=p.project))

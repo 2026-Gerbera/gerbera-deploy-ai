@@ -4,6 +4,7 @@
 plan과 apply는 신뢰하는 승인 조회·잠금 검사·단기 세션을 주입받아 실행한다.
 """
 
+from .assembly import create_binding, read_bundle
 from .bindings import (
     InfraBinding,
     bind_infra,
@@ -25,8 +26,10 @@ __all__ = [
     "SessionKeys",
     "apply_foundation",
     "bind_infra",
+    "create_binding",
     "foundation_template",
     "has_infra_binding",
+    "read_bundle",
     "run_apply",
     "run_plan",
     "run_validate",

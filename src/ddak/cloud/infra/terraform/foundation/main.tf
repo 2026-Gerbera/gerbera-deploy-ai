@@ -1,4 +1,4 @@
-# 코드 소유 기반. AI 생성 번들 밖에서 제품 infra 승인 뒤 코드가 적용한다.
+# 코드 소유 기반 HCL 참고본. 제품은 이 파일을 실행하지 않고 foundation.py SDK를 사용한다.
 # AI 개발 에이전트의 Terraform 직접 실행 금지와 제품 승인 실행은 구분한다.
 # bucket 미존재: 승인된 local plan → SDK bucket 생성 → platform local apply → remote backend state 이전.
 # 실제 생성기 O2 연결·AWS 전체 검증은 아직 미완이다.

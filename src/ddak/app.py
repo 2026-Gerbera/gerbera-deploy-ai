@@ -23,14 +23,15 @@ from contextlib import asynccontextmanager
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI
 
 from ddak.cd import configure_cloud_tls
-from ddak.cloud.infra import has_infra_binding
+from ddak.cloud.infra import bind_infra, create_binding, has_infra_binding, read_bundle
 from ddak.cloud.tls import ensure_tls
 from ddak.core.ai.status import llm_status
-from ddak.core.app_repository import AppRepository
+from ddak.core.app_repository import AppRepository, FakeAppRepository
 from ddak.core.config import AdapterMode, Settings
 from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.deploy_request import DeployRequest
@@ -38,6 +39,7 @@ from ddak.core.contracts.enums import RunMode
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.contracts.plan import Plan
 from ddak.core.contracts.plan_facts import FileMeta
+from ddak.core.contracts.tools.generate_infra import GenerateInfraInput, GenerateInfraOutput
 from ddak.core.logging import get_logger
 from ddak.core.project_settings import ProjectSettings
 from ddak.core.registry import REGISTRY, Registry, import_tools
@@ -109,10 +111,43 @@ async def _infra_approval(service: DeploymentService, plan: Plan, ctx: RunContex
     if ctx.targets == "onprem" or not any(s.tool == "apply_infra" for s in plan.deploy.cloud.steps):
         return {}, None
     if not has_infra_binding(ctx.run_id):
-        raise DdakToolError(
-            ErrorCode.INFRA_MISSING, "generate_infra 번들 및 run별 인프라 세션 연결이 없다"
+        if "generate_infra" not in service.registry.registered():
+            raise DdakToolError(ErrorCode.INFRA_MISSING, "generate_infra 툴이 등록되지 않았다")
+        tool = service.registry.get("generate_infra")
+        directory = (service.root / "infra-bundles" / ctx.run_id).resolve()
+        directory.mkdir(parents=True, exist_ok=False, mode=0o700)
+        request = GenerateInfraInput(
+            run_id=ctx.run_id,
+            directory=str(directory),
+            layer="platform" if ctx.mode is RunMode.BOOTSTRAP else "app",
         )
-    # 이미 조립된 번들만 검증한다. 생성기 입출력 계약을 임의로 추정하거나 가짜 plan을 만들지 않는다.
+        bounded = replace(ctx, deadline=time.monotonic() + tool.spec.timeout_s)
+        try:
+            result = await asyncio.wait_for(
+                tool.fn(request, bounded)
+                if tool.is_async
+                else asyncio.to_thread(tool.fn, request, bounded),
+                tool.spec.timeout_s,
+            )
+        except TimeoutError:
+            # 동기 생성기의 스레드를 강제 종료하지 않는다. 이 run 번들은 재사용/적용하지 않는다.
+            raise DdakToolError(
+                ErrorCode.ADAPTER_TIMEOUT, "generate_infra 제한 시간 초과; 생성 번들 격리"
+            ) from None
+        bundle = GenerateInfraOutput.model_validate(result)
+        if bundle.layer != request.layer:
+            raise DdakToolError(ErrorCode.CONFIG_INVALID, "생성 번들의 인프라 층이 다르다")
+        files = read_bundle(bundle, directory)
+        binding = await asyncio.to_thread(
+            create_binding,
+            bundle,
+            files,
+            ctx,
+            root=service.root / "infra",
+            approvals=lambda: service.store.approvals(ctx.run_id),
+            guard=lambda: service.guard_infra(ctx.run_id, ctx.project),
+        )
+        bind_infra(replace(binding, generation_source=bundle.source))
     output = {}
     for name in ("validate_infra", "plan_infra"):
         tool = service.registry.get(name)
@@ -260,6 +295,17 @@ async def _prepare_commit(
         )
         if sha is None:
             phase = "resolve"
+            url = urlsplit(request.repo_url)
+            if (
+                url.scheme not in policy.allowed_schemes
+                or url.username
+                or url.password
+                or url.query
+                or url.fragment
+                or any(c.isspace() for c in request.repo_url)
+                or (policy.allowed_hosts is not None and url.hostname not in policy.allowed_hosts)
+            ):
+                raise DdakToolError(ErrorCode.CONFIG_INVALID, "접수 정책에서 허용하지 않은 저장소")
             ref = request.ref
             if ref and not ref.startswith("refs/tags/"):
                 ref = "refs/heads/" + ref
@@ -275,6 +321,9 @@ async def _prepare_commit(
             context = replace(context, source_sha=sha)
         platform: dict[str, Any] = {}
         phase = "inventory"
+        cloud_outputs = service.get_platform_outputs(target.project, settings.adapter_mode)
+        if cloud_outputs:
+            platform["cloud"] = cloud_outputs
         path = os.environ.get("DDAK_ONPREM_INVENTORY")
         if request.target != "cloud" and path:
             platform["onprem"] = load_inventory(Path(path))
@@ -387,14 +436,14 @@ def _repository_factory(root: Path, *, allow_local: bool = False):
     def connect(ctx: RunContext) -> AppRepository:
         if not ctx.repo_url:
             raise DdakToolError(ErrorCode.CONFIG_INVALID, "앱 저장소 URL이 필요하다")
-        if ctx.adapter_mode is AdapterMode.FAKE and (
-            not allow_local or not ctx.repo_url.startswith("file://")
-        ):
-            raise DdakToolError(
-                ErrorCode.CONFIG_INVALID, "FAKE 앱 checkout에는 로컬 저장소 fixture가 필요하다"
-            )
         identity = hashlib.sha256(ctx.repo_url.encode()).hexdigest()
         with lock:
+            if ctx.adapter_mode is AdapterMode.FAKE and not (
+                allow_local and ctx.repo_url.startswith("file://")
+            ):
+                path = root / "fake" / ctx.project / identity
+                path.mkdir(parents=True, exist_ok=True)
+                return FakeAppRepository(path, allow_local=True, expected_url=ctx.repo_url)
             return AppRepository.connect(
                 root / ctx.project / identity, ctx.repo_url, allow_local=allow_local
             )

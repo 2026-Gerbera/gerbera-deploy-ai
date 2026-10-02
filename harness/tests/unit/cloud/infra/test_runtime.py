@@ -14,7 +14,7 @@ import pytest
 
 from ddak.cloud.infra.foundation import apply_foundation, foundation_template
 from ddak.cloud.infra.plan import filter_outputs, summarize_plan
-from ddak.cloud.infra.policy import PolicyViolation, static_gate
+from ddak.cloud.infra.policy import OVERRIDE_REQUIRED_BUILDSPEC, PolicyViolation, static_gate
 from ddak.cloud.infra.runtime import (
     AwsSettings,
     CommandResult,
@@ -386,6 +386,12 @@ def test_review_fixes_static_codebuild_and_cidr():
     type="LINUX_CONTAINER"
   }
 }"""
+    codebuild = codebuild.replace(
+        '  name = "ddak-codebuild"',
+        '  name = "ddak-codebuild"\n  source { type="GITHUB"\n buildspec='
+        + json.dumps(OVERRIDE_REQUIRED_BUILDSPEC)
+        + "\n }",
+    )
     assert static_gate({"main.tf": codebuild}, layer="platform").passed
     assert not static_gate(
         {

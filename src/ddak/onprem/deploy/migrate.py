@@ -127,6 +127,8 @@ def migrate_db(
                     raise fail("MIGRATE_RESULT 형식 오류") from None
                 if result.phase != phase or not result.ok:
                     raise fail("마이그레이션 단계 실패")
+                if phase == "precheck" and migrations and result.expected != migrations[-1]:
+                    raise fail("요청한 마이그레이션과 이미지 버전이 다르다; up 실행 차단")
                 if phase == "verify" and (
                     result.current != result.expected
                     or (migrations and result.expected != migrations[-1])

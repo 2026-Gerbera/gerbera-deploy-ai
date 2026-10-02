@@ -21,6 +21,7 @@ PLATFORM_OUTPUTS = MappingProxyType(
         "rds_endpoint": "string",
         "rds_master_secret_arn": "string",
         "codebuild_project_name": "string",
+        "image_repository": "string",  # 플랫폼 출력: Docker Hub namespace/repository
         "source_bucket": "string",
         "dockerhub_push_secret_arn": "string",
         "dockerhub_pull_secret_arn": "string",

@@ -148,7 +148,28 @@ def apply_foundation(
                 Bucket=settings.state_bucket,
                 CreateBucketConfiguration={"LocationConstraint": REGION},
             )
+            private_write(
+                marker.with_name(marker.name + "-bucket-created.json"),
+                canonical(
+                    {
+                        "bucket": settings.state_bucket,
+                        "account_id": settings.account_id,
+                        "project": settings.project,
+                        "run_id": run_id,
+                        "status": "created_before_tagging",
+                    }
+                ),
+            )
         kwargs = {"Bucket": settings.state_bucket, "ExpectedBucketOwner": settings.account_id}
+        # 새 버킷은 가능한 한 먼저 관리 태그를 쓴다. 이 호출도 실패하면 생성 증거를 보존한다.
+        s3.put_bucket_tagging(
+            **kwargs,
+            Tagging={
+                "TagSet": [
+                    {"Key": k, "Value": v} for k, v in {**existing, **template["tags"]}.items()
+                ]
+            },
+        )
         s3.put_public_access_block(
             **kwargs,
             PublicAccessBlockConfiguration={
@@ -164,14 +185,6 @@ def apply_foundation(
             **kwargs,
             ServerSideEncryptionConfiguration={
                 "Rules": [{"ApplyServerSideEncryptionByDefault": {"SSEAlgorithm": "AES256"}}]
-            },
-        )
-        s3.put_bucket_tagging(
-            **kwargs,
-            Tagging={
-                "TagSet": [
-                    {"Key": k, "Value": v} for k, v in {**existing, **template["tags"]}.items()
-                ]
             },
         )
         for name, document in create_policies:

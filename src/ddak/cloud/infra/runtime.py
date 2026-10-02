@@ -204,6 +204,12 @@ class AwsSettings:
         ):
             raise DdakToolError(ErrorCode.CONFIG_INVALID, "AWS state 설정 형식 오류")
         for name, (expression, kind) in self.outputs.items():
+            if name == "image_repository" and self.layer == "platform":
+                if kind != "string" or not re.fullmatch(
+                    r'"[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*"', expression
+                ):
+                    raise DdakToolError(ErrorCode.CONFIG_INVALID, "이미지 저장소 출력 형식 오류")
+                continue
             try:
                 expected_kind = output_kind(self.layer, name)
             except ValueError:
@@ -259,7 +265,10 @@ class AwsSettings:
                 "build_boundary_arn": {"type": "string", "default": self.build_boundary_arn},
             },
             "output": {
-                name: {"value": "${" + expr + "}"} for name, (expr, _) in self.outputs.items()
+                name: {
+                    "value": json.loads(expr) if name == "image_repository" else "${" + expr + "}"
+                }
+                for name, (expr, _) in self.outputs.items()
             },
         }
 
@@ -300,11 +309,20 @@ class InfraRuntime:
         timeout: float = 120,
         apply_timeout: float = 1200,
         refresh_timeout: float = 30,
+        migration_timeout: float = 120,
         foundation_clients: Callable[[SessionKeys], Mapping[str, Any]] | None = None,
     ):
-        if min(timeout, apply_timeout, refresh_timeout) <= 0:
+        if min(timeout, apply_timeout, refresh_timeout, migration_timeout) <= 0:
             raise DdakToolError(ErrorCode.CONFIG_INVALID, "양수 제한 시간이 필요하다")
         root.mkdir(parents=True, exist_ok=True)
+        bootstrap_identity = digest(canonical([settings.project, settings.layer])).split(":")[1]
+        self._bootstrap_attempt = root / f"bootstrap-recovery-{bootstrap_identity}.json"
+        if self._bootstrap_attempt.exists():
+            raise DdakToolError(
+                ErrorCode.PRECONDITION_FAILED,
+                f"이전 로컬 state 복구 확인 필요: {self._bootstrap_attempt}",
+                needs_human=True,
+            )
         self.work = Path(tempfile.mkdtemp(prefix="infra-", dir=root))
         identity = digest(canonical([settings.project, run_id, settings.layer])).split(":")[1]
         self._attempt = root / f"apply-attempt-{identity}"
@@ -321,6 +339,7 @@ class InfraRuntime:
         self.checkov = shutil.which(checkov) or checkov
         self.timeout = timeout
         self.apply_timeout, self.refresh_timeout = apply_timeout, refresh_timeout
+        self.migration_timeout = migration_timeout
         self.deadline = time.monotonic() + timeout
         self._waived: set[str] = set()
         self.checkov_checks = 0
@@ -397,6 +416,7 @@ class InfraRuntime:
         )
 
     def _migrate_backend(self, session: SessionKeys) -> None:
+        self.deadline = time.monotonic() + self.migration_timeout
         # 원문 state를 읽지 않는다. 새 버킷에도 대상 state가 생겼다면 덮어쓰지 않는다.
         client = self._clients(session)["s3"]
         lock_key = self.settings.backend()["key"] + ".tflock"
@@ -540,7 +560,9 @@ class InfraRuntime:
             raise DdakToolError(
                 ErrorCode.PRECONDITION_FAILED, "새 검증은 새 인프라 실행에서 시작한다"
             )
-        result = static_gate(files, layer=self.settings.layer)
+        result = static_gate(
+            files, layer=self.settings.layer, state_bucket=self.settings.state_bucket
+        )
         if not result.passed:
             return result
         self._files = {name: source.encode() for name, source in files.items()}
@@ -630,6 +652,7 @@ class InfraRuntime:
                 build_boundary_arn=self.settings.build_boundary_arn,
                 project=self.settings.project,
                 rds_master_secret_arn=self.settings.rds_master_secret_arn,
+                state_bucket=self.settings.state_bucket,
                 update=update,
                 analyzer=analyzer,
                 checkov=checked,
@@ -720,6 +743,20 @@ class InfraRuntime:
         self._consumed = True
         started = time.monotonic()
         try:
+            if self._local_backend:
+                private_write(
+                    self._bootstrap_attempt,
+                    canonical(
+                        {
+                            "run_id": self.run_id,
+                            "project": self.settings.project,
+                            "layer": self.settings.layer,
+                            "plan_sha256": self._planned,
+                            "local_state_path": str(self.work / "terraform.tfstate"),
+                            "work_dir": str(self.work),
+                        }
+                    ),
+                )
             if self._foundation is not None:
                 from .foundation import apply_foundation
 
@@ -762,6 +799,7 @@ class InfraRuntime:
                 raise DdakToolError(ErrorCode.ADAPTER_FAILED, "인프라 적용 실패")
             if self._local_backend:
                 self._migrate_backend(session)
+                self._bootstrap_attempt.unlink()
             plan.unlink()
             output = self.refresh(session=session)
             private_write(self.work / "apply-succeeded", self._planned.encode())
@@ -771,7 +809,12 @@ class InfraRuntime:
             code = exc.code if isinstance(exc, DdakToolError) else ErrorCode.ADAPTER_FAILED
             raise DdakToolError(
                 code,
-                "인프라 적용 또는 출력 확인 실패; 대상 상태를 사람이 확인해야 한다",
+                "인프라 적용 또는 출력 확인 실패; 대상 상태를 사람이 확인해야 한다"
+                + (
+                    f"; 복구 기록: {self._bootstrap_attempt}"
+                    if self._bootstrap_attempt.exists()
+                    else ""
+                ),
                 needs_human=True,
             ) from None
         return {

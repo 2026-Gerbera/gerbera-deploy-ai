@@ -9,7 +9,15 @@ from typing import Any
 
 from ddak.core.redact import redact
 
-from .policy import PolicyViolation, inspect_policy, policy_json, require, statements, strings
+from .policy import (
+    PolicyViolation,
+    inspect_policy,
+    policy_json,
+    protect_platform_resource,
+    require,
+    statements,
+    strings,
+)
 from .providers.aws import APP_RESOURCE_TYPES, RESOURCE_TYPES
 
 
@@ -52,6 +60,7 @@ def summarize_plan(
     project: str = "",
     build_boundary_arn: str | None = None,
     rds_master_secret_arn: str | None = None,
+    state_bucket: str | None = None,
 ) -> dict[str, Any]:
     """정책 불합격은 PolicyViolation, API 수행 실패는 호출자가 DdakToolError로 바꾼다."""
     require(raw.get("format_version", "").startswith("1."), "PLAN_FORMAT")
@@ -80,6 +89,20 @@ def summarize_plan(
             bool(re.fullmatch(r"aws_[a-z0-9_]+\.[A-Za-z][A-Za-z0-9_]*", address)), "PLAN_ADDRESS"
         )
         change = resource["change"]
+        # no-op/삭제·이전 이름 변경도 코드 소유 기반 버킷에는 허용하지 않는다.
+        if kind.startswith("aws_s3_bucket") and state_bucket is not None:
+            if change.get("after") is not None:
+                require(
+                    isinstance(change["after"].get("bucket"), str)
+                    and bool(change["after"]["bucket"])
+                    and not (change.get("after_unknown") or {}).get("bucket"),
+                    "FOUNDATION_BUCKET_UNRESOLVED",
+                )
+            for value in (change.get("before"), change.get("after")):
+                if value:
+                    protect_platform_resource(kind, value, state_bucket)
+        if kind == "aws_codebuild_project" and change.get("after"):
+            protect_platform_resource(kind, change["after"], state_bucket)
         actions = change.get("actions")
         require(
             actions

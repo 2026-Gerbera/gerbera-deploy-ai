@@ -59,8 +59,12 @@ def test_other_approved_url_and_fake_remote_fail_closed(connected):
     repo, ctx, factory, _ = connected
     with pytest.raises(DdakToolError):
         repo.require_origin("https://example.test/other.git")
-    with pytest.raises(DdakToolError, match="FAKE"):
-        factory(replace(ctx, repo_url="https://example.test/other.git"))
+    from ddak.core.app_repository import FakeAppRepository
+
+    fake = factory(replace(ctx, repo_url="https://example.test/other.git"))
+    assert isinstance(fake, FakeAppRepository)
+    with pytest.raises(DdakToolError):
+        fake.git("push", "origin", "HEAD")
 
 
 def test_connect_refuses_nonempty_directory_without_discarding_files(tmp_path):
@@ -89,3 +93,19 @@ def test_tag_resolves_commit_not_tag_object_or_same_named_branch(connected, anno
         assert git(bare, "rev-parse", "refs/tags/v1") != commit
     with pytest.raises(DdakToolError, match="찾을 수 없다"):
         repo.resolve_tag("refs/tags/v-missing")
+
+
+def test_git_explicitly_disables_http_redirects(connected, monkeypatch):
+    import subprocess
+
+    repo, _ctx, _factory, _bare = connected
+    original = subprocess.Popen
+    seen = []
+
+    def popen(argv, **kwargs):
+        seen.append(argv)
+        return original(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    repo.git("rev-parse", "--is-inside-work-tree")
+    assert seen and all("http.followRedirects=false" in argv for argv in seen)
