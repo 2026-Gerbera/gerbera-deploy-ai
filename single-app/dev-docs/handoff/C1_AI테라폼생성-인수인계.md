@@ -116,7 +116,7 @@ harness/fixtures/ai_replay/generate_infra/<키>.json   replay 저장 응답(sour
 아래 역할·시크릿 이름은 전부 💭 N44(기반 준비 전 확정, 공통 계약 12절·C1 §6-3 C-14)입니다.
 
 **(a) 준비 단계: 플랫폼 층 1회(녹화)**
-- 순서: 기반 준비(정준우, [기반 승인]) → 인프라 요구 → `generate_infra`(플랫폼 + 앱 v1) → 검증 → plan(전부 create) → [IAM·인프라 승인] → apply(플랫폼 → 앱) → 환경 정보 첫 기록. 인프라만 10~20분 [추정].
+- 순서: 인프라 요구 → `generate_infra`(플랫폼 + 앱 v1) → 검증 → plan(전부 create) → [IAM·인프라 승인] → apply(플랫폼 → 앱) → 환경 정보 첫 기록. 인프라만 10~20분 [추정].
 - 결과물: VPC·ALB·ECS 서비스(desired 0)·공유 RDS·CodeBuild·Docker Hub 토큰 시크릿 틀 2개, 앱 시크릿 `DATABASE_URL`·`DATABASE_URL_MIGRATOR`, 앱 역할(`ddak-flaskr-exec`·`-migrate-exec`·`-task`·`-dbinit-exec`).
 
 **(b) 라이브: v2 앱 층 수정안** (데모는 "이미 운영 중" 상태에서 시작하고 앱 층 diff만 다룹니다 💭)

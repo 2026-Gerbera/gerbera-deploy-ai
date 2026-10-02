@@ -29,7 +29,7 @@
 |---|---|
 | 준석(O2) | `fetch.py` annotated 태그 peel 순서 수정. TLS 인증서 오류를 transient로 3회 재시도하지 않도록 분류. ref 조회 실패에 요청 ref와 존재하는 브랜치 목록 표시 |
 | 준석(O2) | `watch.py` standalone 기본 main→prod 정정. app은 이미 저장된 watch_branch/auto_detect를 공급. `db_initialized`를 컨트롤러 성공 이력만으로 판단하지 말고 실제 DB/버전과 조합; 새 컨트롤러의 기존 DB를 신규로 오판하는 문제 |
-| 준석(O2/C1) | generate_infra 번들·C-20 출력·세션·영속 InfraBinding 조립. 기존 main을 덮는 임의 가짜 생성기 등록은 하지 않음. 새 앱 DB/계정은 기존 temp-box DB를 삭제하지 않고 별도 이름으로 생성하는 안 NEEDS_CONTEXT 유지 |
+| 준석(O2/C1) | generate_infra 툴과 C-20 출력 구현. 세션·영속 InfraBinding 조립은 정준우 몫이며 후속 수정 5에서 연결. 기존 main을 덮는 임의 가짜 생성기 등록은 하지 않음. 새 앱 DB/계정은 기존 temp-box DB를 삭제하지 않고 별도 이름으로 생성하는 안 NEEDS_CONTEXT 유지 |
 | 승환(C2) | `build_image` 등록이 실환경 첫 막힘. CodeBuild sourceVersion=candidate_sha, 반환 commit SHA/이미지 라벨/ReleaseArtifacts. cloud sync_env_to_cloud·push_image와 deploy 결과 연결 |
 | 민영(O3) | `smoke_test`, `compare_env_results` tool 등록. 실제 앱 migrate precheck 읽기 검사/멱등 up/verify 규약 확인. 패치 재사용이 새 prod에 안 맞으면 패치 단계에서 재제안 |
 | 서윤(C3) — 우선 | 설정 저장은 공개 `save_project_settings(..., expected_version=...)`. 시작 버튼은 `await service.request_deployment(project, targets=None, ref=None) -> run_id`; ref는 감시 브랜치 또는 v* 태그만. 반환 뒤 get_run 상태 확인 |
