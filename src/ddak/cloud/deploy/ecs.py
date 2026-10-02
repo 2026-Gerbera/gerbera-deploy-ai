@@ -5,15 +5,16 @@
 
 - 배치(R9 (a), 10/2 C2 결정): 서비스 1개, 태스크 하나에 web·was 컨테이너. 그래서 이미지는
   {컨테이너: 참조}로 받아 바뀐 컨테이너를 한 리비전에 모아 한 번만 전환한다.
-- 배포 방식(10/2 C2 결정): 블루그린(ECS 내장 strategy=BLUE_GREEN). 전략·대상 그룹·리스너 규칙은
-  Terraform이 서비스에 정한다. 이 모듈은 롤링과 같은 호출(새 리비전, update_service, 완료 대기)이다.
+- 배포 방식(롤링/블루그린)은 Terraform이 서비스 deploymentConfiguration.strategy로 정한다. 이 모듈은
+  어느 쪽이든 같은 호출(새 리비전, update_service, 완료 대기)이다. 팀 결정은 롤링(10/2 결정 4),
+  블루그린은 검토 후보다.
 - 새 리비전은 현재 서비스의 태스크 정의를 그대로 복사하고 지정한 컨테이너의 image만 바꾼다.
   시크릿(valueFrom)·Docker Hub repositoryCredentials·역할은 Terraform이 만든 값을 유지한다.
 - Terraform은 서비스를 태스크 0개로 만든다. 첫 배포 때 desired_count로 올린다.
 - 이미지는 digest 고정 참조만 받는다. 태그로 배포하지 않는다.
 - 롤백도 같은 경로다(이전 릴리스 이미지로 새 리비전). 이전 리비전 ARN에 기대지 않는다.
 - 완료: 새 리비전의 PRIMARY 배포가 rolloutState COMPLETED이고 이전 배포가 모두 빠지면 성공,
-  FAILED면 실패. 블루그린은 bake 시간이 끝나 블루가 정리될 때 완료된다(💭 실제 AWS 확인 필요).
+  FAILED면 실패. 블루그린이면 bake 시간 뒤 이전 배포가 정리될 때 완료된다(💭 실제 AWS 확인 필요).
 - 오류 메시지에 ARN·계정 ID·AWS 오류 원문을 넣지 않는다.
 """
 

@@ -3,7 +3,7 @@
 ctx에서 값을 꺼내 내부 API(ecs·secrets·database)를 부르고 ProviderResult로 돌려준다. AI import 금지.
 - 이미지: ctx.images(digest 고정). R9 (a)라 web·was가 한 태스크에 있다. 계획은 deploy.<tier> step을
   tier마다 부르지만, 첫 step이 이번 run의 컨테이너 이미지를 모두 한 리비전으로 한 번에 전환하고
-  다음 step은 이미 반영돼 있어 바꾸지 않는다(블루그린 전환 1회). 관측은 step의 tier 컨테이너만.
+  다음 step은 이미 반영돼 있어 바꾸지 않는다(서비스 전환 1회). 관측은 step의 tier 컨테이너만.
 - 인프라 값: ctx.platform['cloud'](_platform.py, 💭 일부 키는 가정).
 - 롤백: 온프렘과 같이 ctx.previous_release['cloud']['images']. 이전 기록이 없으면(최초 배포)
   서비스를 0개로 줄인다. DB 역마이그레이션은 하지 않는다.
