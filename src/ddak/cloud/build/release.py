@@ -1,8 +1,11 @@
 """빌드 한 번 → 릴리스 산출물(ReleaseArtifacts). 담당 C2. AI 없음.
 
 build_image 툴의 본체가 될 내부 API다. 툴 입출력 계약이 정해지기 전이라 값은 인자로 받는다.
-PR #8(정준우) 기준 툴 연결: 소스 = GitSource(ctx.project_settings["repo_url"], ctx.candidate_sha),
-같은 run의 앞선 build step 결과 = ctx.release_artifacts. 스냅샷 전달은 미정(💭 정준우와 확정 필요).
+PR #8(정준우) 기준 툴 연결:
+- 소스 = GitSource(ctx.project_settings["repo_url"], ctx.candidate_sha), release_id = ctx.run_id
+- 앞선 build step 결과 = ctx.release_artifacts
+- image_repo = 인프라 출력 image_repository(💭 추가 예정)
+- 승인 스냅샷은 정준우가 RunContext에 필드를 추가한 뒤 연결한다.
 
 - 계획은 tier마다 build.<tier> step을 둔다. step 하나 = build_tier 한 번 = CodeBuild 한 번.
 - 실행기는 툴 출력의 release_artifacts로 컨텍스트를 통째로 바꾼다. 그래서 build_tier는 앞선
@@ -10,6 +13,8 @@ PR #8(정준우) 기준 툴 연결: 소스 = GitSource(ctx.project_settings["rep
 - 이번 run에서 빌드하지 않은 tier(변경 없음)는 넣지 않는다. 그 tier는 배포 step도 없다.
 - push는 빌드 안에서 끝난다. push_image 툴은 구현·등록하지 않는다(계획이 부르지 않음).
 - 스냅샷은 승인된 것(실행기 p.snapshot)을 그대로 붙인다. 실행기가 다시 대조한다.
+- image_repo(docker.io/<네임스페이스>/<저장소>) 하나로 push 대상(override)과 결과 이미지 주소를 같이
+  만든다. 출처가 둘이면 기록이 이미지가 없는 저장소를 가리킬 수 있다(PR #9 리뷰).
 """
 
 from __future__ import annotations
@@ -20,8 +25,8 @@ from dataclasses import dataclass
 
 from pydantic import ValidationError
 
-from ddak.cloud.build.codebuild import BuildSource, CodeBuildClient, run_build
-from ddak.cloud.build.registries import ImageRegistry, image_artifact
+from ddak.cloud.build.codebuild import BuildSource, CodeBuildClient, check_image_repo, run_build
+from ddak.cloud.build.registries import DockerHub, image_artifact
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.contracts.release import ImageArtifact, ReleaseArtifacts, SnapshotBinding
 
@@ -40,8 +45,7 @@ def build_release(
     source: BuildSource,
     tiers: Sequence[str],
     release_id: str,
-    registry: ImageRegistry,
-    repository: str,
+    image_repo: str,
     snapshot: SnapshotBinding,
     deadline: float,
     unchanged: Mapping[str, ImageArtifact] | None = None,
@@ -59,6 +63,7 @@ def build_release(
         )
     if not tiers and not kept:
         raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "빌드할 tier도 이전 이미지도 없다")
+    check_image_repo(image_repo)
 
     images: dict[str, ImageArtifact] = dict(kept)
     build_id: str | None = None
@@ -69,6 +74,7 @@ def build_release(
             source,
             tiers,
             release_id,
+            image_repo,
             deadline,
             poll_s=poll_s,
             clock=clock,
@@ -76,14 +82,21 @@ def build_release(
         )
         build_id = result.build_id
         for tier, digests in result.digests.items():
-            images[tier] = image_artifact(
-                registry, repository, digests.index_digest, digests.platform_digests
-            )
+            images[tier] = _artifact(image_repo, digests.index_digest, digests.platform_digests)
     try:
         artifacts = ReleaseArtifacts(snapshot=snapshot, images=images)
     except ValidationError as exc:
         raise DdakToolError(ErrorCode.CONFIG_INVALID, "릴리스 산출물 형식이 아니다") from exc
     return ReleaseBuild(artifacts=artifacts, build_id=build_id, revision=source.revision)
+
+
+def _artifact(image_repo: str, index: str, platforms: Mapping[str, str]) -> ImageArtifact:
+    """push한 저장소(image_repo)와 같은 주소로 digest 고정 산출물을 만든다."""
+    _, namespace, repository = image_repo.split("/")
+    artifact = image_artifact(DockerHub(namespace=namespace), repository, index, platforms)
+    if artifact.ref != f"{image_repo}@{artifact.index_digest}":
+        raise DdakToolError(ErrorCode.CONFIG_INVALID, "결과 이미지 주소가 push 저장소와 다르다")
+    return artifact
 
 
 def build_tier(
@@ -94,8 +107,7 @@ def build_tier(
     project: str,
     source: BuildSource,
     release_id: str,
-    registry: ImageRegistry,
-    repository: str,
+    image_repo: str,
     snapshot: SnapshotBinding,
     deadline: float,
     poll_s: float = 5.0,
@@ -119,8 +131,7 @@ def build_tier(
         source=source,
         tiers=[tier],
         release_id=release_id,
-        registry=registry,
-        repository=repository,
+        image_repo=image_repo,
         snapshot=snapshot,
         deadline=deadline,
         unchanged=kept,

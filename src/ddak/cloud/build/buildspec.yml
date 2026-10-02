@@ -3,10 +3,12 @@
 #
 # 프로젝트 쪽 전제(Terraform):
 #   - privileged mode 켬(docker buildx), 이미지 aws/codebuild/standard(x86_64)
-#   - 프로젝트 env IMAGE_REPO = docker.io/<네임스페이스>/<저장소>(PLAINTEXT, 값은 설정에서)
 #   - 서비스 역할은 ddak-platform/dockerhub-push 시크릿 하나만 읽는다
 # 소스(10/1): 기본은 공개 GitHub 앱 저장소의 ai-prod 커밋 SHA, 대체는 S3 zip(버전 ID). codebuild.py가 고른다.
-# StartBuild override(codebuild.py): BUILD_TIERS, RELEASE_ID, SOURCE_REVISION 세 개만, PLAINTEXT로.
+# StartBuild override(codebuild.py): BUILD_TIERS, RELEASE_ID, SOURCE_REVISION, IMAGE_REPO 네 개, PLAINTEXT로.
+# IMAGE_REPO(docker.io/<네임스페이스>/<저장소>)는 프로젝트 env에 두지 않는다. Terraform 정책이 CodeBuild
+# 프로젝트의 environment_variable을 금지하므로 빌드마다 override로 받는다(값 출처: 인프라 출력).
+# 형식 검사는 토큰 모양이 통과하지 못할 만큼 좁게 둔다. RELEASE_ID는 run ID 형식만 받는다.
 #
 # 결과: tier마다 DDAK_<TIER>_INDEX / _AMD64 / _ARM64(exported-variables, codebuild.exported_names와 같은 규칙).
 # 이미지 라벨 org.opencontainers.image.revision = SOURCE_REVISION(ai-prod 커밋 SHA).
@@ -38,7 +40,7 @@ phases:
         set -eo pipefail
         # override 값 형식 검사. 값을 출력하지 않는다(env 타입을 바꿔 시크릿을 끌어온 경우 노출 방지, research/IAM E32).
         tier_re='^[a-z][a-z0-9_-]{0,31}$'
-        [[ "${RELEASE_ID:-}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || { echo "RELEASE_ID 형식 오류"; exit 1; }
+        [[ "${RELEASE_ID:-}" =~ ^run-[0-9]{8}-[0-9]{6}-[0-9a-f]{4}$ ]] || { echo "RELEASE_ID 형식 오류"; exit 1; }
         [[ "${SOURCE_REVISION:-}" =~ ^[0-9a-f]{40}$ ]] || { echo "SOURCE_REVISION 형식 오류"; exit 1; }
         [[ "${IMAGE_REPO:-}" =~ ^docker\.io/[a-z0-9]+([._-][a-z0-9]+)*/[a-z0-9]+([._-][a-z0-9]+)*$ ]] || { echo "IMAGE_REPO 형식 오류"; exit 1; }
         IFS=',' read -r -a TIERS <<< "${BUILD_TIERS:-}"

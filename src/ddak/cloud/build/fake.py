@@ -1,6 +1,7 @@
 """가짜 CodeBuild 클라이언트(테스트·드라이런·UI 개발). AWS·Docker Hub를 건드리지 않는다.
 
 진짜 boto3 클라이언트 자리에 넣어 codebuild.run_build·release.build_release를 그대로 통과시킨다.
+S3 소스에는 실제 CodeBuild처럼 resolvedSourceVersion을 채우지 않는다(sourceVersion만).
 digest는 (tier, 커밋 SHA, 플랫폼)으로 정해지는 결정적 값이다. 같은 커밋이면 같은 digest.
 """
 
@@ -39,12 +40,16 @@ class FakeCodeBuild:
                 {"name": name, "value": fake_digest(tier, revision, platform)}
                 for platform, name in platform_names.items()
             ]
-        self._builds[build_id] = {
+        build: dict[str, Any] = {
             "id": build_id,
             "buildStatus": self.fail_status or "SUCCEEDED",
-            "resolvedSourceVersion": kwargs["sourceVersion"],
+            "sourceVersion": kwargs["sourceVersion"],
             "exportedEnvironmentVariables": exported,
         }
+        # 실제 CodeBuild처럼 S3 소스에는 resolvedSourceVersion을 채우지 않는다
+        if kwargs.get("sourceTypeOverride") != "S3":
+            build["resolvedSourceVersion"] = kwargs["sourceVersion"]
+        self._builds[build_id] = build
         return {"build": {"id": build_id}}
 
     def batch_get_builds(self, **kwargs: Any) -> dict[str, Any]:
