@@ -106,8 +106,8 @@ PR 본문: CodeBuild와 같은 buildspec을 사용하는 local backend, 승인 �
 
 - Username 누락·중복은 로그인 확인 불가 경고, 단일 값의 namespace 불일치는 권한 확인 경고로 처리한다. 값 자체는 경고에 담지 않는다. buildx·QEMU 검사는 유지한다.
 - preflight가 반환한 경고는 RunContext.preparation_warnings에 저장하고 승인 해시·재시작 복원·refresh 불변 검사에 포함한다. 승인 데이터와 새 ops 승인 화면에 표시한다.
-- 빌드 phase stderr는 subprocess 메모리에서 고정된 인증 오류 패턴만 판별하고 파일·로그·오류 원문으로 내보내지 않는다. 인증 오류는 `docker login 필요`와 push 권한 확인 안내, 그 외 오류는 기존 일반 실패다. 패키지 buildspec 명령은 바꾸지 않았다.
-- 회귀: 로컬 빌드와 운영 연결 58 passed(0.39초). 최초 57 passed/1 failed는 새 테스트가 이미 삭제된 `_prepared` 메모리 속성을 참조한 오류였으며 서비스 재생성으로 수정해 SQLite 복원까지 확인했다. 실제 Docker 실행은 하지 않았다.
+- 빌드 phase stderr는 subprocess 메모리에서 고정된 인증 오류 패턴만 판별하고 파일·로그·오류 원문으로 내보내지 않는다. 인증 오류는 `docker login 필요`와 해당 레지스트리 계정·접근 권한 안내, 그 외 오류는 기존 일반 실패다. 패키지 buildspec 명령은 바꾸지 않았다.
+- 회귀: 로컬 빌드와 운영 연결 최종 59 passed(0.49초). 베이스 이미지 pull 인증 실패에도 특정 레지스트리나 push 권한으로 단정하지 않는 안내를 확인했다. 최초 57 passed/1 failed는 새 테스트가 이미 삭제된 `_prepared` 메모리 속성을 참조한 오류였으며 서비스 재생성으로 수정해 SQLite 복원까지 확인했다. 실제 Docker 실행은 하지 않았다.
 - 이 추가분 변경: local.py, app.py, core/contracts/context.py, executor/service.py, ops_approval.html, test_local.py, test_fullchain_fix8.py 및 인계서·런북·결정·개발 기록. 연결분 worktree는 수정하지 않았다.
 
 ### 수정8 전체

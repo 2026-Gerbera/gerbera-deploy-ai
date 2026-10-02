@@ -135,7 +135,8 @@ def _invoke(
         if registry_auth_hint and _REGISTRY_AUTH_FAILURE.search(result.stderr or ""):
             raise DdakToolError(
                 ErrorCode.ADAPTER_FAILED,
-                "이미지 빌드/push 인증·권한 실패: docker login 필요; 저장소 push 권한도 확인하세요",
+                "빌드 중 레지스트리 인증·권한 실패: docker login 필요; "
+                "해당 레지스트리 계정과 저장소 접근 권한을 확인하세요",
             )
         raise DdakToolError(ErrorCode.ADAPTER_FAILED, failure)
     if time.monotonic() >= deadline:

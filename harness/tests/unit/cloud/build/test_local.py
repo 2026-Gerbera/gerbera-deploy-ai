@@ -328,6 +328,7 @@ def test_failure_discards_secret_output_and_cleans(
         ("denied: requested access to the resource is denied", True),
         ("insufficient_scope: authorization failed", True),
         ("push access denied", True),
+        ("failed to pull ghcr.io/example/base: unauthorized: authentication required", True),
         ("failed to solve: syntax error", False),
     ],
 )
@@ -345,6 +346,9 @@ def test_push_authentication_failure_has_safe_login_hint(tmp_path, capsys, stder
         call(context(tmp_path))
     assert error.value.code is ErrorCode.ADAPTER_FAILED
     assert ("docker login 필요" in str(error.value)) is auth
+    if auth:
+        assert "해당 레지스트리" in str(error.value)
+        assert "push 권한" not in str(error.value)  # 베이스 이미지 pull도 같은 인증 경로다.
     assert stderr not in str(error.value) and "private" not in str(error.value)
     assert "} > /dev/null\n" in runner.calls[-1]["input"]
     assert not runner.calls[-1]["cwd"].exists()
