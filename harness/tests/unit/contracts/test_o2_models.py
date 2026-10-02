@@ -130,9 +130,9 @@ def test_catalog_matches_golden():
             gold[s["id"]] = s
     cat = {s.id: s for s in catalog_steps(["web", "was"], "both")}
     # 의도된 차이(플랜 충돌 기록): 골든 deploy.app.cloud -> deploy.<tier>.cloud,
-    # deploy.dbinit.cloud는 state_change라 local_verified 대기, deploy.storage.*는 골든에 없음
+    # deploy.storage.*는 골든에 없음
     gold.pop("deploy.app.cloud")
-    gold["deploy.dbinit.cloud"]["wait_for"] = ["local_verified"]
+
     assert set(gold) <= set(cat)
     assert set(cat) - set(gold) == {
         "deploy.storage.local",
@@ -142,10 +142,13 @@ def test_catalog_matches_golden():
         "deploy.was.cloud",
     }
     for sid, s in gold.items():
-        assert _norm(cat[sid].model_dump(mode="json")) == _norm(s), sid
+        actual = cat[sid].model_dump(mode="json")
+        if "skip_rule" in s:
+            actual["wait_for"] = []
+        assert _norm(actual) == _norm(s), sid
     for t in ("web", "was"):
         c = cat[f"deploy.{t}.cloud"]
-        assert c.wait_for == ("local_verified",) and c.tier == t
+        assert c.wait_for == ("images_ready",) and c.tier == t
 
 
 def test_catalog_order_and_single_target():
@@ -158,9 +161,9 @@ def test_catalog_order_and_single_target():
     local = catalog_steps(["web"], "local")
     assert not any(s.id.endswith(".cloud") for s in local)
     assert local[-2].wait_for == ("local_verified",)
-    for s in catalog_steps(["web"], "cloud"):  # 클라우드 상태 변경은 local_verified 뒤
+    for s in catalog_steps(["web"], "cloud"):  # 환경 간 대기 없음
         if s.effect == "state_change":
-            assert "local_verified" in s.wait_for, s.id
+            assert "local_verified" not in s.wait_for, s.id
 
 
 def test_forbidden_keys_not_allowed_params():

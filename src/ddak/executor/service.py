@@ -10,7 +10,9 @@ import asyncio
 import contextlib
 import fcntl
 import json
+import re
 import sqlite3
+import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping
@@ -19,6 +21,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, cast
 
+from ddak.core.app_repository import AppRepository
+from ddak.core.candidate import CandidateConflict
 from ddak.core.config import AdapterMode
 from ddak.core.contracts.approval import ApprovalRecord
 from ddak.core.contracts.context import RunContext
@@ -27,6 +31,7 @@ from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.contracts.events import EventType, RunEvent
 from ddak.core.contracts.plan import Plan, PlanStep
 from ddak.core.contracts.release import ReleaseArtifacts, SnapshotBinding
+from ddak.core.project_settings import ProjectSettings
 from ddak.core.redact import redact_obj
 from ddak.core.registry import Registry
 from ddak.core.runlog import run_dir, write_context
@@ -35,6 +40,7 @@ from ddak.core.store import Store, release_view
 from ddak.executor.approval_meta import check_infra_summary, encode_meta
 from ddak.executor.engine import Executor, RunResult, RunStatus, TrackStatus, check_signals
 from ddak.executor.events import EventBus
+from ddak.executor.selection import select_plan
 
 ApprovalKind = Literal["patch", "deploy", "infra", "dockerfile", "foundation"]
 FactsReader = Callable[[Path], str]
@@ -69,9 +75,15 @@ class DeploymentService:
     """프로젝트별 실행 잠금 + 컨트롤러 1개. 화면 연결 수명과 실행 task 수명은 분리한다."""
 
     def __init__(
-        self, registry: Registry, root: Path, *, refresh: ContextRefresh | None = None
+        self,
+        registry: Registry,
+        root: Path,
+        *,
+        refresh: ContextRefresh | None = None,
+        repositories: Mapping[str, AppRepository] | None = None,
     ) -> None:
         self.registry, self.root, self.refresh = registry, root, refresh
+        self.repositories = dict(repositories or {})
         root.mkdir(parents=True, exist_ok=True)
         self._lease = (root / "controller.lock").open("a")
         try:
@@ -121,6 +133,19 @@ class DeploymentService:
         patch_meta: dict[str, Any] | None = None,
         infra_summary: dict[str, Any] | None = None,
     ) -> str:
+        settings = self.store.project_settings(context.project)
+        if settings is not None:
+            settings_data = {k: v for k, v in settings.items() if k in ProjectSettings.model_fields}
+            validated = ProjectSettings.model_validate(settings_data)
+            context = replace(
+                context,
+                project_settings={
+                    **validated.model_dump(mode="json", exclude_unset=True),
+                    "version": settings["version"],
+                },
+                cloud_domain=validated.cloud_domain or context.cloud_domain,
+            )
+        plan = select_plan(plan, context)
         patch_meta_json = encode_meta(patch_meta)
         infra_summary_json = encode_meta(infra_summary, infra=True)
         if (patch_meta is not None and not patch) or (
@@ -214,6 +239,7 @@ class DeploymentService:
             platform=json.loads(json.dumps(context.platform)),
             images=dict(context.images),
             toggles=dict(context.toggles),
+            project_settings=json.loads(json.dumps(context.project_settings)),
         )
         self.store.create_run(plan.run_id, plan.project, cast(str, plan.plan_hash))
         directory.mkdir(parents=True, exist_ok=False)
@@ -244,14 +270,146 @@ class DeploymentService:
             patch_meta_json,
             infra_summary_json,
         )
+        write_context(self.root / "runs", plan.run_id, context.to_json_dict())
+        (directory / "approval-view.json").write_text(
+            json.dumps(self.approval_view(plan.run_id), ensure_ascii=False)
+        )
         self._buses[plan.run_id] = EventBus()
         return plan.run_id
 
+    @staticmethod
+    async def _repository_work(
+        function: Any,
+        *args: Any,
+        complete_on_cancel: bool = False,
+        cancel_event: threading.Event | None = None,
+    ) -> Any:
+        work = asyncio.create_task(asyncio.to_thread(function, *args))
+        cancelled = False
+        while True:
+            try:
+                value = await asyncio.shield(work)
+                break
+            except asyncio.CancelledError:
+                if work.cancelled():
+                    raise
+                cancelled = True
+                if cancel_event is not None:
+                    cancel_event.set()
+        if cancelled:
+            if not complete_on_cancel:
+                raise asyncio.CancelledError
+            if isinstance(value, dict):
+                value = {**value, "cancel_requested": True}
+        return value
+
+    def deployment_baselines(self, project: str) -> dict[str, str | None]:
+        return {
+            target: row["current"].get("source_sha") if row["current"] else None
+            for target, row in self.store.environments(project).items()
+        }
+
+    def get_run(self, run_id: str) -> dict[str, Any]:
+        result = self.store.run(run_id)
+        path = run_dir(self.root / "runs", run_id) / "context.json"
+        if path.exists():
+            context = json.loads(path.read_text())
+            result["context"] = {
+                k: context.get(k)
+                for k in (
+                    "targets",
+                    "trigger",
+                    "source_sha",
+                    "candidate_sha",
+                    "project_settings",
+                    "cloud_domain",
+                )
+            }
+        return result
+
+    def list_runs(self, limit: int = 20) -> list[dict[str, Any]]:
+        return self.store.list_runs(limit)
+
+    def get_environments(self, project: str) -> dict[str, Any]:
+        return self.store.environments(project)
+
+    def get_release(self, run_id: str) -> dict[str, Any] | None:
+        self.store.run(run_id)
+        return self.store.release_record(run_id)
+
+    def get_approvals(self, run_id: str) -> list[ApprovalRecord]:
+        self.store.run(run_id)
+        return self.store.approvals(run_id)
+
+    def get_conflict_proposal(self, run_id: str) -> dict[str, Any] | None:
+        self.store.run(run_id)
+        path = run_dir(self.root / "runs", run_id) / "conflict-proposal.json"
+        return json.loads(path.read_text()) if path.exists() else None
+
+    def get_project_settings(self, project: str) -> dict[str, Any] | None:
+        return self.store.project_settings(project)
+
+    def save_project_settings(
+        self, project: str, data: dict[str, Any], *, updated_by: str, expected_version: int | None
+    ) -> dict[str, Any]:
+        if not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", project):
+            raise DdakToolError(ErrorCode.CONFIG_INVALID, "프로젝트 이름 형식 오류")
+        if expected_version is None or isinstance(expected_version, bool) or expected_version < 0:
+            raise DdakToolError(ErrorCode.CONFIG_INVALID, "설정 저장에는 읽은 버전이 필요하다")
+        existing = self.store.project_settings(project) or {}
+        merged = {k: v for k, v in existing.items() if k in ProjectSettings.model_fields}
+        merged.update(data)
+        validated = ProjectSettings.model_validate(merged)
+        return self.store.save_project_settings(
+            project,
+            validated.model_dump(mode="json", exclude_unset=True),
+            updated_by=updated_by,
+            expected_version=expected_version,
+        )
+
     def approval_view(self, run_id: str) -> dict[str, Any]:
+        if run_id not in self._prepared:
+            self.store.run(run_id)
+            directory = run_dir(self.root / "runs", run_id)
+            saved = directory / "approval-view.json"
+            if saved.exists():
+                return json.loads(saved.read_text())
+            # 신규 export가 없는 기존 실행은 원본 기록에서 조회용으로만 복원한다.
+            records = self.store.approvals(run_id)
+            release = self.store.release_record(run_id) or {}
+            metadata_path = directory / "approval-meta.json"
+            metadata = json.loads(metadata_path.read_text()) if metadata_path.exists() else {}
+            plan_path = directory / "plan.json"
+            restored_plan = json.loads(plan_path.read_text()) if plan_path.exists() else None
+            patch_path = directory / "approved.patch"
+            snapshot = next(
+                (r.snapshot.model_dump(mode="json") for r in records if r.snapshot),
+                release.get("source"),
+            )
+            return {
+                "run_id": run_id,
+                "project": self.store.run(run_id)["project"],
+                "subjects": {r.kind: r.bound_to for r in records},
+                "snapshot": snapshot,
+                "patch": patch_path.read_text() if patch_path.exists() else None,
+                "plan": restored_plan,
+                "patch_meta": metadata.get("patch_meta"),
+                "infra_summary": metadata.get("infra_summary"),
+                "legacy_record": True,
+                "unavailable_fields": [
+                    name
+                    for name, value in (("snapshot", snapshot), ("plan", restored_plan))
+                    if value is None
+                ],
+            }
+
         p = self._prepared[run_id]
         return {
             "run_id": run_id,
             "project": p.plan.project,
+            "targets": p.context.targets,
+            "trigger": p.context.trigger,
+            "project_settings": dict(p.context.project_settings),
             "subjects": dict(p.requirements),
             "snapshot": p.snapshot.model_dump(mode="json"),
             "patch": p.patch.decode() if p.patch else None,
@@ -485,6 +643,12 @@ class DeploymentService:
                     or updated.project != current.project
                     or updated.lock_token != current.lock_token
                     or updated.mode != current.mode
+                    or updated.targets != current.targets
+                    or updated.trigger != current.trigger
+                    or updated.project_settings != current.project_settings
+                    or updated.cloud_domain != current.cloud_domain
+                    or updated.source_sha != current.source_sha
+                    or updated.candidate_sha != current.candidate_sha
                     or updated.build_source != current.build_source
                 ):
                     raise DdakToolError(
@@ -520,7 +684,7 @@ class DeploymentService:
             write_context(self.root / "runs", ctx.run_id, updated.to_json_dict())
             return updated
 
-        rollback_tiers = {
+        planned_rollback_tiers = {
             target: list(
                 dict.fromkeys(s.tier for s in section.steps if s.tool == "deploy_tier" and s.tier)
             )
@@ -529,6 +693,19 @@ class DeploymentService:
                 (Target.CLOUD, p.plan.deploy.cloud),
             )
         }
+
+        rollback_tiers: dict[Target, list[str]] = {Target.LOCAL: [], Target.CLOUD: []}
+
+        def invoked(step: PlanStep, current: RunContext) -> None:
+            target = step.target
+            for name in (Target.LOCAL, Target.CLOUD):
+                section = p.plan.deploy.local if name is Target.LOCAL else p.plan.deploy.cloud
+                if any(s.id == step.id for s in section.steps):
+                    target = name
+            if target and step.tool in {"deploy_tier", "prepare_db"}:
+                tier = step.tier or ("was" if step.tool == "prepare_db" else None)
+                if tier and tier not in rollback_tiers[target]:
+                    rollback_tiers[target].append(tier)
 
         async def rollback(target: Target, current: RunContext) -> None:
             registered = self.registry.get("rollback_tier")
@@ -560,10 +737,14 @@ class DeploymentService:
         heart = asyncio.create_task(heartbeat())
         result: RunResult
         build_files: dict[str, dict[str, Any]] = {}
+        git_record: dict[str, Any] = {"status": "NOT_CONFIGURED"}
+        candidate_stop = threading.Event()
+        run_repository = self.repositories.get(ctx.project)
+        git_timing_start = len(run_repository.timings) if run_repository else 0
         try:
             rollback_timeouts = {
                 target: len(tiers) * (self.registry.spec("rollback_tier").timeout_s + 2) + 2
-                for target, tiers in rollback_tiers.items()
+                for target, tiers in planned_rollback_tiers.items()
                 if tiers
             }
             if (
@@ -576,6 +757,63 @@ class DeploymentService:
             materialize(p.source, directory / "build-source", p.snapshot, p.patch)
             build_files = file_manifest(directory / "build-source")
             ctx = replace(ctx, build_source=str(directory / "build-source"))
+            repository = self.repositories.get(ctx.project)
+            if ctx.source_sha and repository:
+                if ctx.adapter_mode is AdapterMode.FAKE and not repository.allow_local:
+                    raise DdakToolError(
+                        ErrorCode.CONFIG_INVALID, "FAKE 실행은 실제 앱 Git을 쓰지 않는다"
+                    )
+
+                def candidate_guard() -> None:
+                    if candidate_stop.is_set():
+                        raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "후보 생성 취소 요청")
+                    check_lock()
+                    self._check_approval(p)
+                    saved_plan = Plan.model_validate_json((directory / "plan.json").read_text())
+                    if (
+                        plan_digest(saved_plan) != p.plan.plan_hash
+                        or plan_digest(p.plan) != p.plan.plan_hash
+                        or digest_json(p.context.to_json_dict()) != p.context_hash
+                        or p.facts_reader(p.source) != p.plan.facts_hash
+                        or digest_json(file_manifest(directory / "build-source"))
+                        != p.snapshot.build_snapshot_hash
+                    ):
+                        raise DdakToolError(
+                            ErrorCode.PRECONDITION_FAILED, "후보 생성 중 승인 내용이 바뀌었다"
+                        )
+
+                if ctx.candidate_sha:
+                    await self._repository_work(
+                        repository.validate_candidate,
+                        ctx.source_sha,
+                        ctx.candidate_sha,
+                        p.source_files,
+                        build_files,
+                        directory / "candidate-check",
+                        candidate_guard,
+                        cancel_event=candidate_stop,
+                    )
+                else:
+                    candidate = await self._repository_work(
+                        repository.prepare_candidate,
+                        ctx.source_sha,
+                        p.source_files,
+                        build_files,
+                        p.patch,
+                        directory / "candidate",
+                        candidate_guard,
+                        directory / "build-source",
+                        complete_on_cancel=True,
+                        cancel_event=candidate_stop,
+                    )
+                    ctx = replace(ctx, candidate_sha=candidate["candidate_sha"])
+                    (directory / "candidate.json").write_text(json.dumps(candidate))
+                if candidate_stop.is_set():
+                    raise asyncio.CancelledError
+            elif ctx.source_sha and ctx.adapter_mode is AdapterMode.REAL:
+                raise DdakToolError(
+                    ErrorCode.CONFIG_INVALID, "Git 실행에 앱 저장소 연결이 필요하다"
+                )
             if ctx.release_artifacts and ctx.release_artifacts.snapshot != p.snapshot:
                 raise DdakToolError(
                     ErrorCode.PRECONDITION_FAILED, "입력 이미지의 소스 결합이 다르다"
@@ -587,12 +825,49 @@ class DeploymentService:
                 rollback=rollback,
                 before_step=before,
                 after_step=after,
+                on_invoke=invoked,
                 rollback_timeouts=rollback_timeouts,
             ).run(p.plan, ctx)
+            repository = self.repositories.get(ctx.project)
+            final_context = result.context or ctx
+            if (
+                repository
+                and final_context.candidate_sha
+                and (ctx.adapter_mode is AdapterMode.REAL or repository.allow_local)
+            ):
+                selected = {
+                    name for name in ("local", "cloud") if getattr(p.plan.deploy, name).steps
+                }
+                succeeded = {
+                    name for name in selected if result.tracks.get(name) is TrackStatus.DONE
+                }
+                try:
+                    self.store.check_lock(ctx.project, ctx.run_id, token)
+                    git_record = await self._repository_work(
+                        repository.publish,
+                        final_context.candidate_sha,
+                        selected,
+                        succeeded,
+                        complete_on_cancel=True,
+                    )
+                except (Exception, asyncio.CancelledError) as publication_error:
+                    # 배포는 이미 끝났다. 기록 실패 때문에 실제 배포 관측을 버리지 않는다.
+                    git_record = {"status": "FAILED", "error": type(publication_error).__name__}
+
         except (Exception, asyncio.CancelledError) as exc:
             # 엔진 진입 전 실패는 대상 무변경. 엔진이 반환하지 못한 예외는 상태를 보수적으로 막는다.
+            if isinstance(exc, CandidateConflict):
+                (directory / "conflict-proposal.json").write_text(
+                    json.dumps(exc.proposal, ensure_ascii=False)
+                )
             unknown = (directory / "events.jsonl").exists()
-            status = RunStatus.NEEDS_HUMAN if unknown else RunStatus.FAILED_BEFORE_DEPLOY
+            status = (
+                RunStatus.NEEDS_HUMAN
+                if unknown
+                else RunStatus.CANCELLED
+                if candidate_stop.is_set()
+                else RunStatus.FAILED_BEFORE_DEPLOY
+            )
             result = RunResult(ctx.run_id, status, {}, [])
             (directory / "error.json").write_text(
                 json.dumps(
@@ -607,11 +882,20 @@ class DeploymentService:
             except asyncio.CancelledError:
                 heartbeat_failed = True
                 await asyncio.shield(heart)
+        if run_repository:
+            with contextlib.suppress(OSError):
+                (directory / "git-timings.json").write_text(
+                    json.dumps(run_repository.timings[git_timing_start:], indent=2)
+                )
         if heartbeat_failed:
             result = replace(result, status=RunStatus.NEEDS_HUMAN)
         final_ctx = result.context or ctx
         final_data = {
             "status": result.status.value,
+            "git": git_record,
+            "infra_changes": result.infra_changes,
+            "targets": final_ctx.targets,
+            "trigger": final_ctx.trigger,
             "tracks": {k: v.value for k, v in result.tracks.items()},
             "steps": {
                 r.step_id: {
@@ -625,6 +909,12 @@ class DeploymentService:
         }
         release = {
             "release_id": ctx.run_id,
+            "targets": final_ctx.targets,
+            "trigger": final_ctx.trigger,
+            "source_sha": final_ctx.source_sha,
+            "candidate_sha": final_ctx.candidate_sha,
+            "git": git_record,
+            "infra_changes": result.infra_changes,
             "source_mode": p.context.adapter_mode.value,
             "source": p.snapshot.model_dump(mode="json"),
             "files": build_files,
@@ -640,19 +930,12 @@ class DeploymentService:
             if not section.steps:
                 continue
             track = result.tracks.get(target)
-            if result.status is RunStatus.NEEDS_HUMAN:
-                changes[target] = ("NEEDS_HUMAN", release if track is TrackStatus.DONE else None)
-            elif track is TrackStatus.DONE:
+            if track is TrackStatus.DONE:
                 changes[target] = ("SUCCEEDED", release)
             elif track is TrackStatus.ROLLED_BACK:
                 changes[target] = ("ROLLED_BACK", None)
-        if (
-            result.status in {RunStatus.FAILED_CLOUD, RunStatus.PARITY_FAILED}
-            and result.tracks.get("local") is TrackStatus.DONE
-            and p.plan.deploy.cloud.steps
-        ):
-            changes["local"] = ("DIVERGED", release)
-            changes["cloud"] = ("DIVERGED", None)
+            elif result.status is RunStatus.NEEDS_HUMAN:
+                changes[target] = ("NEEDS_HUMAN", None)
         manifest = {
             "schema": "ddak.release/v1",
             **release,

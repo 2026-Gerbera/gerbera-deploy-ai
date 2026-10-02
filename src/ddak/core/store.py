@@ -148,13 +148,14 @@ class Store:
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute(
-                "SELECT version FROM project_settings WHERE project=?", (project,)
+                "SELECT version, data FROM project_settings WHERE project=?", (project,)
             ).fetchone()
             current = row["version"] if row else 0
             if expected_version is not None and current != expected_version:
                 raise DdakToolError(
                     ErrorCode.PRECONDITION_FAILED, "설정이 다른 화면에서 변경됐다. 새로고침하세요"
                 )
+            safe_data = _json({**(json.loads(row["data"]) if row else {}), **json.loads(safe_data)})
             version = current + 1
             db.execute(
                 "INSERT OR REPLACE INTO project_settings VALUES (?, ?, ?, ?, ?)",
@@ -315,6 +316,11 @@ class Store:
                 "UPDATE runs SET status=?, finished=?, result=? WHERE run_id=?",
                 (status, time.time(), _json(result), run_id),
             )
+
+    def release_record(self, run_id: str) -> dict[str, Any] | None:
+        with self.connection() as db:
+            row = db.execute("SELECT manifest FROM releases WHERE run_id=?", (run_id,)).fetchone()
+        return json.loads(row[0]) if row else None
 
     def mark_stopped(self, run_id: str, status: str) -> None:
         if status not in {"CANCELLED", "NEEDS_HUMAN"}:

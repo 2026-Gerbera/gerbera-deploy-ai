@@ -30,6 +30,7 @@ from ddak.core.contracts.plan import CLOUD_VERIFIED, LOCAL_VERIFIED, Plan, PlanS
 from ddak.core.redact import redact
 from ddak.core.registry import PING, RegisteredTool, Registry, ToolSpec, UnknownToolError
 from ddak.executor.events import EventBus
+from ddak.executor.selection import select_plan
 
 TRACK_BUILD, TRACK_LOCAL, TRACK_CLOUD, TRACK_VERIFY = "build", "local", "cloud", "verify"
 _RESERVED_PARAMS = frozenset({"run_id", "target", "tier", "lock_token"})
@@ -50,14 +51,16 @@ class TrackStatus(StrEnum):
     FAILED = "FAILED"
     ROLLED_BACK = "ROLLED_BACK"
     ROLLBACK_FAILED = "ROLLBACK_FAILED"
-    ABORTED_AT_GATE = "ABORTED_AT_GATE"  # 기다리던 신호가 실패로 닫힘(롤백할 것 없음)
+    NOT_APPLICABLE = "N/A"
+    SKIPPED = "SKIPPED"  # 빌드 의존성 실패 또는 교차 검증 조건 미충족
 
 
 class RunStatus(StrEnum):
     SUCCEEDED = "SUCCEEDED"
-    FAILED_BEFORE_DEPLOY = "FAILED_BEFORE_DEPLOY"  # 빌드 실패 등. 대상 환경 무변경
-    FAILED_LOCAL = "FAILED_LOCAL"  # 온프렘 롤백, 클라우드 무변경(관문 작동)
-    FAILED_CLOUD = "FAILED_CLOUD"  # 클라우드 롤백, 온프렘은 새 버전 유지(DIVERGED 표시)
+    FAILED_BEFORE_DEPLOY = "FAILED_BEFORE_DEPLOY"  # 빌드 실패 우선. 선행 인프라는 별도 기록
+    FAILED_LOCAL = "FAILED_LOCAL"  # 온프렘 실패/복구, 클라우드는 독립 진행
+    FAILED_CLOUD = "FAILED_CLOUD"  # 클라우드 실패/복구, 온프렘은 새 버전 유지
+    FAILED_VERIFY = "FAILED_VERIFY"  # 교차 비교 이외의 공통 검증 실패
     PARITY_FAILED = "PARITY_FAILED"  # 교차 검증 불일치. 클라우드만 롤백, 로컬 유지
     CANCELLED = "CANCELLED"  # 실행 종료와 필요한 롤백을 확인한 취소
     NEEDS_HUMAN = "NEEDS_HUMAN"  # 롤백 실패. 사람이 정리
@@ -126,6 +129,7 @@ class RunResult:
     records: list[StepRecord]
     gates: dict[str, bool | None] = field(default_factory=dict)
     context: RunContext | None = None
+    infra_changes: list[dict[str, Any]] = field(default_factory=list)
 
 
 class _RunState:
@@ -135,9 +139,11 @@ class _RunState:
         self.gates: dict[str, Gate] = {}
         self.tracks: dict[str, TrackStatus] = {}
         self.records: list[StepRecord] = []
+        self.infra_changes: list[dict[str, Any]] = []
         self.context_lock = asyncio.Lock()
         self.event_lock = asyncio.Lock()
         self.touched: set[Target] = set()
+        self.app_touched: set[Target] = set()
         self.unquiesced: set[Target | None] = set()
         self.work: dict[asyncio.Task[Any], Target | None] = {}
         self.stopping = False
@@ -246,13 +252,17 @@ def check_signals(plan: Plan, registry: Registry | None = None) -> None:
     for name, section in sections.items():
         for step in section.steps:
             for wanted in step.wait_for:
+                if (name == TRACK_CLOUD and wanted == LOCAL_VERIFIED) or (
+                    name == TRACK_LOCAL and wanted == CLOUD_VERIFIED
+                ):
+                    raise DdakToolError(
+                        ErrorCode.PLAN_INVALID, "환경 간 검증 대기는 허용하지 않는다"
+                    )
                 if wanted not in producers:
                     raise DdakToolError(
                         ErrorCode.PLAN_INVALID, f"아무도 열지 않는 신호: {step.id} -> {wanted}"
                     )
                 dependencies[step.id].add(producers[wanted])
-            if name == TRACK_LOCAL and CLOUD_VERIFIED in step.wait_for:
-                raise DdakToolError(ErrorCode.PLAN_INVALID, "로컬은 클라우드를 기다리지 않는다(W3)")
 
     # Kahn 순회: bootstrap의 cloud -> build -> local -> cloud도 step 순서로 판정한다.
     remaining = {node: set(parents) for node, parents in dependencies.items()}
@@ -264,19 +274,6 @@ def check_signals(plan: Plan, registry: Registry | None = None) -> None:
             node: parents - ready for node, parents in remaining.items() if node not in ready
         }
 
-    gated = False
-    for step in plan.deploy.cloud.steps:
-        gated = gated or LOCAL_VERIFIED in step.wait_for
-        changing = step.effect is Effect.STATE_CHANGE
-        if registry is not None:
-            # 미등록 툴은 해당 step의 PLAN_INVALID 기록으로 남긴다.
-            with contextlib.suppress(UnknownToolError):
-                changing = _changes_state(step, registry.spec(step.tool))
-        if changing and not gated:
-            raise DdakToolError(
-                ErrorCode.PLAN_INVALID,
-                f"클라우드 상태 변경은 local_verified 뒤에 둔다(W1): {step.id}",
-            )
     # G1/G2를 다른 트랙이 직접 열면 검증 관문을 사칭할 수 있다.
     for signal, name in ((LOCAL_VERIFIED, TRACK_LOCAL), (CLOUD_VERIFIED, TRACK_CLOUD)):
         section = sections[name]
@@ -316,15 +313,17 @@ def decide_status(tracks: dict[str, TrackStatus]) -> RunStatus:
     local, cloud = tracks.get(TRACK_LOCAL), tracks.get(TRACK_CLOUD)
     if TrackStatus.ROLLBACK_FAILED in tracks.values():
         return RunStatus.NEEDS_HUMAN
+    if tracks.get(TRACK_BUILD) in bad:
+        return RunStatus.FAILED_BEFORE_DEPLOY
     if local in bad:
         return RunStatus.FAILED_LOCAL
     if cloud in bad:
         return RunStatus.FAILED_CLOUD
-    if tracks.get(TRACK_BUILD) in bad or TrackStatus.ABORTED_AT_GATE in (local, cloud):
+    if TrackStatus.SKIPPED in (local, cloud):
         return RunStatus.FAILED_BEFORE_DEPLOY
     verify = tracks.get(TRACK_VERIFY)
-    if verify in bad or verify is TrackStatus.ABORTED_AT_GATE:
-        return RunStatus.PARITY_FAILED
+    if verify in bad:
+        return RunStatus.FAILED_VERIFY
     return RunStatus.SUCCEEDED
 
 
@@ -337,6 +336,7 @@ class Executor:
         rollback: RollbackHook | None = None,
         before_step: BeforeStepHook | None = None,
         after_step: AfterStepHook | None = None,
+        on_invoke: Callable[[PlanStep, RunContext], None] | None = None,
         rollback_timeouts: Mapping[Target, float] | None = None,
     ) -> None:
         self._registry = registry
@@ -344,11 +344,13 @@ class Executor:
         self._rollback = rollback
         self._before_step = before_step
         self._after_step = after_step
+        self._on_invoke = on_invoke
         self._rollback_timeouts = dict(rollback_timeouts or {})
 
     async def run(self, plan: Plan, ctx: RunContext) -> RunResult:
         if plan.run_id != ctx.run_id:
             raise DdakToolError(ErrorCode.PLAN_INVALID, "plan.run_id와 실행 컨텍스트가 다르다")
+        plan = select_plan(plan, ctx)
         check_signals(plan, self._registry)
         for name, section in _sections(plan).items():
             for step in section.steps:
@@ -378,14 +380,10 @@ class Executor:
             done, _ = await asyncio.wait(tasks.values(), return_when=asyncio.FIRST_EXCEPTION)
             for task in done:
                 task.result()
-            main = [step for step in plan.verify.steps if step.run is None]
-            tasks[TRACK_VERIFY] = asyncio.create_task(
-                self._track(
-                    TRACK_VERIFY, plan.verify.model_copy(update={"steps": main}), None, state
-                )
-            )
+            tasks[TRACK_VERIFY] = asyncio.create_task(self._verify(plan.verify, state))
             await asyncio.wait({tasks[TRACK_VERIFY]})
             tasks[TRACK_VERIFY].result()
+
         except asyncio.CancelledError:
             if state.event_failed:
                 internal_failure = True
@@ -436,19 +434,31 @@ class Executor:
             state.unquiesced.update(
                 target for task, target in state.work.items() if not task.done()
             )
-            for target in state.touched:
+            for target in state.app_touched:
                 if state.tracks[target.value] not in (
                     TrackStatus.ROLLED_BACK,
                     TrackStatus.ROLLBACK_FAILED,
                 ):
                     state.tracks[target.value] = await self._rollback_track(target, state)
 
-        parity_failed = state.tracks[TRACK_VERIFY] is TrackStatus.FAILED
+        failures = [r for r in state.records if r.status in {"failed", "check_failed"}]
+        verify_ids = {s.id for s in plan.verify.steps if s.run is None}
+        parity_failed = any(
+            r.step_id in verify_ids and r.tool in {"compare_env_results", "diagnose_parity_gap"}
+            for r in failures
+        )
+        for target in {r.target for r in failures if r.step_id in verify_ids and r.target}:
+            if state.tracks[target.value] is TrackStatus.DONE:
+                state.tracks[target.value] = (
+                    await self._rollback_track(target, state)
+                    if target in state.app_touched
+                    else TrackStatus.FAILED
+                )
         if (
             not cancelled
             and not internal_failure
             and parity_failed
-            and Target.CLOUD in state.touched
+            and Target.CLOUD in state.app_touched
             and state.tracks[TRACK_CLOUD] is TrackStatus.DONE
         ):
             state.tracks[TRACK_CLOUD] = await self._rollback_track(Target.CLOUD, state)
@@ -460,6 +470,8 @@ class Executor:
             status = RunStatus.NEEDS_HUMAN
         elif cancelled:
             status = RunStatus.CANCELLED
+        elif state.tracks[TRACK_BUILD] is TrackStatus.FAILED:
+            status = RunStatus.FAILED_BEFORE_DEPLOY
         elif parity_failed:
             status = RunStatus.PARITY_FAILED
         elif internal_failure and status is RunStatus.SUCCEEDED:
@@ -483,11 +495,75 @@ class Executor:
             records=list(state.records),
             gates={name: gate.ok for name, gate in state.gates.items()},
             context=state.ctx,
+            infra_changes=list(state.infra_changes),
         )
+
+    async def _skip(self, step: PlanStep, state: _RunState) -> None:
+        state.records.append(StepRecord(step.id, step.tool, step.target, "skipped", 0))
+        await state.emit(
+            EventType.STEP_SKIPPED,
+            step=step.id,
+            tool=step.tool,
+            target=step.target,
+            status="skipped",
+            detail="검증 대상 트랙의 성공 조건 미충족",
+        )
+
+    async def _verify(self, section: Section, state: _RunState) -> None:
+        failed_targets: set[Target] = set()
+        failed = ran = skipped = False
+        for step in section.steps:
+            if step.run == "finally":
+                continue
+            both_ok = not failed_targets and all(
+                state.tracks.get(t.value) is TrackStatus.DONE for t in Target
+            )
+            eligible = (
+                both_ok
+                if step.target is None
+                or step.tool in {"compare_env_results", "diagnose_parity_gap"}
+                else (
+                    step.target not in failed_targets
+                    and state.tracks.get(step.target.value) is TrackStatus.DONE
+                )
+            )
+            if not eligible:
+                skipped = True
+                await self._skip(step, state)
+                continue
+            ran = True
+            await self._track(
+                TRACK_VERIFY,
+                section.model_copy(update={"steps": [step], "signal": None}),
+                None,
+                state,
+            )
+            status = state.tracks[TRACK_VERIFY]
+            if status is TrackStatus.SKIPPED:
+                skipped = True
+                await self._skip(step, state)
+            elif status is not TrackStatus.DONE:
+                failed = True
+                if step.target:
+                    failed_targets.add(step.target)
+        state.tracks[TRACK_VERIFY] = (
+            TrackStatus.FAILED if failed else TrackStatus.DONE if ran else TrackStatus.SKIPPED
+        )
+        if section.signal:
+            if failed or skipped or not ran:
+                state.gate(section.signal).fail("검증 성공 조건 미충족")
+            else:
+                await state.emit(EventType.GATE_OPENED, detail=section.signal)
+                state.gate(section.signal).open()
 
     async def _track(
         self, name: str, section: Section, target: Target | None, state: _RunState
     ) -> None:
+        if target is not None and not section.steps:
+            state.tracks[name] = TrackStatus.NOT_APPLICABLE
+            if section.signal:
+                state.gate(section.signal).fail("선택되지 않은 트랙")
+            return
         state.tracks[name] = TrackStatus.RUNNING
         own = {step.signal for step in section.steps if step.signal}
         if section.signal:
@@ -517,9 +593,9 @@ class Executor:
                 state.gate(section.signal).open()
             state.tracks[name] = TrackStatus.DONE
         except GateFailed as exc:
-            state.tracks[name] = TrackStatus.ABORTED_AT_GATE
+            state.tracks[name] = TrackStatus.SKIPPED
             await state.emit(EventType.GATE_FAILED, target=target, detail=str(exc))
-            if target is not None and target in state.touched:
+            if target is not None and target in state.app_touched:
                 state.tracks[name] = await self._rollback_track(target, state)
         except Exception:
             state.tracks[name] = TrackStatus.FAILED
@@ -527,7 +603,7 @@ class Executor:
                 raise  # 필수 기록 실패는 전체 실행을 중지시킨다.
             if target in state.unquiesced:
                 state.tracks[name] = TrackStatus.ROLLBACK_FAILED
-            elif target is not None and target in state.touched:
+            elif target is not None and target in state.app_touched:
                 state.tracks[name] = await self._rollback_track(target, state)
         finally:
             for signal in own:
@@ -547,7 +623,7 @@ class Executor:
             try:
                 return await awaitable
             except DdakToolError as exc:
-                if mutation and exc.code is ErrorCode.ADAPTER_TIMEOUT:
+                if exc.needs_human or (mutation and exc.code is ErrorCode.ADAPTER_TIMEOUT):
                     # 제한 시간/취소 뒤의 정리 유예 중 반환한 timeout도 놓치지 않는다.
                     state.unquiesced.add(target)
                 raise
@@ -633,6 +709,10 @@ class Executor:
                 # before_step이 거부한 작업은 touched가 아니므로 롤백하지 않는다.
                 state.touched.add(target)
             invoked = True
+            if changing and target is not None and step.tool in {"deploy_tier", "prepare_db"}:
+                state.app_touched.add(target)
+            if self._on_invoke is not None:
+                self._on_invoke(step, ctx)
             with runtime.tool_context(step.tool, ctx.run_id):
                 call = (
                     registered.fn(inp, ctx)
@@ -655,6 +735,16 @@ class Executor:
                 if spec.canonical and step.tool in _VERIFIED_TOOLS
                 else getattr(out, "passed", True) is not False
             )
+            if passed and step.tool == "apply_infra":
+                # 실제 적용 성공은 refresh/기록 후처리 실패와 독립적으로 보존한다.
+                state.infra_changes.append(
+                    {
+                        "step_id": step.id,
+                        "target": target.value if target else None,
+                        "status": "applied",
+                        "plan_sha256": output.get("plan_sha256"),
+                    }
+                )
             if passed and self._after_step is not None:
                 # 툴 실행 시작 때의 ctx를 다시 쓰지 않는다. hook과 교체가 하나의 임계 구역이다.
                 async with state.context_lock:
@@ -666,7 +756,12 @@ class Executor:
                         state,
                         deadline - time.monotonic(),
                     )
-                    if not isinstance(updated, RunContext) or updated.run_id != state.ctx.run_id:
+                    if (
+                        not isinstance(updated, RunContext)
+                        or updated.run_id != state.ctx.run_id
+                        or updated.targets != state.ctx.targets
+                        or updated.trigger != state.ctx.trigger
+                    ):
                         raise DdakToolError(
                             ErrorCode.INTERNAL, "after_step 실행 컨텍스트가 잘못됐다"
                         )
@@ -674,7 +769,7 @@ class Executor:
         except UnknownToolError:
             code, message = ErrorCode.PLAN_INVALID, f"구현이 등록되지 않은 툴: {step.tool}"
         except DdakToolError as exc:
-            if invoked and changing and exc.code is ErrorCode.ADAPTER_TIMEOUT:
+            if exc.needs_human or (invoked and changing and exc.code is ErrorCode.ADAPTER_TIMEOUT):
                 # 스레드/CLI 종료 확인만으로 원격 데몬 작업 종료를 증명할 수 없다.
                 state.unquiesced.add(target)
             code, message = exc.code, exc.message
@@ -739,7 +834,7 @@ class Executor:
     async def _rollback_track(self, target: Target, state: _RunState) -> TrackStatus:
         if target in state.unquiesced or None in state.unquiesced:
             return TrackStatus.ROLLBACK_FAILED
-        if any(owner in (target, None) and not task.done() for task, owner in state.work.items()):
+        if any(owner == target and not task.done() for task, owner in state.work.items()):
             return TrackStatus.ROLLBACK_FAILED
         with contextlib.suppress(Exception, asyncio.CancelledError):
             await state.emit(EventType.ROLLBACK_STARTED, target=target)

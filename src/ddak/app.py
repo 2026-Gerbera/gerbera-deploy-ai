@@ -20,6 +20,8 @@ from typing import Any
 
 from fastapi import FastAPI
 
+from ddak.cd import configure_cloud_tls
+from ddak.cloud.tls import ensure_tls
 from ddak.core.ai.status import llm_status
 from ddak.core.config import Settings
 from ddak.core.contracts.deploy_request import DeployRequest
@@ -27,6 +29,7 @@ from ddak.core.contracts.enums import RunMode
 from ddak.core.contracts.plan_facts import FileMeta
 from ddak.core.logging import get_logger
 from ddak.core.registry import REGISTRY, Registry, import_tools
+from ddak.executor.infra import refresh_infra_context
 from ddak.executor.service import DeploymentService
 from ddak.plan import new_run_id, plan_deployment
 from ddak.plan.intake import FetchPolicy, Watcher, WatchTarget, load_watch_targets
@@ -49,6 +52,7 @@ TOOL_PACKAGES = (
 
 def load_tools() -> Registry:
     """TOOL_PACKAGES를 자동 탐색해 등록한다. 여러 번 불러도 같은 결과다(모듈 캐시)."""
+    configure_cloud_tls(ensure_tls)
     for name in TOOL_PACKAGES:
         import_tools(importlib.import_module(name))
     return REGISTRY
@@ -117,7 +121,9 @@ def create() -> FastAPI:
     settings = Settings.from_env()
     app = create_app(
         llm_status=llm_status,
-        deployment_factory=lambda: DeploymentService(registry, settings.run_dir.parent),
+        deployment_factory=lambda: DeploymentService(
+            registry, settings.run_dir.parent, refresh=refresh_infra_context
+        ),
         settings=settings,
     )
     _attach_watch(app, settings)

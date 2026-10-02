@@ -49,7 +49,7 @@ async def test_ping_runs_on_both_tracks_through_executor() -> None:
             "run_id": "run-001",
             "deploy": {
                 "local": {"steps": [ping_step("verify.ping.local", signal="local_verified")]},
-                "cloud": {"steps": [ping_step("verify.ping.cloud", wait_for=["local_verified"])]},
+                "cloud": {"steps": [ping_step("verify.ping.cloud")]},
             },
         }
     )

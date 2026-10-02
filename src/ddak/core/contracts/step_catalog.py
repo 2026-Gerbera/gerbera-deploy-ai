@@ -49,7 +49,7 @@ def _env_steps(env: Literal["local", "cloud"], tiers: Sequence[TierName]) -> lis
     cloud = env == "cloud"
     tgt = Target.CLOUD if cloud else Target.LOCAL
     sec: Literal["deploy.local", "deploy.cloud"] = "deploy.cloud" if cloud else "deploy.local"
-    later: tuple[SignalName, ...] = ("local_verified",) if cloud else ()
+    image_ready: tuple[SignalName, ...] = ("images_ready",)
 
     def d(sid: str, tool: str, layer: Layer, effect: Effect, **kw: Any) -> StepDef:
         return StepDef(
@@ -64,7 +64,7 @@ def _env_steps(env: Literal["local", "cloud"], tiers: Sequence[TierName]) -> lis
         out += [
             d("deploy.tls.cloud", "ensure_tls", M, R, allowed_params=("mode",),
               default_params={"mode": "check"}),
-            d("deploy.infra.cloud", "apply_infra", C, S, wait_for=("local_verified",),
+            d("deploy.infra.cloud", "apply_infra", C, S,
               signal="infra_ready", skip_rule="no_infra_change"),
             d("deploy.secrets.cloud", "sync_env_to_cloud", C, A, allowed_params=("keys",),
               skip_rule="no_new_secret"),
@@ -74,13 +74,15 @@ def _env_steps(env: Literal["local", "cloud"], tiers: Sequence[TierName]) -> lis
           allowed_params=("keys",), wait_for=("images_ready",), skip_rule="no_new_keys")
     )  # fmt: skip
     out += [
-        d(f"deploy.dbinit.{env}", "prepare_db", C, S, wait_for=later, skip_rule="db_initialized"),
+        d(f"deploy.dbinit.{env}", "prepare_db", C, S, wait_for=image_ready,
+          skip_rule="db_initialized"),
         d(f"deploy.db.{env}", "prepare_db", C, S, allowed_params=("migrations",),
-          wait_for=later, skip_rule="no_new_migrations"),
-        d(f"deploy.storage.{env}", "prepare_storage", OPT, S, wait_for=later, skip_rule="optional"),
+          wait_for=image_ready, skip_rule="no_new_migrations"),
+        d(f"deploy.storage.{env}", "prepare_storage", OPT, S, wait_for=image_ready,
+          skip_rule="optional"),
     ]  # fmt: skip
     out += [
-        d(f"deploy.{t}.{env}", "deploy_tier", C, S, tier=t, wait_for=later,
+        d(f"deploy.{t}.{env}", "deploy_tier", C, S, tier=t, wait_for=image_ready,
           skip_rule="digest_deployed")
         for t in tiers
     ]  # fmt: skip

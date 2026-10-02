@@ -24,7 +24,7 @@ from tests.unit.test_executor import REG, Rollbacks, TInput, TOutput, _spec, pla
 pytestmark = pytest.mark.anyio
 
 
-def local_plan(tool: str = "worker", *, changing: bool = True) -> Plan:
+def local_plan(tool: str = "deploy_tier", *, changing: bool = True) -> Plan:
     return Plan.model_validate(
         {
             "run_id": "run-1",
@@ -39,7 +39,7 @@ def local_plan(tool: str = "worker", *, changing: bool = True) -> Plan:
                     ],
                     "signal": "local_verified",
                 },
-                "cloud": {"steps": [step("verify.cloud", wait_for=["local_verified"])]},
+                "cloud": {"steps": [step("verify.cloud")]},
             },
             "verify": {"steps": [step("verify.report", run="finally")]},
         }
@@ -47,7 +47,7 @@ def local_plan(tool: str = "worker", *, changing: bool = True) -> Plan:
 
 
 def worker_registry(**metadata: Any) -> Registry:
-    registry = Registry([_spec("worker").model_copy(update=metadata), _spec("t_step")])
+    registry = Registry([_spec("deploy_tier").model_copy(update=metadata), _spec("t_step")])
 
     @registry.tool("t_step")
     async def read(inp: TInput, ctx: RunContext) -> TOutput:
@@ -98,9 +98,9 @@ async def test_invalid_graph_rejected_before_any_step(data: dict[str, Any]) -> N
 async def test_registry_metadata_cannot_be_hidden_by_read_step(metadata: dict[str, Any]) -> None:
     registry = worker_registry(**metadata)
     p = Plan.model_validate(
-        {"run_id": "run-1", "deploy": {"cloud": {"steps": [step("cloud.write", tool="worker")]}}}
+        {"run_id": "run-1", "build": {"steps": [step("build.write", tool="deploy_tier")]}}
     )
-    with pytest.raises(DdakToolError, match="W1"):
+    with pytest.raises(DdakToolError, match="상태 변경은 배포 트랙"):
         await Executor(registry).run(p, RunContext("run-1"))
 
 
@@ -116,13 +116,13 @@ async def test_before_hook_and_missing_lock_fail_without_touch_or_rollback() -> 
     called: list[str] = []
     registry = worker_registry(requires_lock=True)
 
-    @registry.tool("worker")
+    @registry.tool("deploy_tier")
     async def worker(inp: TInput, ctx: RunContext) -> TOutput:
-        called.append("worker")
+        called.append("deploy_tier")
         return TOutput(passed=True)
 
     async def deny(current: PlanStep, ctx: RunContext) -> None:
-        if current.tool == "worker":
+        if current.tool == "deploy_tier":
             called.append("guard")
             raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "계획 해시 변경")
 
@@ -174,7 +174,7 @@ async def test_after_hooks_merge_freshest_context_and_before_sees_new_images() -
     assert RunResult("old", RunStatus.SUCCEEDED, {}, []).context is None
 
 
-async def test_observation_hook_failure_closes_gate_before_cloud_starts() -> None:
+async def test_observation_hook_failure_does_not_cancel_other_environment() -> None:
     async def after(current: PlanStep, output: dict[str, Any], ctx: RunContext) -> RunContext:
         if current.signal == "local_verified":
             raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "이미지 관측 없음")
@@ -185,7 +185,7 @@ async def test_observation_hook_failure_closes_gate_before_cloud_starts() -> Non
         plan(), RunContext("run-1")
     )
     assert result.gates["local_verified"] is False
-    assert result.tracks["cloud"] is TrackStatus.ABORTED_AT_GATE
+    assert result.tracks["cloud"] is TrackStatus.DONE
     assert rollback.targets == [Target.LOCAL]
 
 
@@ -222,7 +222,7 @@ async def test_sync_timeout_returns_while_worker_alive_without_racing_rollback()
     release, stopped = threading.Event(), threading.Event()
     observed: list[RunContext] = []
 
-    @registry.tool("worker")
+    @registry.tool("deploy_tier")
     def blocking(inp: TInput, ctx: RunContext) -> TOutput:
         observed.append(ctx)
         try:
@@ -258,7 +258,7 @@ async def test_tool_gets_timeout_deadline_when_run_has_no_deadline() -> None:
     registry = worker_registry(timeout_s=1)
     seen: list[float] = []
 
-    @registry.tool("worker")
+    @registry.tool("deploy_tier")
     def inspect_deadline(inp: TInput, ctx: RunContext) -> TOutput:
         assert ctx.deadline is not None
         seen.append(ctx.deadline - time.monotonic())
@@ -274,7 +274,7 @@ async def test_cancel_waits_for_async_cleanup_then_rolls_back_and_reports() -> N
     started, stopped = asyncio.Event(), asyncio.Event()
     order: list[str] = []
 
-    @registry.tool("worker")
+    @registry.tool("deploy_tier")
     async def blocking(inp: TInput, ctx: RunContext) -> TOutput:
         started.set()
         try:
@@ -310,14 +310,14 @@ async def test_cancel_unquiesced_worker_is_needs_human(sync: bool) -> None:
 
     if sync:
 
-        @registry.tool("worker")
+        @registry.tool("deploy_tier")
         def worker_sync(inp: TInput, ctx: RunContext) -> TOutput:
             entered.set()
             stop_thread.wait(3)
             return TOutput(passed=True)
     else:
 
-        @registry.tool("worker")
+        @registry.tool("deploy_tier")
         async def worker_async(inp: TInput, ctx: RunContext) -> TOutput:
             entered.set()
             try:
@@ -350,7 +350,7 @@ async def test_provider_timeout_is_unknown_only_for_mutating_or_locked_tool(
 ) -> None:
     registry = worker_registry(**metadata)
 
-    @registry.tool("worker")
+    @registry.tool("deploy_tier")
     def finished_cli(inp: TInput, ctx: RunContext) -> TOutput:
         raise DdakToolError(ErrorCode.ADAPTER_TIMEOUT, "Docker 데몬 RPC 상태 불명")
 
@@ -443,7 +443,7 @@ async def test_persistence_failure_does_not_suppress_rollback_or_final_report() 
         Executor(REG, bus=bus, rollback=rollback).run(plan(report_mode="ok"), RunContext("run-1")),
         1,
     )
-    assert rollback.targets == [Target.LOCAL]
+    assert set(rollback.targets) == {Target.LOCAL, Target.CLOUD}
     assert result.status is not RunStatus.SUCCEEDED
     assert any(r.step_id == "verify.report" for r in result.records)
 
@@ -519,7 +519,7 @@ async def test_provider_timeout_during_cancel_cleanup_stays_unknown() -> None:
     registry = worker_registry(effect=Effect.STATE_CHANGE)
     entered = asyncio.Event()
 
-    @registry.tool("worker")
+    @registry.tool("deploy_tier")
     async def remote_call(inp: TInput, ctx: RunContext) -> TOutput:
         entered.set()
         try:
@@ -540,13 +540,16 @@ async def test_provider_timeout_during_cancel_cleanup_stays_unknown() -> None:
 
 
 async def test_quiesced_read_timeout_can_rollback_previous_mutation() -> None:
-    registry = worker_registry()
+    registry = Registry([*REG.specs, _spec("read_timeout")])
+    for name in REG.registered():
+        registry.tool(name)(REG.get(name).fn)
 
-    @registry.tool("worker")
+    @registry.tool("read_timeout")
     async def read_timeout(inp: TInput, ctx: RunContext) -> TOutput:
         raise DdakToolError(ErrorCode.ADAPTER_TIMEOUT, "조회 시간 초과")
 
     p = local_plan(changing=False)
+    p.deploy.local.steps[0] = p.deploy.local.steps[0].model_copy(update={"tool": "read_timeout"})
     p.deploy.local.steps.insert(0, step("deploy.prior", effect=Effect.STATE_CHANGE))
     rollback = Rollbacks()
     result = await Executor(registry, rollback=rollback).run(p, RunContext("run-1"))
@@ -580,3 +583,53 @@ async def test_final_persistent_event_failure_preserves_tracks_and_requires_huma
     assert set(result.tracks.values()) == {TrackStatus.DONE}
     assert result.context is not None
     assert any(r.step_id == "verify.report" and r.status == "succeeded" for r in result.records)
+
+
+@pytest.mark.parametrize("failed", ["local", "cloud", "both"])
+async def test_independent_tracks_finish_or_restore_only_their_own_environment(failed: str) -> None:
+    rollback = Rollbacks()
+    entered = {name: asyncio.Event() for name in ("local", "cloud")}
+    p = plan(
+        local_mode="raise" if failed in ("local", "both") else "ok",
+        cloud_mode="raise" if failed in ("cloud", "both") else "ok",
+    )
+    original = p.model_dump_json()
+
+    async def before(current: PlanStep, ctx: RunContext) -> None:
+        if current.id in ("deploy.was.local", "deploy.app.cloud"):
+            name = "local" if current.id.endswith("local") else "cloud"
+            entered[name].set()
+
+    result = await asyncio.wait_for(
+        Executor(REG, before_step=before, rollback=rollback).run(p, RunContext("run-1")), 2
+    )
+    expected = {Target.LOCAL, Target.CLOUD} if failed == "both" else {Target(failed)}
+    assert set(rollback.targets) == expected
+    assert all(result.tracks[t.value] is TrackStatus.ROLLED_BACK for t in expected)
+    assert all(r.status == "skipped" for r in result.records if r.step_id == "verify.compare")
+    assert p.model_dump_json() == original
+
+
+async def test_cloud_failure_rolls_back_while_shared_read_work_continues() -> None:
+    rollback = Rollbacks()
+    p = Plan(
+        run_id="run-1",
+        build={"steps": [step("build.read", delay=0.08)]},
+        deploy={
+            "cloud": {"steps": [step("cloud.write", mode="raise", effect=Effect.STATE_CHANGE)]}
+        },
+    )
+    result = await Executor(REG, rollback=rollback).run(p, RunContext("run-1"))
+    assert result.status is RunStatus.FAILED_CLOUD
+    assert rollback.targets == [Target.CLOUD]
+
+
+async def test_target_selection_excludes_other_environment_finally_calls() -> None:
+    p = plan(report_mode="ok")
+    p.verify.steps.append(step("verify.cloud.final", target=Target.CLOUD, run="finally"))
+    original = p.model_dump_json()
+    result = await Executor(REG).run(p, RunContext("run-1", targets="onprem"))
+    assert result.status is RunStatus.SUCCEEDED
+    assert any(r.step_id == "verify.report" for r in result.records)
+    assert not any(r.step_id == "verify.cloud.final" for r in result.records)
+    assert p.model_dump_json() == original

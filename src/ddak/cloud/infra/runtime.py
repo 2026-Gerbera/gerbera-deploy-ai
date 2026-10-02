@@ -22,6 +22,7 @@ from typing import Any
 
 from ddak.core.contracts.approval import ApprovalRecord
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
+from ddak.core.contracts.infra_outputs import checked_outputs, output_kind
 
 from .plan import filter_outputs, summarize_plan
 from .policy import GateResult, PolicyViolation, static_gate
@@ -197,13 +198,29 @@ class AwsSettings:
         ):
             raise DdakToolError(ErrorCode.CONFIG_INVALID, "AWS state 설정 형식 오류")
         for name, (expression, kind) in self.outputs.items():
+            try:
+                expected_kind = output_kind(self.layer, name)
+            except ValueError:
+                raise DdakToolError(
+                    ErrorCode.CONFIG_INVALID, "출력 허용 목록에 없는 이름"
+                ) from None
+            expressions = (
+                expression[1:-1].split(",")
+                if kind == "list(string)"
+                and expression.startswith("[")
+                and expression.endswith("]")
+                else [expression]
+            )
             if (
-                not re.fullmatch(r"[a-z][a-z0-9_]*", name)
-                or not re.fullmatch(
-                    r"aws_[a-z0-9_]+\.[A-Za-z][A-Za-z0-9_]*\.(arn|name|id|endpoint|address)",
-                    expression,
+                kind != expected_kind
+                or not expressions
+                or any(
+                    not re.fullmatch(
+                        r"aws_[a-z0-9_]+\.[A-Za-z][A-Za-z0-9_]*\.(arn|name|id|endpoint|address|dns_name|master_user_secret\[0\]\.secret_arn)",
+                        expr.strip(),
+                    )
+                    for expr in expressions
                 )
-                or kind != "string"
             ):
                 raise DdakToolError(ErrorCode.CONFIG_INVALID, "코드 소유 출력 선언 형식 오류")
 
@@ -539,22 +556,29 @@ class InfraRuntime:
         private_write(marker, self._planned.encode())
         self._consumed = True
         started = time.monotonic()
-        result = self._run(
-            "apply",
-            "-input=false",
-            "-no-color",
-            "-lock-timeout=10s",
-            "approved.tfplan",
-            session=session,
-        )
-        if result.code != 0:
-            raise DdakToolError(
-                ErrorCode.ADAPTER_FAILED,
-                "인프라 적용 실패; 대상 상태 확인 후 새 plan·승인이 필요하다",
+        try:
+            result = self._run(
+                "apply",
+                "-input=false",
+                "-no-color",
+                "-lock-timeout=10s",
+                "approved.tfplan",
+                session=session,
             )
-        plan.unlink()
-        private_write(self.work / "apply-succeeded", self._planned.encode())
-        output = self.refresh(session=session)
+            if result.code != 0:
+                raise DdakToolError(ErrorCode.ADAPTER_FAILED, "인프라 적용 실패")
+            plan.unlink()
+            output = self.refresh(session=session)
+            private_write(self.work / "apply-succeeded", self._planned.encode())
+        except Exception as exc:
+            # Terraform은 일부 리소스만 변경하고 실패할 수 있다. 앱 컨테이너
+            # 롤백으로 복구됐다고 판단하지 않고 잠금과 증거를 보존한다.
+            code = exc.code if isinstance(exc, DdakToolError) else ErrorCode.ADAPTER_FAILED
+            raise DdakToolError(
+                code,
+                "인프라 적용 또는 출력 확인 실패; 대상 상태를 사람이 확인해야 한다",
+                needs_human=True,
+            ) from None
         return {
             "outputs": output,
             "elapsed_seconds": time.monotonic() - started,
@@ -567,8 +591,11 @@ class InfraRuntime:
         try:
             if result.code != 0:
                 raise ValueError
-            return filter_outputs(
-                json.loads(result.stdout), {k: v[1] for k, v in self._outputs.items()}
+            return checked_outputs(
+                filter_outputs(
+                    json.loads(result.stdout), {k: v[1] for k, v in self._outputs.items()}
+                ),
+                self.settings.layer,
             )
         except (ValueError, KeyError, TypeError):
             raise DdakToolError(

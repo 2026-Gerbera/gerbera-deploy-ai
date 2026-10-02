@@ -1,0 +1,16 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "run_id": {
+      "description": "실행 ID. 모든 툴의 필수 입력",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+      "title": "Run Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "run_id"
+  ],
+  "title": "ValidateInfraInput",
+  "type": "object"
+}
