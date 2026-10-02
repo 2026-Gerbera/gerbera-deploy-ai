@@ -20,12 +20,8 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from ddak.cd.interface import ProviderResult
 from ddak.cloud.deploy._aws import call
-from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
-
-_TODO = "cloud/deploy 미구현: 담당 안승환"
 
 GENERATED = "SECRET_KEY"
 _KEY = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
@@ -102,8 +98,3 @@ def _has_current(client: SecretsClient, secret_id: str) -> bool:
         raise DdakToolError(ErrorCode.INFRA_MISSING, "시크릿이 삭제 예정 상태다")
     stages = described.get("VersionIdsToStages") or {}
     return any("AWSCURRENT" in s for s in stages.values())
-
-
-def put_secret_values(keys: Sequence[str], ctx: RunContext) -> ProviderResult:
-    """keys(이름만)의 값을 채운다. 출력: ProviderResult(function="inject_config", keys=...)."""
-    raise NotImplementedError(_TODO)

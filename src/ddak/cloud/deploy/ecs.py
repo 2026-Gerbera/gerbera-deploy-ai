@@ -23,12 +23,8 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from ddak.cd.interface import ProviderResult
 from ddak.cloud.deploy._aws import call
-from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
-
-_TODO = "cloud/deploy 미구현: 담당 안승환"
 
 _IMAGE_REF = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
 # describe_task_definition 결과 중 register_task_definition에 다시 넣을 수 있는 키
@@ -61,6 +57,10 @@ class EcsClient(Protocol):
     def register_task_definition(self, **kwargs: Any) -> dict[str, Any]: ...
 
     def update_service(self, **kwargs: Any) -> dict[str, Any]: ...
+
+    def list_tasks(self, **kwargs: Any) -> dict[str, Any]: ...
+
+    def describe_tasks(self, **kwargs: Any) -> dict[str, Any]: ...
 
 
 @dataclass(frozen=True)
@@ -168,6 +168,83 @@ def wait_stable(
         sleep(min(poll_s, remaining))
 
 
+_ARCH = {"X86_64": "linux/amd64", "ARM64": "linux/arm64"}
+
+
+@dataclass(frozen=True)
+class Running:
+    platform: str  # linux/amd64 | linux/arm64 (태스크 정의 runtimePlatform)
+    image_digests: frozenset[str]  # 새 리비전으로 실행 중인 대상 컨테이너의 imageDigest
+
+
+def running_image(client: EcsClient, target: EcsService, task_definition: str) -> Running:
+    """새 리비전으로 실행 중인 태스크의 플랫폼과 실제 이미지 digest를 읽는다(관측값 원천)."""
+    definition = call(
+        "태스크 정의를 읽지 못했다",
+        lambda: client.describe_task_definition(taskDefinition=task_definition),
+    )["taskDefinition"]
+    arch = (definition.get("runtimePlatform") or {}).get("cpuArchitecture") or "X86_64"
+    if arch not in _ARCH:
+        raise DdakToolError(ErrorCode.CONFIG_INVALID, "지원하지 않는 CPU 아키텍처다")
+    arns = (
+        call(
+            "실행 중인 ECS 태스크를 읽지 못했다",
+            lambda: client.list_tasks(
+                cluster=target.cluster, serviceName=target.service, desiredStatus="RUNNING"
+            ),
+        ).get("taskArns")
+        or []
+    )
+    tasks = (
+        call(
+            "실행 중인 ECS 태스크를 읽지 못했다",
+            lambda: client.describe_tasks(cluster=target.cluster, tasks=arns),
+        ).get("tasks")
+        or []
+        if arns
+        else []
+    )
+    digests = {
+        c.get("imageDigest")
+        for t in tasks
+        if t.get("taskDefinitionArn") == task_definition
+        for c in t.get("containers") or []
+        if c.get("name") == target.container
+    }
+    if not digests or None in digests:
+        raise DdakToolError(ErrorCode.ADAPTER_FAILED, "새 리비전의 실행 중 이미지 digest가 없다")
+    return Running(platform=_ARCH[arch], image_digests=frozenset(str(d) for d in digests))
+
+
+def scale_to_zero(
+    client: EcsClient,
+    target: EcsService,
+    deadline: float,
+    *,
+    poll_s: float = 10.0,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> bool:
+    """이전 릴리스가 없는 첫 배포의 복구: 서비스 태스크를 0개로 줄인다. 바꿨으면 True."""
+    if _service(client, target).get("desiredCount", 0) == 0:
+        return False
+    call(
+        "ECS 서비스를 바꾸지 못했다",
+        lambda: client.update_service(
+            cluster=target.cluster, service=target.service, desiredCount=0
+        ),
+    )
+    while True:
+        if _service(client, target).get("runningCount", 0) == 0:
+            return True
+        remaining = deadline - clock()
+        if remaining <= 0:
+            raise DdakToolError(
+                ErrorCode.ADAPTER_TIMEOUT, "ECS 서비스가 제한 시간 안에 멈추지 않았다"
+            )
+        sleep(min(poll_s, remaining))
+
+
 def _service(client: EcsClient, target: EcsService) -> Mapping[str, Any]:
     response = call(
         "ECS 서비스를 읽지 못했다",
@@ -177,13 +254,3 @@ def _service(client: EcsClient, target: EcsService) -> Mapping[str, Any]:
     if len(services) != 1:
         raise DdakToolError(ErrorCode.INFRA_MISSING, "ECS 서비스를 찾지 못했다")
     return services[0]
-
-
-def deploy_service(tier: str, ctx: RunContext) -> ProviderResult:
-    """tier 서비스를 새 리비전으로 바꾼다. 출력: ProviderResult(function="deploy")."""
-    raise NotImplementedError(_TODO)
-
-
-def rollback_service(tier: str, ctx: RunContext) -> ProviderResult:
-    """이전 리비전(ctx.previous_release)으로 되돌린다. 출력: ProviderResult(function="rollback")."""
-    raise NotImplementedError(_TODO)

@@ -6,6 +6,12 @@ from collections.abc import Sequence
 from typing import ClassVar, Literal
 
 from ddak.cd.interface import ProviderName, ProviderResult
+from ddak.cloud.deploy.entry import (
+    deploy_service,
+    put_secret_values,
+    rollback_service,
+    run_migrations,
+)
 from ddak.cloud.health import health_check as check_cloud_health
 from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.enums import Target
@@ -23,19 +29,19 @@ class AwsProvider:
     target: ClassVar[Target] = Target.CLOUD
 
     def deploy(self, tier: str, ctx: RunContext) -> ProviderResult:
-        raise _todo("C2")
+        return deploy_service(tier, ctx)
 
     def rollback(self, tier: str, ctx: RunContext) -> ProviderResult:
-        raise _todo("C2")
+        return rollback_service(tier, ctx)
 
     def health_check(self, ctx: RunContext) -> ProviderResult:
         return check_cloud_health(ctx)
 
     def migrate_db(self, migrations: Sequence[str], ctx: RunContext) -> ProviderResult:
-        raise _todo("C2")
+        return run_migrations(migrations, ctx)
 
     def inject_config(self, keys: Sequence[str], ctx: RunContext) -> ProviderResult:
-        raise _todo("C2")
+        return put_secret_values(keys, ctx)
 
     def ensure_tls(self, mode: Literal["check", "apply"], ctx: RunContext) -> ProviderResult:
         raise _todo("C1")

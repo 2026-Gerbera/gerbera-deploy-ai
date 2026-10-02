@@ -27,12 +27,8 @@ from typing import Annotated, Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from ddak.cd.interface import ProviderResult
 from ddak.cloud.deploy._aws import call
-from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
-
-_TODO = "cloud/deploy 미구현: 담당 안승환"
 
 PHASES = ("precheck", "up", "verify")
 _MIGRATION = r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$"
@@ -264,8 +260,3 @@ def _messages(logs: LogsClient, group: str, stream: str) -> list[str]:
             return out
         token = following
     return out
-
-
-def run_migrations(migrations: Sequence[str], ctx: RunContext) -> ProviderResult:
-    """migrations를 순서대로 적용·확인한다. 출력: ProviderResult(function="migrate_db")."""
-    raise NotImplementedError(_TODO)
