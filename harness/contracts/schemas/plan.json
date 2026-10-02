@@ -34,11 +34,14 @@
     },
     "Invalidated": {
       "additionalProperties": false,
-      "description": "AI가 빼려 했으나 계획 검증이 무효화한 것(강제 포함).",
+      "description": "AI가 시도한 것(뺌/포함 요청)을 계획 검증이 무효화한 기록(강제 포함/강제 제외).",
       "properties": {
         "attempt": {
-          "const": "skip",
           "default": "skip",
+          "enum": [
+            "skip",
+            "include"
+          ],
           "title": "Attempt",
           "type": "string"
         },
@@ -51,8 +54,11 @@
           "type": "string"
         },
         "result": {
-          "const": "forced_include",
           "default": "forced_include",
+          "enum": [
+            "forced_include",
+            "forced_skip"
+          ],
           "title": "Result",
           "type": "string"
         },

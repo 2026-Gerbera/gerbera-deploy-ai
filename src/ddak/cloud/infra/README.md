@@ -1,5 +1,42 @@
-# cloud/infra (담당: 유상준, 옛 src/ddak/infra)
-- 할 일: AI Terraform 생성(generate_infra)·검증·plan·apply, 기존 리소스 탐지. 툴은 tools/<이름>/tool.py, 코드 소유 틀은 providers/
-- 입출력 계약: `src/ddak/core/contracts`
-- 다른 디렉토리 안쪽 파일을 직접 import하지 말고 __init__.py의 공개 함수만 쓴다.
-- AI 호출은 core/ai(call_ai)로만, 허용된 디렉토리에서만 한다(tools/generate_infra만 허용, 나머지는 계약 7로 금지).
+# cloud/infra — 정준우 실행부 / 김준석 generate_infra
+
+현재 구현은 **내부 Python API**다. 공유 입출력 모델·카탈로그·RunContext는 수정하지 않았고, 툴 등록과 실제 AWS 리허설은 아직 하지 않았다.
+
+- `InfraRuntime.validate(files)`: 리소스 전용 HCL 정적 검사 → fmt → 자격증명 없는 init/validate → Checkov. 파일·provider 틀·lock 변경을 이후 단계에서도 검사한다.
+- `plan(session, analyzer)`: 층별 S3 backend 초기화 → 저장 plan → Checkov/Access Analyzer → 8KiB 이하 C-18 요약. 개선 배포의 삭제·교체와 앱 밖 IAM 변경을 막는다.
+- `apply(session)`: 주입된 잠금 검사와 승인 저장소에서 run/project/infra/plan SHA를 대조한다. 시도 표식을 먼저 남기고, 실패·중단 후 자동 재실행하지 않는다. 성공 후 원본 plan을 지우고 허용 출력만 반환한다.
+- `refresh(session)`: output JSON의 이름·타입·sensitive를 검사한다. RunContext 변경은 실행기 연결부의 책임이다.
+- `foundation_template`/`apply_foundation`: S3 state 버킷 설정과 앱·CodeBuild 각각의 권한 경계. 별도 foundation 해시 승인 필요. STS 대상 계정을 확인하고, 기존 버킷은 관리 태그·계정, 경계는 내용이 일치해야 한다. 자동 삭제/기존 정책 교체 없음.
+
+`AwsSettings.outputs`는 **코드 호출자가 제공하는 임시 출력 선언**이다. 생성기 출력/공유 C-03 계약으로 확정한 것이 아니다. AI 입력에 세션 키·환경 출력·plan 원문을 넣지 않는다. `SessionKeys`는 실행 순간 메모리에서만 전달하며 repr에 값을 표시하지 않는다.
+
+## 실행 환경
+
+- Python 의존성: 사용자 승인으로 `python-hcl2>=7,<8` 추가.
+- Terraform `>=1.11,<2`; 로컬 검증 1.15.8.
+- AWS provider: `~>6.66`, `providers/aws.lock.hcl`에 6.67.0과 darwin_arm64/linux_amd64 체크섬 고정. 실행 디렉토리에서 `.terraform.lock.hcl`로 복사한다.
+- Checkov 3.3.20 외부 CLI. `uv tool install checkov==3.3.20`. 프로젝트 Python과 분리한다. CodeBuild `environment`는 허용하지만 `environment_variable`은 비밀값 유입을 막기 위해 아직 받지 않는다. 없는 도구나 파싱 실패는 통과로 처리하지 않는다. 선택한 검사 중 해당 리소스에 적용되는 것이 없으면 검사 건수 0이며 안전성 증명이 아니다.
+- fake 테스트: `make -C harness test ARGS='tests/unit/cloud/infra tests/unit/cloud/tls -q'`.
+- 코딩 에이전트는 실제 apply/destroy를 실행하지 않는다. 오프라인 검증 fixture는 `harness/tests/fixtures/infra/app_v2.tf`.
+
+## 코드 취합 때 확정할 연결
+
+1. AI 파일 전달의 bundle SHA·저장 위치와 변수/output 소유권(C-20). 내부 구현은 리소스만 AI, provider/backend/variable/output은 코드 소유로 제한했다.
+2. C-03 출력 이름/타입/필수 키: 기존 C3 PR의 ALB·ACM 이름과 C2 ECS·CodeBuild·시크릿 출력 연결. 임의 이름을 공통 스키마에 추가하지 않았다.
+3. validate/plan/apply 공유 입출력 모델·레지스트리. runtime과 임시 세션은 조립 코드가 run별로 보관·주입하고, 자격증명을 RunContext/DB에 저장하지 않는 안.
+4. 플랫폼·앱은 별도 실행/승인. 기존 저장소는 한 run당 infra 승인 1개다.
+5. apply 성공 뒤 출력 반영, last-applied bundle 보관, 실패/출력 갱신 실패의 실행기 상태 연결. `apply-started`/`apply-succeeded`로 내부 구분하며 자동 재개는 없다.
+6. CodeBuild 기본 소스는 `ai-prod` 후보 커밋 SHA(`sourceVersion` 고정), S3는 대체 경로로 확정됐다(10/1 사용자 결정). 현재 경계는 Docker Hub push 시크릿·전용 로그만 허용한다. S3 대체 경로 연결 시 전용 소스 버킷 읽기 권한을 추가한다. 생성되는 플랫폼 IAM은 현재 `ddak-codebuild`와 앱 경로 역할만 지원한다. 배포 역할·도메인 변수·전체 플랫폼 출력은 실제 생성 번들과 함께 확정/검증해야 한다. 앱 v2 fixture 통과로 전체 플랫폼 부트스트랩을 완료했다고 보지 않는다.
+7. TLS 담당은 정준우다. ACM·443 리스너·HTTP→HTTPS 리다이렉트·HSTS는 플랫폼 Terraform이 만들고 `ensure_tls`는 확인만 한다(10/1 사용자 결정). 실제 생성 번들·출력 연결과 검증은 아직 남았다.
+
+ALB 공개 HTTP 예외는 `AwsSettings.alb_security_group_addresses`에 코드가 지정한 SG의 `CKV_AWS_260`에만 적용하고 승인 headline에 표시한다. AI의 skip 주석은 거절한다. RDS 마스터 시크릿은 정확한 `ddak-<project>-dbinit-exec` 역할만 허용한다. 승인 대기와 분리해 validate/plan/apply 단계별 제한시간을 둔다.
+
+추가 실행 경계: apply 기본 예산은 1200초, 출력 갱신은 별도 30초이며 조립 시 카탈로그/실행기 제한과 맞춰야 한다. 시간 초과 시 SIGINT를 한 번만 보내고 apply는 기본 120초(`CommandRunner.apply_stop_grace`), 다른 명령은 5초 기다린 후 SIGKILL로 회수한다. 종료 유예는 실행 예산에 추가된다. 결과는 불명확 상태로 남긴다. 같은 run/layer의 apply 시도 표식은 작업 사본 밖에 남아 새 객체도 재적용하지 못한다.
+
+`root`는 모든 실행기 재시작/호출에 공유되는 영속 디렉토리여야 한다. foundation의 `marker`도 project/run별 고정 영속 경로여야 한다. 새 임시 경로를 매번 주입하면 재시도 차단이 유지되지 않으므로 실제 조립 시 이를 검증해야 한다. 이 지속성은 아직 연결하지 않은 조립부의 책임이다.
+
+`close()`는 적용 전 또는 적용 성공이 확인된 작업 사본만 지운다. 불명확한 apply 산출물은 사람이 상태를 확인할 때까지 보존한다. SDK 클라이언트는 조립 코드가 짧은 connect/read timeout과 제한된 retries로 만들어 주입해야 한다. Analyzer ERROR는 차단하고 SECURITY_WARNING은 승인 요약에 표시한다(기존 요구사항).
+
+DB 초기화 정책을 계획하려면 `AwsSettings.rds_master_secret_arn`에 플랫폼 출력의 정확한 ARN을 주입해야 한다. 이름 패턴만으로 전체 RDS 마스터 시크릿을 허용하지 않는다. C2가 주입할 컨테이너 환경변수는 AI Terraform에서 받지 않는다. `region`/시크릿 복제/리소스 정책, 프로젝트 범위를 벗어나는 시크릿 이름을 거부한다.
+
+현재 HCL 파서가 내부 표현식을 펼치지 않는 heredoc은 전체 거절한다. 문자열은 일반 따옴표, IAM·컨테이너 JSON은 `jsonencode`로 생성해야 한다.

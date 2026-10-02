@@ -1,5 +1,4 @@
 # onprem/provision (담당: 김준석)
-- 할 일: 온프렘 서버·컨테이너 준비, 앱 DB·계정
-- 입출력 계약: `src/ddak/core/contracts` (모델은 아직 없다. 입출력은 __init__.py docstring)
-- 다른 디렉토리 안쪽 파일을 직접 import하지 말고 __init__.py의 공개 함수만 쓴다.
-- AI 호출은 core/ai(call_ai)로만, 허용된 디렉토리에서만 한다(여기는 금지: import-linter 계약이 막는다).
+- `prepare_host(ctx) -> HostCheck`: 점검만(변경 없음). FAKE는 결정적 결과, REAL은 `docker info`와 인벤토리 네트워크 존재를 `docker network inspect`로 확인(리스트 인자, shell=False, 타임아웃 15초).
+- `ensure_app_database`: 미구현(결정 대기: DB 접근 방식, 비밀번호 저장 위치, O1 `prepare_db` 경계). 호출하면 `NotImplementedError`.
+- AI 호출 금지(import-linter 계약).

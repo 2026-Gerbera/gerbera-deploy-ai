@@ -64,6 +64,14 @@
       "title": "Manifest",
       "type": "object"
     },
+    "modified_migrations": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Modified Migrations",
+      "type": "array"
+    },
     "new_migrations": {
       "items": {
         "type": "string"
