@@ -15,12 +15,13 @@ import boto3
 import pytest
 from botocore.stub import ANY, Stubber
 
-from ddak.cloud.build.codebuild import BuildSource
+from ddak.cloud.build.codebuild import S3Source
 from ddak.cloud.build.source import source_key, upload_source, zip_source
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 
 BUCKET = "ddak-source"
 KEY = "sources/flaskr/run-1.zip"
+REVISION = "a" * 40
 
 
 @pytest.fixture
@@ -124,8 +125,8 @@ def test_upload_pins_version_and_sends_checksum(client: Any, stub: Stubber, app:
         },
     )
 
-    assert upload_source(client, BUCKET, KEY, app) == BuildSource(
-        bucket=BUCKET, key=KEY, version_id="v-123"
+    assert upload_source(client, BUCKET, KEY, app, REVISION) == S3Source(
+        bucket=BUCKET, key=KEY, version_id="v-123", revision=REVISION
     )
 
 
@@ -136,7 +137,7 @@ def test_upload_fails_without_bucket_versioning(
     stub.add_response("put_object", response)
 
     with pytest.raises(DdakToolError) as err:
-        upload_source(client, BUCKET, KEY, app)
+        upload_source(client, BUCKET, KEY, app, REVISION)
     assert err.value.code is ErrorCode.PRECONDITION_FAILED
 
 
@@ -148,14 +149,14 @@ def test_upload_hides_client_error_detail(client: Any, stub: Stubber, app: Path)
     )
 
     with pytest.raises(DdakToolError) as err:
-        upload_source(client, BUCKET, KEY, app)
+        upload_source(client, BUCKET, KEY, app, REVISION)
     assert err.value.code is ErrorCode.ADAPTER_FAILED
     assert "123456789012" not in str(err.value)
 
 
 def test_upload_rejects_bad_bucket_before_call(client: Any, stub: Stubber, app: Path) -> None:
     with pytest.raises(DdakToolError) as err:
-        upload_source(client, "Bad_Bucket", KEY, app)
+        upload_source(client, "Bad_Bucket", KEY, app, REVISION)
     assert err.value.code is ErrorCode.CONFIG_INVALID
 
 

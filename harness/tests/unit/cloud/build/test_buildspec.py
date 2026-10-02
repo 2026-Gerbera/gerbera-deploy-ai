@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -11,7 +12,15 @@ import pytest
 import yaml
 
 import ddak.cloud.build as build_pkg
-from ddak.cloud.build.codebuild import ENV_RELEASE_ID, ENV_TIERS, exported_names
+from ddak.cloud.build.codebuild import (
+    ENV_IMAGE_REPO,
+    ENV_RELEASE_ID,
+    ENV_REVISION,
+    ENV_TIERS,
+    IMAGE_REPO_PATTERN,
+    RELEASE_ID_PATTERN,
+    exported_names,
+)
 
 BUILDSPEC = Path(build_pkg.__file__).parent / "buildspec.yml"
 TIERS = ("web", "was")
@@ -43,9 +52,22 @@ def test_only_push_token_secret_is_read(spec: dict[str, Any]) -> None:
 
 def test_overrides_are_validated_before_use(spec: dict[str, Any]) -> None:
     first = spec["phases"]["pre_build"]["commands"][0]
-    for name in (ENV_TIERS, ENV_RELEASE_ID, "IMAGE_REPO"):
+    for name in (ENV_TIERS, ENV_RELEASE_ID, ENV_REVISION, ENV_IMAGE_REPO):
         assert name in first
     assert "형식 오류" in first
+
+
+def test_override_patterns_match_codebuild(spec: dict[str, Any]) -> None:
+    """buildspec과 codebuild.py가 같은 정규식으로 검사한다(한쪽만 넓어지지 않게)."""
+    first = spec["phases"]["pre_build"]["commands"][0]
+    assert f'[[ "${{{ENV_RELEASE_ID}:-}}" =~ {RELEASE_ID_PATTERN} ]]' in first
+    assert f'[[ "${{{ENV_IMAGE_REPO}:-}}" =~ {IMAGE_REPO_PATTERN} ]]' in first
+
+
+def test_token_shaped_values_fail_override_checks() -> None:
+    token = "dckr" + "_pat_" + "AbCdEfGhIjKlMnOpQrStUvWxYz0"
+    assert not re.fullmatch(RELEASE_ID_PATTERN, token)
+    assert not re.fullmatch(IMAGE_REPO_PATTERN, token)
 
 
 def test_build_is_multi_arch_and_pushes_by_tag(spec: dict[str, Any]) -> None:
@@ -54,6 +76,26 @@ def test_build_is_multi_arch_and_pushes_by_tag(spec: dict[str, Any]) -> None:
     assert "--provenance=false" in text
     assert "--password-stdin" in text
     assert "buildspec" not in text  # 소스의 buildspec을 읽지 않는다
+
+
+def test_image_is_labeled_with_source_revision(spec: dict[str, Any]) -> None:
+    text = "\n".join(_commands(spec))
+    assert f'--label "org.opencontainers.image.revision=${ENV_REVISION}"' in text
+
+
+def test_privileged_helper_images_are_pinned_by_digest(spec: dict[str, Any]) -> None:
+    text = "\n".join(_commands(spec))
+    for image in ("tonistiigi/binfmt", "moby/buildkit"):
+        assert re.search(re.escape(image) + r"@sha256:[0-9a-f]{64}\b", text), image
+        assert not re.search(re.escape(image) + r"(?![@\w/-])", text), (
+            image
+        )  # 태그 없이 쓰지 않는다
+
+
+def test_registry_cache_uses_separate_cache_tag(spec: dict[str, Any]) -> None:
+    text = "\n".join(_commands(spec))
+    assert '--cache-from "type=registry,ref=$IMAGE_REPO:cache-$t"' in text
+    assert '--cache-to "type=registry,ref=$IMAGE_REPO:cache-$t,mode=max"' in text
 
 
 def test_commands_are_valid_bash() -> None:

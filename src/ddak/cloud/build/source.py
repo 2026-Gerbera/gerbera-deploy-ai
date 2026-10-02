@@ -1,5 +1,7 @@
 """빌드 소스 업로드(승인 뒤 수정본 → zip → S3 버전 ID). 담당 C2. AI 없음.
 
+- 대체 경로다(10/1 결정). 기본은 공개 GitHub 앱 저장소의 ai-prod 커밋 SHA(codebuild.GitSource).
+  GitHub에서 받을 수 없을 때(저장소 비공개 전환, CodeBuild GitHub 연결 실패 등)만 쓴다.
 - 소스는 실행기가 승인 뒤 만든 빌드 사본(ctx.build_source)이다. 승인 전에는 올리지 않는다
   (decisions/2026-09-30-o1-start-contracts).
 - zip에 넣는 파일 목록은 core.snapshots.file_manifest와 같다(제외 목록·심볼릭 링크 거부 포함).
@@ -7,7 +9,7 @@
   zip 생성 규칙은 O2와 맞출 구현 계약이다(💭).
 - 같은 내용이면 같은 zip이 나온다: 이름순, 고정 시각, 실행 비트만 남긴다.
 - S3 응답의 VersionId로 소스를 고정한다. 버킷 버전 관리가 꺼져 있으면 실패한다.
-- 버킷 이름은 환경 정보(C1 Terraform 출력)에서 받는다. 키 이름 규칙은 💭.
+- 버킷 이름은 환경 정보(Terraform 출력, 정준우)에서 받는다. 키 이름 규칙은 💭.
 - 오류 메시지에 버킷 ARN·계정 ID·응답 원문을 넣지 않는다.
 """
 
@@ -21,7 +23,7 @@ import zipfile
 from pathlib import Path
 from typing import Any, Protocol
 
-from ddak.cloud.build.codebuild import BuildSource
+from ddak.cloud.build.codebuild import S3Source
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.snapshots import digest_bytes, file_manifest
 
@@ -72,8 +74,11 @@ def zip_source(root: Path) -> bytes:
     return buffer.getvalue()
 
 
-def upload_source(client: S3Client, bucket: str, key: str, root: Path) -> BuildSource:
-    """빌드 사본 zip을 S3에 올리고 버전 ID로 고정한 위치를 돌려준다."""
+def upload_source(client: S3Client, bucket: str, key: str, root: Path, revision: str) -> S3Source:
+    """빌드 사본 zip을 S3에 올리고 버전 ID로 고정한 위치를 돌려준다.
+
+    revision은 빌드 사본을 만든 ai-prod 커밋 SHA다. 형식은 start_build가 검사한다.
+    """
     if not _BUCKET.fullmatch(bucket):
         raise DdakToolError(ErrorCode.CONFIG_INVALID, "S3 버킷 이름 형식이 아니다")
     body = zip_source(root)
@@ -94,7 +99,7 @@ def upload_source(client: S3Client, bucket: str, key: str, root: Path) -> BuildS
         raise DdakToolError(
             ErrorCode.PRECONDITION_FAILED, "S3 소스 버킷의 버전 관리가 켜져 있지 않다"
         )
-    return BuildSource(bucket=bucket, key=key, version_id=str(version_id))
+    return S3Source(bucket=bucket, key=key, version_id=str(version_id), revision=revision)
 
 
 __all__ = ["S3Client", "source_key", "upload_source", "zip_source"]
