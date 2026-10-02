@@ -1,8 +1,7 @@
-"""시크릿 값 채우기: SECRET_KEY 생성·재사용, 운영자 키 확인, 값이 오류에 안 나옴. 네트워크 없음."""
+"""키별 시크릿 채우기: SECRET_KEY 생성·재사용, 운영자 키는 값 존재만 확인. 네트워크 없음."""
 
 from __future__ import annotations
 
-import json
 from collections.abc import Iterator
 from typing import Any
 
@@ -10,12 +9,13 @@ import boto3
 import pytest
 from botocore.stub import Stubber
 
-from ddak.cloud.deploy.secrets import fill_secret
+from ddak.cloud.deploy.secrets import fill_secrets
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 
-SECRET = "ddak/flaskr/app"
+PREFIX = "arn:aws:secretsmanager:ap-northeast-2:111122223333:secret:ddak/flaskr/"
+IDS = {"SECRET_KEY": PREFIX + "SECRET_KEY-AbCdEf", "MAIL_TOKEN": PREFIX + "MAIL_TOKEN-AbCdEf"}
 NEW_KEY = "a" * 64
-DB_PASSWORD = "pw-" + "operator"  # 가짜 값(이어 붙여 gitleaks 회피)
+VERSION = "0" * 32
 
 
 @pytest.fixture
@@ -35,75 +35,69 @@ def stub(client: Any) -> Iterator[Stubber]:
         stubber.assert_no_pending_responses()
 
 
-def _describe(stub: Stubber, *, has_value: bool) -> None:
-    stages = {"0" * 32: ["AWSCURRENT"]} if has_value else {}
+def _describe(stub: Stubber, key: str, *, has_value: bool) -> None:
+    stages = {VERSION: ["AWSCURRENT"]} if has_value else {}
     stub.add_response(
-        "describe_secret", {"Name": SECRET, "VersionIdsToStages": stages}, {"SecretId": SECRET}
+        "describe_secret", {"Name": key, "VersionIdsToStages": stages}, {"SecretId": IDS[key]}
     )
 
 
-def _value(stub: Stubber, values: dict[str, str] | str) -> None:
-    body = values if isinstance(values, str) else json.dumps(values)
-    stub.add_response("get_secret_value", {"SecretString": body}, {"SecretId": SECRET})
-
-
-def test_empty_secret_gets_generated_key(client: Any, stub: Stubber) -> None:
-    _describe(stub, has_value=False)
+def test_empty_secret_key_is_generated(client: Any, stub: Stubber) -> None:
+    _describe(stub, "SECRET_KEY", has_value=False)
     stub.add_response(
         "put_secret_value",
-        {"Name": SECRET},
-        {"SecretId": SECRET, "SecretString": json.dumps({"SECRET_KEY": NEW_KEY})},
+        {"Name": "SECRET_KEY"},
+        {"SecretId": IDS["SECRET_KEY"], "SecretString": NEW_KEY},
     )
-    got = fill_secret(client, SECRET, ["SECRET_KEY"], token=lambda: NEW_KEY)
+    got = fill_secrets(client, ["SECRET_KEY"], IDS, token=lambda: NEW_KEY)
     assert got.generated == ["SECRET_KEY"]
     assert got.changed is True
 
 
 def test_existing_values_are_reused_without_write(client: Any, stub: Stubber) -> None:
-    _describe(stub, has_value=True)
-    _value(stub, {"SECRET_KEY": "b" * 64, "DB_PASSWORD": DB_PASSWORD})
-    got = fill_secret(client, SECRET, ["SECRET_KEY", "DB_PASSWORD"], token=lambda: NEW_KEY)
+    _describe(stub, "SECRET_KEY", has_value=True)
+    _describe(stub, "MAIL_TOKEN", has_value=True)
+    stub.add_response(
+        "get_secret_value", {"SecretString": "b" * 64}, {"SecretId": IDS["SECRET_KEY"]}
+    )
+    got = fill_secrets(client, ["SECRET_KEY", "MAIL_TOKEN"], IDS, token=lambda: NEW_KEY)
     assert got.changed is False
     assert got.generated == []
 
 
-def test_new_key_keeps_operator_values(client: Any, stub: Stubber) -> None:
-    _describe(stub, has_value=True)
-    _value(stub, {"DB_PASSWORD": DB_PASSWORD})
-    body = json.dumps({"DB_PASSWORD": DB_PASSWORD, "SECRET_KEY": NEW_KEY}, sort_keys=True)
-    stub.add_response(
-        "put_secret_value", {"Name": SECRET}, {"SecretId": SECRET, "SecretString": body}
-    )
-    got = fill_secret(client, SECRET, ["SECRET_KEY", "DB_PASSWORD"], token=lambda: NEW_KEY)
-    assert got.generated == ["SECRET_KEY"]
+def test_operator_key_value_is_not_read(client: Any, stub: Stubber) -> None:
+    _describe(stub, "MAIL_TOKEN", has_value=True)
+    got = fill_secrets(client, ["MAIL_TOKEN"], IDS)  # get_secret_value 응답을 넣지 않았다
+    assert got.changed is False
 
 
-def test_missing_operator_key_fails(client: Any, stub: Stubber) -> None:
-    _describe(stub, has_value=False)
+def test_missing_operator_key_fails_before_any_write(client: Any, stub: Stubber) -> None:
+    _describe(stub, "SECRET_KEY", has_value=False)
+    _describe(stub, "MAIL_TOKEN", has_value=False)
     with pytest.raises(DdakToolError) as err:
-        fill_secret(client, SECRET, ["DB_PASSWORD"])
+        fill_secrets(client, ["SECRET_KEY", "MAIL_TOKEN"], IDS, token=lambda: NEW_KEY)
     assert err.value.code is ErrorCode.PRECONDITION_FAILED
-    assert "DB_PASSWORD" in str(err.value)
+    assert "MAIL_TOKEN" in str(err.value)
 
 
-def test_bad_existing_secret_key_fails(client: Any, stub: Stubber) -> None:
-    _describe(stub, has_value=True)
-    _value(stub, {"SECRET_KEY": "dev"})
+def test_bad_existing_secret_key_is_not_echoed(client: Any, stub: Stubber) -> None:
+    _describe(stub, "SECRET_KEY", has_value=True)
+    stub.add_response(
+        "get_secret_value", {"SecretString": "d" + "ev-value"}, {"SecretId": IDS["SECRET_KEY"]}
+    )
     with pytest.raises(DdakToolError) as err:
-        fill_secret(client, SECRET, ["SECRET_KEY"])
+        fill_secrets(client, ["SECRET_KEY"], IDS)
     assert err.value.code is ErrorCode.CONFIG_INVALID
+    assert "dev-value" not in str(err.value)
 
 
-def test_non_json_value_is_not_echoed(client: Any, stub: Stubber) -> None:
-    _describe(stub, has_value=True)
-    _value(stub, "plain-" + "secret-text")
+def test_missing_output_mapping_is_infra_missing(client: Any) -> None:
     with pytest.raises(DdakToolError) as err:
-        fill_secret(client, SECRET, ["SECRET_KEY"])
-    assert err.value.code is ErrorCode.CONFIG_INVALID
-    assert "secret-text" not in str(err.value)
+        fill_secrets(client, ["DB_PASSWORD"], IDS)
+    assert err.value.code is ErrorCode.INFRA_MISSING
 
 
 def test_rejects_bad_key_names(client: Any) -> None:
     with pytest.raises(DdakToolError) as err:
-        fill_secret(client, SECRET, ["secret_key"])
+        fill_secrets(client, ["secret_key"], IDS)
     assert err.value.code is ErrorCode.CONFIG_INVALID
