@@ -13,7 +13,9 @@ from ddak.cloud.build.codebuild import (
     GitSource,
     S3Source,
     check_built_source,
+    docker_hub_repo,
     exported_names,
+    platform_buildspec,
     read_digests,
     run_build,
     start_build,
@@ -106,6 +108,7 @@ def test_start_build_pins_github_commit_and_sends_plaintext_overrides(
         {"build": {"id": BUILD_ID}},
         {
             "projectName": "ddak-build",
+            "buildspecOverride": platform_buildspec(),  # 코드 소유 buildspec을 매번 보낸다
             "sourceTypeOverride": "GITHUB",
             "sourceLocationOverride": REPO_URL,
             "sourceVersion": SHA,  # 브랜치 이름이 아니라 커밋 SHA
@@ -123,6 +126,7 @@ def test_start_build_s3_fallback_pins_version_and_sends_revision(
         {"build": {"id": BUILD_ID}},
         {
             "projectName": "ddak-build",
+            "buildspecOverride": platform_buildspec(),  # 코드 소유 buildspec을 매번 보낸다
             "sourceTypeOverride": "S3",
             "sourceLocationOverride": "ddak-source/flaskr/run-1.zip",
             "sourceVersion": "v-123",
@@ -276,3 +280,26 @@ def test_read_digests_requires_all_three_per_tier() -> None:
     tagged = [{**v, "value": "latest"} if v["name"].endswith("_INDEX") else v for v in _exported()]
     with pytest.raises(DdakToolError):
         read_digests({"exportedEnvironmentVariables": tagged}, ["was"])
+
+
+def test_platform_buildspec_is_package_file() -> None:
+    text = platform_buildspec()
+    assert text.startswith("# 플랫폼 소유 buildspec")
+    assert "version: 0.2" in text
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("gerbera/flaskr", "docker.io/gerbera/flaskr"),  # 인프라 출력 형식
+        ("docker.io/gerbera/flaskr", "docker.io/gerbera/flaskr"),
+    ],
+)
+def test_docker_hub_repo_from_infra_output(value: str, expected: str) -> None:
+    assert docker_hub_repo(value) == expected
+
+
+@pytest.mark.parametrize("value", ["flaskr", "gerbera/flaskr:latest", "ghcr.io/g/f", "Gerbera/f"])
+def test_docker_hub_repo_rejects_bad_output(value: str) -> None:
+    with pytest.raises(DdakToolError):
+        docker_hub_repo(value)

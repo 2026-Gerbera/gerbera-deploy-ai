@@ -166,3 +166,17 @@ def test_s3_fallback_passes_without_resolved_source_version() -> None:
     got = _build(client, ["web"], source=s3)
     assert "resolvedSourceVersion" not in client.batch_get_builds(ids=[got.build_id])["builds"][0]
     assert got.revision == SHA
+
+
+def test_fake_codebuild_fails_without_buildspec_override() -> None:
+    client = FakeCodeBuild()
+    built = client.start_build(
+        projectName="ddak-build",
+        sourceVersion=SHA,
+        environmentVariablesOverride=[
+            {"name": "BUILD_TIERS", "value": "web"},
+            {"name": "SOURCE_REVISION", "value": SHA},
+        ],
+    )
+    status = client.batch_get_builds(ids=[built["build"]["id"]])["builds"][0]["buildStatus"]
+    assert status == "FAILED"

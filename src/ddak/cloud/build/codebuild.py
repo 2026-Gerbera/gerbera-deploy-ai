@@ -6,7 +6,10 @@
 - 빌드 뒤 실제로 빌드한 소스가 요청과 같은지 확인한다. GitHub는 resolvedSourceVersion(커밋 SHA),
   S3는 resolvedSourceVersion이 채워지지 않으므로(API 문서 "For Amazon S3, this does not apply")
   빌드의 sourceVersion(객체 버전 ID)과 비교한다. 빌드한 커밋 SHA를 BuildResult.revision으로 준다.
-- 플랫폼 소유 buildspec만 쓴다. buildspecOverride는 보내지 않는다(배포 역할에서도 막는다).
+- 플랫폼 소유 buildspec(이 패키지의 buildspec.yml)을 매 빌드 buildspecOverride로 보낸다.
+  Terraform 프로젝트의 기본 buildspec은 실패 전용(cloud/infra/policy.py
+  OVERRIDE_REQUIRED_BUILDSPEC)이고, StartBuild IAM은 buildspec override가 없으면 거부한다.
+  앱 저장소의 buildspec.yml은 어느 경로로도 실행되지 않는다.
 - override env는 PLAINTEXT 값만 보낸다. buildspec 첫 줄이 같은 형식을 다시 검사한다
   (research/IAM E32: env 타입을 SECRETS_MANAGER로 바꿔 push 토큰을 끌어오는 경로 차단).
   그래서 정규식은 토큰 모양이 통과하지 못할 만큼 좁게 둔다. RELEASE_ID는 run ID 형식만.
@@ -21,10 +24,12 @@
 from __future__ import annotations
 
 import contextlib
+import functools
 import re
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from importlib.resources import files
 from typing import Any, Protocol
 
 from ddak.cloud.build.registries import PLATFORMS, check_digest
@@ -126,6 +131,7 @@ def start_build(
     try:
         response = client.start_build(
             projectName=project,
+            buildspecOverride=platform_buildspec(),
             **source_args,
             environmentVariablesOverride=[
                 {"name": ENV_TIERS, "value": ",".join(tiers), "type": "PLAINTEXT"},
@@ -241,6 +247,22 @@ def _source_override(source: BuildSource) -> dict[str, str]:
     }
 
 
+@functools.cache
+def platform_buildspec() -> str:
+    """코드 소유 buildspec 원문(StartBuild buildspecOverride로 보낸다)."""
+    return files("ddak.cloud.build").joinpath("buildspec.yml").read_text(encoding="utf-8")
+
+
+def docker_hub_repo(image_repository: str) -> str:
+    """인프라 출력 image_repository(`<네임스페이스>/<저장소>`) → IMAGE_REPO(`docker.io/...`)."""
+    value = (
+        image_repository
+        if image_repository.startswith("docker.io/")
+        else ("docker.io/" + image_repository)
+    )
+    return check_image_repo(value)
+
+
 def check_image_repo(image_repo: str) -> str:
     """push 대상 저장소 형식(buildspec과 같은 규칙). 태그·digest·자격증명이 섞이면 거부한다."""
     if not _IMAGE_REPO.fullmatch(image_repo):
@@ -288,7 +310,9 @@ __all__ = [
     "TierDigests",
     "check_built_source",
     "check_image_repo",
+    "docker_hub_repo",
     "exported_names",
+    "platform_buildspec",
     "read_digests",
     "run_build",
     "start_build",
