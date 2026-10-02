@@ -1,0 +1,203 @@
+{
+  "source": "fake",
+  "roundtrip": [
+    {
+      "phase": "v1",
+      "source_sha": "5dc92a83e0fba60060e60a6310762a17954b39da",
+      "candidate_sha": "70fa9656066f468a1eeeef6c8775cb77540c09e3",
+      "trigger": "manual",
+      "image": "fixture.invalid/flaskr@sha256:fd48f6d3b036701bb71d86ca1e83f9c6bde97ea978ac84152e9e7612a728c339",
+      "approved_to_record_s": 1.1438730420049978,
+      "request_to_record_s": 1.3818603750114562,
+      "simulated_approval_s": 0.0013953750021755695
+    },
+    {
+      "phase": "v2-image-box",
+      "source_sha": "6bdb808de14b115168ac19a6a823d7a00221aff0",
+      "candidate_sha": "c8a1c3dab2d256fa4bdc9808d88812d451ae8d72",
+      "trigger": "auto",
+      "image": "fixture.invalid/flaskr@sha256:89970b4ea034b9d96bc61e52630cc41f29bf25de70d205af2ceb0b17c62f12ef",
+      "approved_to_record_s": 1.2958497499930672,
+      "request_to_record_s": 1.4345797499991022,
+      "simulated_approval_s": 0.001466665999032557
+    },
+    {
+      "phase": "v1-redeploy",
+      "source_sha": "5dc92a83e0fba60060e60a6310762a17954b39da",
+      "candidate_sha": "196d36b201e02e8c300a974fef84f59b8e94a7fc",
+      "trigger": "manual",
+      "image": "fixture.invalid/flaskr@sha256:fd48f6d3b036701bb71d86ca1e83f9c6bde97ea978ac84152e9e7612a728c339",
+      "approved_to_record_s": 1.2529020419897279,
+      "request_to_record_s": 1.3855156249919673,
+      "simulated_approval_s": 0.0014598749985452741
+    }
+  ],
+  "total_s": 4.49897562499973,
+  "registry_missing": {
+    "acquire_deploy_lock": {
+      "logic": "O1"
+    },
+    "build_image": {
+      "logic": "C2",
+      "local": "O1",
+      "cloud": "C2"
+    },
+    "cleanup": {
+      "logic": "C1",
+      "local": "O1",
+      "cloud": "C1"
+    },
+    "collect_diagnostics": {
+      "logic": "C3",
+      "local": "O1",
+      "cloud": "C3"
+    },
+    "compare_env_results": {
+      "logic": "O3"
+    },
+    "diagnose_parity_gap": {
+      "logic": "O3"
+    },
+    "discover_existing": {
+      "logic": "C1"
+    },
+    "generate_dockerfile": {
+      "logic": "O3"
+    },
+    "generate_infra": {
+      "logic": "C1"
+    },
+    "patch_config": {
+      "logic": "O3"
+    },
+    "patch_db_access": {
+      "logic": "O3"
+    },
+    "patch_storage": {
+      "logic": "O3"
+    },
+    "preflight_check": {
+      "logic": "O1",
+      "local": "O1",
+      "cloud": "C1"
+    },
+    "prepare_storage": {
+      "logic": "O1",
+      "local": "O1",
+      "cloud": "C2"
+    },
+    "push_image": {
+      "logic": "C2"
+    },
+    "record_deploy_log": {
+      "logic": "O1"
+    },
+    "reset_demo_state": {
+      "logic": "O1",
+      "local": "O1",
+      "cloud": "C2"
+    },
+    "smoke_test": {
+      "logic": "O3",
+      "local": "O3",
+      "cloud": "C3"
+    },
+    "sync_env_to_cloud": {
+      "logic": "C2",
+      "cloud": "C2"
+    },
+    "validate_dockerfile": {
+      "logic": "O3",
+      "ui": "C3"
+    },
+    "watch_post_deploy": {
+      "logic": "C3",
+      "local": "O1",
+      "cloud": "C3"
+    }
+  },
+  "implemented_outside_registry": {
+    "acquire_deploy_lock": "Store.acquire",
+    "record_deploy_log": "Store.finish",
+    "preflight_check": "O1 운영 스크립트",
+    "reset_demo_state": "O1 운영 스크립트"
+  },
+  "missing_real_tools": {
+    "build_image": {
+      "logic": "C2",
+      "local": "O1",
+      "cloud": "C2"
+    },
+    "cleanup": {
+      "logic": "C1",
+      "local": "O1",
+      "cloud": "C1"
+    },
+    "collect_diagnostics": {
+      "logic": "C3",
+      "local": "O1",
+      "cloud": "C3"
+    },
+    "compare_env_results": {
+      "logic": "O3"
+    },
+    "diagnose_parity_gap": {
+      "logic": "O3"
+    },
+    "discover_existing": {
+      "logic": "C1"
+    },
+    "generate_dockerfile": {
+      "logic": "O3"
+    },
+    "generate_infra": {
+      "logic": "C1"
+    },
+    "patch_config": {
+      "logic": "O3"
+    },
+    "patch_db_access": {
+      "logic": "O3"
+    },
+    "patch_storage": {
+      "logic": "O3"
+    },
+    "prepare_storage": {
+      "logic": "O1",
+      "local": "O1",
+      "cloud": "C2"
+    },
+    "push_image": {
+      "logic": "C2"
+    },
+    "smoke_test": {
+      "logic": "O3",
+      "local": "O3",
+      "cloud": "C3"
+    },
+    "sync_env_to_cloud": {
+      "logic": "C2",
+      "cloud": "C2"
+    },
+    "validate_dockerfile": {
+      "logic": "O3",
+      "ui": "C3"
+    },
+    "watch_post_deploy": {
+      "logic": "C3",
+      "local": "O1",
+      "cloud": "C3"
+    }
+  },
+  "required_pipeline_missing": [
+    "build_image",
+    "compare_env_results",
+    "smoke_test"
+  ],
+  "operational_gaps": [
+    "watch.py 단독 기본 main→prod 정정 요청(O2); app 조립은 저장 설정 반영",
+    "실제 Docker/AWS/LLM 및 사람 승인 소요 시간 미검증"
+  ],
+  "tag_kind": "annotated v1, lightweight v2",
+  "evidence": "followup4-20261002/reviewed.log"
+}

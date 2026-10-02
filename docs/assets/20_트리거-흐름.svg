@@ -27,7 +27,7 @@
 <text x="340.0" y="312" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#0F6E56">계획 · AI 패치 제안 → 사람 승인 · 채팅 질문 답변</text>
 <rect x="110" y="388" width="460" height="56" rx="4" fill="#EEEDFE" stroke="#534AB7" stroke-width="1"/>
 <text x="340.0" y="408" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#3C3489">ai-prod 브랜치 = 배포 후보</text>
-<text x="340.0" y="428" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#534AB7">prod merge + 승인 패치 커밋, 이력 보존</text>
+<text x="340.0" y="428" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#534AB7">merge 커밋 하나 = 승인 트리, 이력 보존</text>
 <rect x="110" y="504" width="460" height="56" rx="4" fill="#E1F5EE" stroke="#0F6E56" stroke-width="1"/>
 <text x="340.0" y="524" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#085041">이미지 빌드 (CI)</text>
 <text x="340.0" y="544" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#0F6E56">ai-prod 커밋 SHA로 고정, 라벨에 SHA 기록</text>

@@ -39,7 +39,7 @@
 | 인프라 | Terraform도 AI가 짠다(플랫폼까지 전부, 공유 RDS 안에 앱 DB·계정). IAM은 AI 설계 → 사람 승인 → 생성, 앱 역할·DB 계정은 최소 권한. 테스트 때 권한은 넓게. 흐름(💭): `generate_infra` → `validate_infra` → `plan_infra` → 사람 승인 → `apply_infra`, 자동 apply 없음. 초기 배포 결과는 환경 정보로 기록하고 개선 배포는 코드가 읽어 주입한다. Terraform state는 `terraform output -json`으로만 읽고 LLM에 넣지 않는다. |
 | 이미지 | CodeBuild 빌드 → 기본 저장소 Docker Hub(ECR은 옵션 어댑터). amd64·arm64 공통 index로 배포하며 index와 실제 플랫폼 digest를 구분한다. 배포는 digest 고정. Dockerfile이 없으면 AI 초안 → 정적 검사 + 빌드 확인 → 사람 승인 → 저장·재사용(✅ 9/30). |
 | TLS | 클라우드 HTTPS 필수(`ensure_tls`·`verify_tls`는 cloud만). 온프렘 외부 공개는 Cloudflare Tunnel ✅(10/1 밤 (2), EC2 frp 기각. 도메인 구매 전 quick tunnel, 구매 후 이름 있는 터널. 파이프라인은 `public_url`만 읽음)이고, 온프렘 쿠키 Secure·ProxyFix는 `public_url` 스킴을 따른다(https면 켬, http면 끔, 외부 접속은 https라 켬, ✅ 10/1, hop 수 💭). 로컬 컨테이너 직접 HTTPS는 ⏸ 보류(`http://localhost:8080`은 로컬 컨테이너 모드 포트). 도메인 `gerbera.cloud`는 구매 예정(DNS Cloudflare, 클라우드 레코드는 DNS만 → ALB)이고, 사람이 관리 페이지에 입력하는 설정값이며 AI는 바꾸지 못한다. |
-| DB·샘플 앱 | MySQL(두 환경). flaskr 기반(v1 익명 게시판 → 라이브 v2 로그인). 디렉토리 `apps/sample-app`은 가칭. |
+| DB·샘플 앱 | MySQL(두 환경). flaskr 기반(v1 익명 게시판 → 💭 v2 미정, 로그인은 후보). 10/2는 1차 Flask 기본 + 이미지·박스 파이프라인 E2E, 2차 실제 로직 LLM 분석·패치·인프라 생성 검증. 디렉토리 `apps/sample-app`은 가칭. |
 | 코드 수정 토글 | AI 설정 패치 P0. 일반 실행 기본 OFF 유지, 골든 데모 ON. 지원 패턴 2~3종만 승인 후 빌드 사본에 적용한다. |
 
 ## 디렉토리와 담당 (2026-09-30 정리, 10/1 갱신)
@@ -87,6 +87,8 @@ src/ddak/
 
 ## 최신 실행 전제
 
+- 제품은 `validate_infra` → `plan_infra` → 한 화면의 infra 승인 → foundation(state bucket + app/build 권한 경계) → platform apply 순서로 실행합니다. bucket이 없으면 local backend plan을 승인한 뒤 코드가 SDK로 bucket을 만들고 platform local apply 후 remote backend로 state를 이전합니다. 사람이 미리 foundation/platform을 apply하는 전제는 폐기합니다. 사람의 사전 준비는 AWS 자격증명과 도메인 구매입니다. AI 개발 에이전트는 Terraform을 직접 실행하지 않으며, 승인 뒤 제품 코드가 실행하는 경로와 구분합니다. 실제 생성기의 O2 연결은 아직 미완이고 AWS 전체 완료를 의미하지 않습니다.
+
 - 승인 UI는 한 화면·한 번 클릭이며 patch/deploy/infra 등 대상별 해시·기록을 분리한다. 재사용 패치는 프로젝트와 원본·diff·수정본 해시를 다시 확인한다.
 - 변경 탐지는 환경별 마지막 성공 배포의 원본 파일 해시 목록과 비교한다. git 커밋은 필수가 아니다. 승인 뒤 수정본을 빌드 소스로 업로드한다.
 - 데모는 관리 페이지·프로젝트·연결 설정·v1 배포가 준비된 상태에서 시작한다.
@@ -99,7 +101,7 @@ src/ddak/
 - `.env`, `.env.*`, `.secrets/`, `*.pem`, `*.key`, tfstate, `~/.aws`, `~/.ssh`, `~/.claude`의 자격증명을 읽지 않는다. 비밀값을 출력하지 않는다.
 - 커밋 메시지와 PR에 AI attribution을 쓰지 않는다: AI 공동 작성자 트레일러, AI 생성 표시 문구, 로봇 이모지 표시, 세션 링크 트레일러.
 - `--no-verify`와 `GIT_AUTHOR_*`/`GIT_COMMITTER_*`로 검사·신원을 우회하지 않는다. main에 직접 push하지 않는다(브랜치+PR).
-- AI 에이전트는 force push, `git config` 변경, PR merge, 태그, `terraform apply/destroy`, AWS 리소스 삭제, 콘솔 수동 변경을 하지 않는다(사람만 한다). 에이전트는 `make tf-plan`까지만 한다. 제품의 `apply_infra`(사람 승인 뒤 코드가 실행)와는 별개 규칙이다.
+- AI 에이전트는 force push, `git config` 변경, PR merge, 태그, AWS 리소스 삭제, 콘솔 수동 변경을 하지 않는다(개발 도구 조작은 사람만 한다). AI 개발 에이전트는 init·validate·plan·apply·destroy 등 Terraform을 직접 실행하지 않는다. 제품의 검증·plan·승인 뒤 코드 실행은 별개 규칙이다.
 - 제품이 만든 AI Terraform 생성물(`var/infra/`)을 AI 에이전트가 팀 저장소에 커밋하지 않는다. 리뷰용으로 남길 때는 사람이 자기 이름으로 커밋한다.
 - AI(`ddak.core.ai`, LLM·Jev SDK) import는 `plan/analyze`, `plan/planner`, `plan/patch`, `plan/dockerfile`(generate.py), `cloud/infra/tools/generate_infra`, `verify/diagnose`, `verify/report`와 `core/ai` 자신만 한다. `executor`, `cd`, `cloud/deploy`·`tls`·`health`·`build`, `onprem/*`, `ops`, `web`, `integrations`, 검사기(`plan/validate`, `plan/dockerfile/validate.py`, `cloud/infra`의 탐지·검사·plan·apply·providers)는 금지다(import-linter 계약 1·2·5·7). AI 툴 9개 밖에서 `call_ai`를 부르지 않는다.
 - 툴 디렉토리(`plan`, `cloud`, `onprem`, `cd`, `verify`, `ops`)끼리 import하지 않는다(예외: `cd/dispatch.py` → `cloud.deploy`·`onprem.deploy` 공개 이름, provider 구현 → `cd/interface.py`). 실행기·웹·코어는 툴 디렉토리를 import하지 않는다(레지스트리 이름으로만 부른다, 계약 3·4).

@@ -40,7 +40,7 @@
 ## 4. 후보 생성 (야간 추가, 아침 검토 필요)
 
 - 운영자가 연결한 앱 전용 checkout에서 원격 prod를 fetch하고 승인 source_sha의 계보·원본 manifest를 확인한다.
-- 격리 worktree에서 기존 ai-prod 이력에 prod SHA를 merge한다. merge/패치 커밋 전 검사, staged·작업 사본·커밋 트리 대조 후 고정 후보 SHA를 일반 push한다. 사용자 Git 신원을 그대로 사용한다.
+- 격리 worktree에서 기존 ai-prod 이력에 prod SHA를 merge한다. 승인 트리를 고정한 merge 커밋 하나 생성 전 검사, staged·작업 사본·커밋 트리 대조 후 고정 후보 SHA를 일반 push한다. 사용자 Git 신원을 그대로 사용한다.
 - supplied candidate_sha도 원격 prod/ai-prod 계보·manifest·비밀검사를 빌드 전에 거친다.
 - 최초 구현은 충돌 시 재패치 제안으로 중단했으나 **수정 라운드 1에서 폐지**했다. 아래 §8의 승인 트리 확정 방식이 현재 기준이다. 기존 conflict 조회 API는 후속 수정 2에서 제거했으며 get_release의 merge_conflicts를 사용한다.
 - 취소는 다음 커밋/push 전 guard에서 차단한다. 이미 실행 중인 Git 명령은 종료를 확인하고 `candidate-attempt.json`, 완료 후보는 `candidate.json`에 남긴다. 빌드는 시작하지 않는다.
@@ -56,11 +56,15 @@
 - 과거 실행은 신규 export가 없어도 기존 승인·plan·패치·릴리스에서 조회한다. 복원 불가능한 필드는 unavailable_fields로 표시한다. 재실행/재승인은 자동 복원하지 않는다.
 - 독립 검토 1회: 도메인 전용 입력의 단일 대상 호환, 과거 기록 조회, 버전 누락 덮어쓰기를 교정했다.
 - 서윤 요청: 화면 코드의 `.store.run/list_runs/environments/approvals/project_settings/save_project_settings` 호출을 대응 공개 API로 교체. 웹 화면·템플릿은 야간에 수정하지 않았다. 이 내부 API는 인증·인가를 대신하지 않는다. patch 원문 표시에는 기존 이스케이프·redaction을 유지한다.
-- 준석 요청: settings의 auto_detect/watch_branch를 감시 구성에 반영하고 source_sha/targets/trigger를 컨텍스트에 주입. watch.py는 수정하지 않았다.
+- 준석 요청: 앱 조립부는 저장된 project_settings의 watch_branch를 Watcher에 공급 중이다. watch.py standalone 기본 main→prod 정정과 source_sha/targets/trigger 취합은 준석님 요청으로 유지하며 watch.py는 이 문서 작업에서 수정하지 않았다.
 
 ## 6. C1 연결 (야간 추가, 아침 검토 필요)
 
-- `terraform/foundation`에 state 버킷·앱/빌드 권한 경계 2개를 추가했다. 사람만 적용하며 deployer 역할은 외부 전제다. 기존 SDK foundation 경로와 중복 적용하지 않는다.
+제품은 `validate_infra` → `plan_infra` → 한 화면의 infra 승인 → foundation(state bucket + app/build 권한 경계) → platform apply 순서로 실행합니다. bucket이 없으면 local backend plan을 승인한 뒤 코드가 SDK로 bucket을 만들고 platform local apply 후 remote backend로 state를 이전합니다. 사람이 미리 foundation/platform을 apply하는 전제는 폐기합니다. 사람의 사전 준비는 AWS 자격증명과 도메인 구매입니다. AI 개발 에이전트는 Terraform을 직접 실행하지 않으며, 승인 뒤 제품 코드가 실행하는 경로와 구분합니다. 실제 생성기의 O2 연결은 아직 미완이고 AWS 전체 완료를 의미하지 않습니다.
+
+💭 v2 기능은 미정이며 로그인은 후보입니다. 정준우의 10/2 검증은 1차 Flask 기본 앱에 이미지·박스를 추가한 파이프라인 E2E, 2차 실제 로직의 LLM 분석·패치·인프라 생성 검증으로 나눕니다. 1차 결과로 실제 LLM·AWS 전체 완료를 주장하지 않습니다.
+
+- `terraform/foundation`에 state 버킷·앱/빌드 권한 경계 2개를 추가했다. 현행은 제품 infra 승인 뒤 코드가 적용하며 사람 사전 apply 전제는 폐기했다. 기존 SDK foundation 경로와 중복 적용하지 않는다.
 - `validate_infra`, `plan_infra`, `apply_infra` 모델·등록과 run별 `InfraBinding`을 추가했다. validate/plan은 승인 전, apply는 승인된 계획에서 실행한다. FAKE는 명시적 fixture runner가 필요하다.
 - RunContext refresh는 platform/app 출력 허용목록·타입·sensitive를 검사한다. 앱 시크릿은 `app_secret_arn_<KEY>`를 쓰며 기존 `secret_arn`은 호환용으로만 유지한다. flat/nested 기존 TLS·온프렘 설정을 보존한다.
 - `DdakToolError.needs_human`은 기본 False인 선택 인자다. Terraform 시작 뒤 적용/출력 확인 실패는 True로 전달하고 실행기가 앱 롤백으로 완료 처리하지 않는다. 실패한 cloud와 잠금은 NEEDS_HUMAN으로 남으며 성공한 local 기록은 유지한다.
@@ -68,7 +72,7 @@
 - CD ensure_tls 툴은 app 조립부가 C1 공개 함수를 주입받는다. C2 AwsProvider 파일은 수정하지 않았고 그 직접 메서드는 아직 미구현이다. `apply` 모드는 계속 거부한다. 가짜 출력에는 fixture 라벨을 붙인다.
 - 독립 검토 1회에서 Terraform 부분 실패를 앱 롤백 완료로 오판하는 문제와 flat 출력 호환 문제를 발견·교정했다. 서비스 전체 경로로 apply 실패/출력 실패·잠금 유지·반대 환경 성공을 검증했다. TLS 등록 뒤 순환 import도 교정했다.
 - `contracts-update`, Terraform fmt/정적 HCL 검사, 전체 CI **1,013 passed, 1 skipped, 4 deselected / 45.2초** 통과. 실 AWS·Terraform init/plan/apply·실제 443 접속은 실행하지 않았다.
-- 준석 요청: generate_infra C-20 파일/변수/출력 주소 계약과 run별 실 세션 조립이 미연결이다. app/platform은 별도 승인 run이며 현재 카탈로그 TLS→apply 순서는 첫 플랫폼 생성에 맞지 않아 생성 시나리오를 별도로 합의해야 한다.
+- 준석 요청: generate_infra C-20 파일/변수/출력 주소 계약과 run별 실 세션 조립이 미연결이다. 초기 foundation/platform은 한 화면 infra 승인 뒤 제품 실행, 앱 개선 배포는 별도 run이다. 후속3에서 첫 플랫폼은 승인 전에 app 조립이 apply→infra_ready→build/TLS 순서를 구성한다. 실제 생성기 binding 연결 검증은 남아 있다.
 - C2/C3 요청: CodeBuild Git sourceVersion, AWS 배포 구현, TLS/HSTS·앱 기능 검증을 취합한다. 카탈로그 ensure_tls의 기존 변경 영향/2700초 상한은 보수적인 옛 메타이며 확인 전용 의미에 맞춘 정리는 별도 공유 변경 요청이다.
 
 ### 작업4 검증 보완 (문서 정리 중)

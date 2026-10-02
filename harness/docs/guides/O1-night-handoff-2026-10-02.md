@@ -18,7 +18,7 @@ VM 시험 완료 후 VM/SSH 재접속, 실제 AWS·Terraform apply/destroy·원�
 | 3. Git 기록 | DONE(로컬 bare 검증) | source/candidate SHA·성공 환경 태그·선택 전체 성공 때 main FF | 앱 저장소 매핑·권한·실 원격 검증 |
 | 4. ai-prod 후보 | DONE(로컬 bare 검증) | 승인 트리 확정·이력 보존 merge·비밀검사·고정 SHA 일반 push | O3 재사용 적합성 판단·C2 sourceVersion |
 | 5. WP11 | 부분 | 공개 Python 조회·버전 설정 API·실제 저장값 승인 스냅샷·C-18 전달 | O2 감시→prepare·C3 HTTP/화면 |
-| 6. C1 | 부분 | 기반 Terraform 파일·출력 허용목록·인프라 툴/refresh·443 검사 | 생성기 계약·실 세션·사람 기반 apply·실 AWS 검증 |
+| 6. C1 | 부분 | 기반 Terraform 파일·출력 허용목록·인프라 툴/refresh·443 검사 | 생성기 계약·실 세션·제품 승인 기반 foundation/platform apply·실 AWS 검증 |
 | 7. 문서 | DONE | 가이드·결정·수정 기록·벤치마크·3개 커밋 계획 | 아래 담당자/사람 행동 |
 
 ## 수정 라운드 결과
@@ -76,10 +76,10 @@ Gitleaks를 설치해 Git 변경을 검사한다. 그 job이 후보 생성의 �
 | 담당 | 우선 전달할 내용 |
 |---|---|
 | **서윤 — 우선** | **웹 설정 저장을 공개 API `save_project_settings(..., expected_version=...)`로 교체.** store 일부 키 병합은 데이터 손실 방어만 하며 stale 화면 버전 검증을 대신하지 않음. 조회도 service 공개 API로 교체 |
-| 준석 | onprem/inventory 모델을 provider 기준으로 맞춘 변경 확인. **기존 watch.py 감시 브랜치 main→prod 변경은 준석님 몫**. auto_detect/watch_branch·targets/trigger/source_sha·인벤토리를 prepare에 주입, default_targets는 접수 시만 사용, 변경 탐지는 마지막 성공 source_sha |
+| 준석 | onprem/inventory 모델을 provider 기준으로 맞춘 변경 확인. **기존 watch.py standalone 기본 main→prod 변경은 준석님 몫**. 앱 조립부는 저장된 project_settings의 watch_branch를 Watcher에 공급 중이며, auto_detect·targets/trigger/source_sha·인벤토리 취합을 확인, default_targets는 접수 시만 사용, 변경 탐지는 마지막 성공 source_sha |
 | 준석(야간 최소 수정) | `plan/validate/assemble.py`의 has_local 조건부 local_verified 제거만 수정. SignalName 유지. 구형 wait 계획 재생성 필요 |
-| 준석(C1) | generate_infra C-20 파일/변수/출력 주소 계약, platform/app 별도 승인 run, 실 세션·영속 runtime·Analyzer·bind_infra 조립. 현재 TLS→apply 순서는 플랫폼 첫 생성에 맞지 않아 합의 필요 |
-| 민영 | **재사용 패치가 새 prod에 안 맞으면 승인 전에 재제안.** merge 충돌 자체는 실행기를 멈추지 않음. 앱 저장소 .env.example/.env.sample 허용·.env 금지, 템플릿 비밀검사 포함. smoke/compare 구현과 업무 로그인/마이그레이션 시나리오 연결 |
+| 준석(C1) | generate_infra C-20 파일/변수/출력 주소 계약, 초기 foundation/platform은 한 화면 infra 승인, 앱 개선 배포는 별도 run, 실 세션·영속 runtime·Analyzer·bind_infra 조립. 첫 플랫폼은 app 조립이 apply→infra_ready→build/TLS 순서를 승인 전에 구성. 생성기 binding 통합 필요 |
+| 민영 | **재사용 패치가 새 prod에 안 맞으면 승인 전에 재제안.** merge 충돌 자체는 실행기를 멈추지 않음. 앱 저장소 .env.example/.env.sample 허용·.env 금지, 템플릿 비밀검사 포함. smoke/compare 구현과 💭 v2 후보 시나리오 연결(로그인 미확정) |
 | 승환 | **CodeBuild sourceVersion=candidate_sha**, 실제 빌드한 커밋 SHA 결과 반환·이미지 revision 라벨. S3 VersionId 대체 경로와 구분. **공유 `cd/dispatch.py` TLS 콜백 주입 변경 공지**, C2 provider 직접 ensure_tls는 미구현. ECS/시크릿/DB·복구·index/platform digest 연결 |
 | 서윤(화면) | N/A·FAILED_VERIFY·infra_changes·STEP_SKIPPED와 환경별 결과 표시, targets/trigger·C-18/patch_meta·별도 Git 게시 실패 표시. 인증/CSRF/이스케이프 경계 유지. 앱 성공/HSTS 검증 취합 |
 | 공유 검토 | ensure_tls registry의 STATE_CHANGE/lock/2700초 메타는 유지했음. 확인 전용 의미로 정리할지 합의 필요. preflight/reset ops 등록·3티어 DB 초기화는 범위 밖 |
@@ -91,12 +91,13 @@ Gitleaks를 설치해 Git 변경을 검사한다. 그 job이 후보 생성의 �
 
 ## 사람이 진행할 일
 
+💭 v2 기능은 미정이며 로그인은 후보입니다. 정준우의 10/2 검증은 1차 Flask 기본 앱에 이미지·박스를 추가한 파이프라인 E2E, 2차 실제 로직의 LLM 분석·패치·인프라 생성 검증으로 나눕니다. 1차 결과로 실제 LLM·AWS 전체 완료를 주장하지 않습니다.
+
 1. 위 3개 묶음 diff를 검토·커밋하고 기존 PR을 갱신한다. 패치 OFF의 이전 패치 제거 동작을 확인한다.
 2. 요청 목록을 담당자에게 전달한다. 에이전트는 팀원에게 메시지를 보내지 않았다.
-3. 운영 앱 전용 checkout 및 `DeploymentService(repositories={project: AppRepository(path)})` 매핑을 준비한다.
-   repo_url 저장만으로 Git 쓰기가 켜지지 않는다. Gitleaks·Git 신원/권한·브랜치 보호는 실행 호스트에서 준비한다.
-4. foundation은 [수동 가이드](../../../src/ddak/cloud/infra/terraform/foundation/README.md)대로 사람이 적용한다.
-   deployer 역할·읽기/쓰기 세션·ACM/DNS 준비 및 실제 AWS 검증은 아직 남았다.
+3. 프로젝트 설정에 앱 `repo_url`·감시 브랜치를 저장한다. `ddak.app`이 전용 checkout/factory를 연결하며 수동 repositories 매핑은 필요 없다. 승인 URL과 실제 origin fetch/push URL이 다르면 거부한다. Gitleaks·실행 사용자 Git 신원/권한·브랜치 보호는 실행 호스트에서 준비한다.
+4. 사람은 AWS 자격증명과 도메인 구매를 준비한다. foundation/platform 사람 사전 apply 전제는 폐기한다.
+   [제품 실행 기준](../../../src/ddak/cloud/infra/terraform/foundation/README.md)에 따라 validate→plan→한 화면 infra 승인 뒤 코드가 foundation/platform을 적용한다. bucket이 없으면 승인된 local plan→SDK bucket 생성→platform local apply→remote backend state 이전이다. 실제 생성기 O2 연결·실 AWS 검증은 미완이다.
 5. 팀 연결 후 새 승인으로 온프렘만→클라우드만→양쪽을 검증하고 실패/복구/전체 시간을 재측정한다.
    기존 VM 시간을 수정 후 전체 파이프라인 시간으로 재사용하지 않는다.
 

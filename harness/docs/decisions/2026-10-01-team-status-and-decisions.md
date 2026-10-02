@@ -77,7 +77,7 @@ C1 일의 구현 순서(💭)는 아래 "C1 일" 절에 있다.
 | 원격 호출 | 실행기의 온프렘 provider가 was VM의 Docker를 SSH로 원격 호출한다(`DOCKER_HOST=ssh://deploy@<was>` 또는 docker context). |
 | 배포 | app-1..3을 새 digest로 하나씩 교체하고 Traefik 라벨을 붙인다. |
 | 롤백 | 실패하면 이전 digest로 되돌린다. |
-| web VM | 배포하지 않는다. 골든 패스의 v2 로그인은 WAS 템플릿만 바꾼다. |
+| web VM | 배포하지 않는다. 💭 v2 로그인 후보 예시에서는 WAS 템플릿만 바꾼다(v2 기능 미정). |
 | db VM | SSH로 접속하지 않는다. 마이그레이션은 was VM의 일회성 컨테이너가 MySQL 3306으로 접속해서 한다. |
 | 이미지 | Docker Hub에서 읽기 전용 토큰으로 pull한다. VM에는 AWS 자격증명이 없다. 멀티 아키텍처 이미지가 필수다. |
 
@@ -215,12 +215,20 @@ Codex는 `terraform apply`와 `destroy`를 하지 않는다. `make tf-plan`까�
 
 ## G. 10/1 저녁 트리거 개편 (✅) · 10/1 밤 회의로 수정 (✅)
 
+**10/2 현행 문구 정정:** 제품은 `validate_infra` → `plan_infra` → 한 화면의 infra 승인 → foundation(state bucket + app/build 권한 경계) → platform apply 순서로 실행합니다. bucket이 없으면 local backend plan을 승인한 뒤 코드가 SDK로 bucket을 만들고 platform local apply 후 remote backend로 state를 이전합니다. 사람이 미리 foundation/platform을 apply하는 전제는 폐기합니다. 사람의 사전 준비는 AWS 자격증명과 도메인 구매입니다. AI 개발 에이전트는 Terraform을 직접 실행하지 않으며, 승인 뒤 제품 코드가 실행하는 경로와 구분합니다. 실제 생성기의 O2 연결은 아직 미완이고 AWS 전체 완료를 의미하지 않습니다.
+
+💭 v2 기능은 미정이며 로그인은 후보입니다. 정준우의 10/2 검증은 1차 Flask 기본 앱에 이미지·박스를 추가한 파이프라인 E2E, 2차 실제 로직의 LLM 분석·패치·인프라 생성 검증으로 나눕니다. 1차 결과로 실제 LLM·AWS 전체 완료를 주장하지 않습니다.
+
+앱 저장소 `2026-Gerbera/gerbera-application`의 dev 단일 브랜치·옛 README는 사용자 전달상 상태(실시간 미조회)다. 전환 가이드는 [docs/20](../../../docs/20_트리거-개편-git-브랜치-기준.md#앱-저장소-전환-가이드-실제-git-조작-없음)를 따른다.
+
+준석님 본인 할 일: `watch.py` standalone 기본 감시 브랜치를 `main` → `prod`로 정정합니다. 앱 조립부는 현재 저장된 project_settings의 `watch_branch`를 Watcher에 공급하고 있으므로 이 연결과 standalone 기본값 정정 요청을 구분합니다.
+
 결정 원문: [docs/20](../../../docs/20_트리거-개편-git-브랜치-기준.md). 문서 수정 목록: [docs/21](../../../docs/21_트리거-개편-문서-수정-목록.md). 결정자 정준우.
 
-- **10/1 밤 회의 수정(✅):** (1) 브랜치 이름 `dev` → `prod`('dev'가 개발 서버처럼 들려서). 흐름은 `prod`(PR merge로 코드 반영, 브랜치 보호로 직접 push 금지) → `ai-prod`(후보, 파이프라인 전용, merge + 패치 커밋으로 이력 보존) → `main`(실제 배포된 코드, 파이프라인 전용). 환경별 롤백 기록은 태그 `deployed/onprem`·`deployed/cloud`이고 이전 `prod/onprem`·`prod/cloud` 브랜치 안을 대체한다. 릴리스 기록은 `source_sha`(쓴 `prod` 커밋, 변경 탐지 기준)와 `candidate_sha`(빌드·배포한 `ai-prod` 커밋, 이미지 라벨·롤백)를 둔다. (2) 온프렘과 클라우드를 분리한다(✅ 10/1 밤 분리): 클라우드가 온프렘 검증을 기다리는 대기 지점(`local_verified` 게이트, `ABORTED_AT_GATE`)을 없앴다. 둘 다 고르면 독립 진행·환경별 롤백이고 교차 검증은 둘 다 성공했을 때만 돈다. 아래 bullet은 이 기준으로 고쳤다.
+- **10/1 밤 회의 수정(✅):** (1) 브랜치 이름 `dev` → `prod`('dev'가 개발 서버처럼 들려서). 흐름은 `prod`(PR merge로 코드 반영, 브랜치 보호로 직접 push 금지) → `ai-prod`(후보, 파이프라인 전용, 승인 트리를 고정한 merge 커밋 하나로 이력 보존) → `main`(실제 배포된 코드, 파이프라인 전용). 환경별 롤백 기록은 태그 `deployed/onprem`·`deployed/cloud`이고 이전 `prod/onprem`·`prod/cloud` 브랜치 안을 대체한다. 릴리스 기록은 `source_sha`(쓴 `prod` 커밋, 변경 탐지 기준)와 `candidate_sha`(빌드·배포한 `ai-prod` 커밋, 이미지 라벨·롤백)를 둔다. (2) 온프렘과 클라우드를 분리한다(✅ 10/1 밤 분리): 클라우드가 온프렘 검증을 기다리는 대기 지점(`local_verified` 게이트, `ABORTED_AT_GATE`)을 없앴다. 둘 다 고르면 독립 진행·환경별 롤백이고 교차 검증은 둘 다 성공했을 때만 돈다. 아래 bullet은 이 기준으로 고쳤다.
 - 입력: GitHub 저장소 + 브랜치(기본 `prod`). 데모 저장소는 공개. 실행 위치는 지금 정준우 PC, 나중에 서버.
 - 시작 기준은 PR merge로 `prod`에 코드가 반영되는 것이다(데모: v2 PR을 prod에 merge). 준석님 기존 watch.py가 감시(main → prod 변경 요청). ① 수동 채팅 지시(자동 감지 끔) 또는 ② `prod` 새 커밋 자동 감지(10~30초 폴링, webhook 없음). 승인 관문은 그대로다.
-- 후보: run마다 `prod`를 ai-prod에 merge하고 관리 파일을 승인 build_files 트리로 확정한 merge 커밋을 일반 push한다. git 충돌은 승인 트리로 해결해서 멈추지 않고 기록만 남긴다. 재사용 패치가 새 prod에 맞지 않으면 승인 전 패치 단계에서 재제안한다. 이 커밋이 배포 후보다. ai-prod 갱신은 정준우(실행기 패치 적용 단계 확장), 패치 내용·비밀값 검사는 장민영이다.
+- 후보: run마다 `prod`를 ai-prod에 merge하고 관리 파일을 승인 build_files 트리로 확정한 merge 커밋을 일반 push한다. git 충돌은 승인 트리로 해결해서 멈추지 않고 기록만 남긴다. 재사용 패치가 새 prod에 맞지 않으면 승인 전 패치 단계에서 재제안한다. 이 merge 커밋 하나가 배포 후보다. 패치 OFF면 이전 AI 패치가 빠진다(**정준우 확인 대기**). ai-prod 갱신은 정준우(실행기 패치 적용 단계 확장), 패치 내용·비밀값 검사는 장민영이다.
 - 빌드: `ai-prod` 후보 커밋 SHA를 CodeBuild `sourceVersion`에 고정해 멀티 아키텍처 이미지를 빌드하고 라벨에 커밋 SHA를 남긴다. S3는 대체 경로다(✅ 사용자 후속 확정).
 - 대상: run마다 온프렘만 / 클라우드만 / 둘 다. 둘 다면 독립 진행(대기 지점 없음, 환경별 롤백, ✅ 10/1 밤 분리)이고 교차 검증은 둘 다 성공했을 때만.
 - 기록: 성공한 환경의 릴리스 기록에 `source_sha`(쓴 `prod` 커밋)와 `candidate_sha`(배포한 ai-prod 커밋)를 남기고, 환경별 태그 `deployed/onprem`·`deployed/cloud`를 `candidate_sha`에 붙이고 `main`을 갱신한다(롤백 기준, 트리거 아님. 한쪽만 성공했을 때 `main` 규칙은 구현 때 확정). 변경 탐지는 `source_sha`와 비교한다. 채팅은 읽기 전용 질문에도 답한다.
@@ -256,7 +264,7 @@ Codex는 `terraform apply`와 `destroy`를 하지 않는다. `make tf-plan`까�
 - 킥오프 P0 중 실행기·승인·잠금·스냅샷·온프렘 로컬 Docker는 `6788dad`에 있다. 다음 목록은 이 기록의 D이고, 킥오프 목록보다 우선한다.
 - AI는 제안만 만든다: JSON, Terraform HCL·IAM 초안, Dockerfile 초안. 실행은 검증과 사람 승인을 거친 뒤 코드가 한다. ③④⑤ 실행, 롤백, 잠금 코드는 LLM을 부르지 않는다.
 - 비밀값을 읽거나 출력하지 않는다(`.env*`, `.secrets/`, `*.pem`, `*.key`, tfstate, `~/.aws`, `~/.ssh`, `~/.claude`). SSH 키는 경로만 다루고 키 내용은 저장소, 로그, AI 입력에 넣지 않는다. 테스트용 가짜 값도 문자열을 이어 붙여 만든다.
-- 다음은 사람만 한다: **commit·push·PR 생성(Codex 한정, 10/1)**, force push, `git config` 변경, PR merge, 태그, `terraform apply/destroy`, AWS 리소스 삭제, 콘솔 수동 변경.
+- 다음은 사람만 한다: **commit·push·PR 생성(Codex 한정, 10/1)**, force push, `git config` 변경, PR merge, 태그, AWS 리소스 삭제, 콘솔 수동 변경. AI 개발 에이전트는 Terraform을 직접 실행하지 않으며 제품 승인 뒤 코드 실행과 구분한다.
 - AI attribution을 쓰지 않는다: AI 공동 작성자 트레일러, AI 생성 표시 문구, 로봇 이모지, 세션 링크. `--no-verify`나 `GIT_AUTHOR_*`로 검사를 우회하지 않는다.
 - 팀 규칙은 브랜치 + PR이다. Codex는 브랜치(`o1/<주제>` 등)만 만들고 commit·push·PR은 정준우가 한다. 다른 역할의 디렉토리나 공유 파일을 바꿀 때는 영향을 받는 담당자와 조율한다.
 - push·PR(✅ 10/1): Codex는 하지 않는다. WP 보고에 바뀐 파일·명령 결과·제안 커밋 메시지를 적으면 정준우가 커밋·push·PR을 한다. AI 사용 기록은 `docs/ai-usage/O1.md`에만 적는다.
