@@ -1,0 +1,174 @@
+{
+  "$defs": {
+    "ImageArtifact": {
+      "additionalProperties": false,
+      "properties": {
+        "index_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Index Digest",
+          "type": "string"
+        },
+        "platform_digests": {
+          "additionalProperties": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "propertyNames": {
+            "enum": [
+              "linux/amd64",
+              "linux/arm64"
+            ]
+          },
+          "title": "Platform Digests",
+          "type": "object"
+        },
+        "ref": {
+          "pattern": "^[^\\s@]+@sha256:[0-9a-f]{64}$",
+          "title": "Ref",
+          "type": "string"
+        }
+      },
+      "required": [
+        "ref",
+        "index_digest",
+        "platform_digests"
+      ],
+      "title": "ImageArtifact",
+      "type": "object"
+    },
+    "ImageObservation": {
+      "additionalProperties": false,
+      "properties": {
+        "platform": {
+          "enum": [
+            "linux/amd64",
+            "linux/arm64"
+          ],
+          "title": "Platform",
+          "type": "string"
+        },
+        "platform_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Platform Digest",
+          "type": "string"
+        }
+      },
+      "required": [
+        "platform",
+        "platform_digest"
+      ],
+      "title": "ImageObservation",
+      "type": "object"
+    },
+    "SnapshotBinding": {
+      "additionalProperties": false,
+      "properties": {
+        "build_snapshot_hash": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Build Snapshot Hash",
+          "type": "string"
+        },
+        "patch_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Patch Sha256"
+        },
+        "source_snapshot_hash": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Source Snapshot Hash",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_snapshot_hash",
+        "build_snapshot_hash"
+      ],
+      "title": "SnapshotBinding",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "previous_release[target].image_sources[tier]. 새 빌드 snapshot과 분리한다.",
+  "properties": {
+    "artifact": {
+      "$ref": "#/$defs/ImageArtifact"
+    },
+    "candidate_sha": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Candidate Sha"
+    },
+    "carried_forward": {
+      "const": true,
+      "default": true,
+      "title": "Carried Forward",
+      "type": "boolean"
+    },
+    "observation": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ImageObservation"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "release_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Release Id"
+    },
+    "snapshot": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SnapshotBinding"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "source_sha": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Sha"
+    }
+  },
+  "required": [
+    "artifact"
+  ],
+  "title": "CarriedImageSource",
+  "type": "object"
+}

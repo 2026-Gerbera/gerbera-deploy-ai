@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from botocore.exceptions import ClientError
+from hcl2 import loads
 
 from ddak.core.config import AdapterMode
 from ddak.core.contracts.context import RunContext
@@ -52,14 +53,15 @@ class _FixtureSDK:
 
 
 class _FixtureRunner:
-    def __init__(self, resource: str, attributes: dict[str, str]):
+    def __init__(self, source: str, outputs: dict[str, Any]):
+        self.outputs = outputs
         self.raw = {
             "format_version": "1.2",
             "resource_changes": [
                 {
                     "type": resource,
                     "mode": "managed",
-                    "address": f"{resource}.fixture",
+                    "address": f"{resource}.{name}",
                     "change": {
                         "actions": ["create"],
                         "after": attributes,
@@ -67,6 +69,9 @@ class _FixtureRunner:
                         "after_sensitive": {},
                     },
                 }
+                for item in loads(source)["resource"]
+                for resource, named in item.items()
+                for name, attributes in named.items()
             ],
         }
 
@@ -84,7 +89,10 @@ class _FixtureRunner:
         if verb == "validate":
             return CommandResult(0, '{"valid":true}')
         if verb == "output":
-            return CommandResult(0, "{}")
+            return CommandResult(
+                0,
+                json.dumps({k: {"value": v, "sensitive": False} for k, v in self.outputs.items()}),
+            )
         if verb not in {"fmt", "init", "apply"}:
             raise DdakToolError(ErrorCode.CONFIG_INVALID, "fixture에 없는 인프라 명령")
         return CommandResult(0, "source=fixture")
@@ -97,13 +105,52 @@ def fixture_binding(ctx: RunContext, *, root: Path, approvals: Any, guard: Any) 
     layer = "platform" if ctx.mode is RunMode.BOOTSTRAP else "app"
     resource = "aws_ecs_cluster" if layer == "platform" else "aws_secretsmanager_secret"
     name = f"ddak-{ctx.project}-fixture" if layer == "platform" else f"ddak/{ctx.project}/FIXTURE"
-    runner: Any = _FixtureRunner(resource, {"name": name})
+    source = f'resource "{resource}" "fixture" {{ name = "{name}" }}\n'
+    if layer == "platform":
+        source += """
+resource "aws_ecs_service" "fixture" {
+  name = "ddak-fixture-service"
+  cluster = aws_ecs_cluster.fixture.id
+  lifecycle { ignore_changes = [task_definition, desired_count] }
+  deployment_circuit_breaker { enable = true
+    rollback = true }
+}
+resource "aws_lb_target_group" "fixture" { name = "ddak-fixture-target" }
+resource "aws_security_group" "fixture" { name = "ddak-fixture-app" }
+resource "aws_subnet" "fixture" { cidr_block = "10.0.1.0/24" }
+"""
+        declarations = {
+            "cluster_name": ("aws_ecs_cluster.fixture.name", "string"),
+            "ecs_service_name": ("aws_ecs_service.fixture.name", "string"),
+            "target_group_arn": ("aws_lb_target_group.fixture.arn", "string"),
+            "app_security_group_id": ("aws_security_group.fixture.id", "string"),
+            "public_subnet_ids": ("[aws_subnet.fixture.id]", "list(string)"),
+        }
+        outputs = {
+            "cluster_name": name,
+            "ecs_service_name": "ddak-fixture-service",
+            "target_group_arn": (
+                f"arn:aws:elasticloadbalancing:ap-northeast-2:{_ACCOUNT}:targetgroup/fixture/abc"
+            ),
+            "app_security_group_id": "sg-fixture",
+            "public_subnet_ids": ["subnet-fixture"],
+        }
+    else:
+        declarations = {
+            "app_secret_arn_FIXTURE": ("aws_secretsmanager_secret.fixture.arn", "string")
+        }
+        outputs = {
+            "app_secret_arn_FIXTURE": (
+                f"arn:aws:secretsmanager:ap-northeast-2:{_ACCOUNT}:secret:{name}-ABC123"
+            )
+        }
+    runner: Any = _FixtureRunner(source, outputs)
     sdk = {service: _FixtureSDK() for service in ("s3", "iam", "sts")}
     session = SessionKeys("fixture-access", "fixture-value", "fixture-session")
     runtime = InfraRuntime(
         root=root,
         run_id=ctx.run_id,
-        settings=AwsSettings(ctx.project, _ACCOUNT, "ddak-fixture-state", layer, {}),
+        settings=AwsSettings(ctx.project, _ACCOUNT, "ddak-fixture-state", layer, declarations),
         lock_file=b"source=fixture\n",
         runner=runner,
         approvals=approvals,
@@ -112,7 +159,7 @@ def fixture_binding(ctx: RunContext, *, root: Path, approvals: Any, guard: Any) 
     )
     return InfraBinding(
         runtime=runtime,
-        files={"main.tf": f'resource "{resource}" "fixture" {{ name = "{name}" }}\n'},
+        files={"main.tf": source},
         mode=AdapterMode.FAKE,
         read_session=lambda: session,
         apply_session=lambda: session,

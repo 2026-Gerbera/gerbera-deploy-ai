@@ -30,10 +30,14 @@ from ddak.core.contracts.deploy_request import DeployRequest
 from ddak.core.contracts.enums import Effect, Layer, RunMode, Target
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.contracts.events import EventType, RunEvent
-from ddak.core.contracts.infra_outputs import PLATFORM_OUTPUTS, checked_outputs
+from ddak.core.contracts.infra_outputs import (
+    APP_OUTPUTS,
+    APP_SECRET_OUTPUT,
+    PLATFORM_OUTPUTS,
+    checked_cloud_outputs,
+)
 from ddak.core.contracts.plan import Plan, PlanStep
 from ddak.core.contracts.release import (
-    ImageArtifact,
     ImageObservation,
     ReleaseArtifacts,
     SnapshotBinding,
@@ -47,7 +51,7 @@ from ddak.core.store import Store, release_view
 from ddak.executor.approval_meta import check_infra_summary, encode_meta
 from ddak.executor.engine import Executor, RunResult, RunStatus, TrackStatus, check_signals
 from ddak.executor.events import EventBus
-from ddak.executor.images import carried_images, locked_database
+from ddak.executor.images import carried_image_source, carried_images, locked_database
 from ddak.executor.selection import select_plan
 
 ApprovalKind = Literal["patch", "deploy", "infra", "dockerfile", "foundation"]
@@ -96,9 +100,12 @@ def environment_release(
 
 def platform_outputs(context: RunContext) -> dict[str, Any]:
     try:
-        return checked_outputs(
-            {k: v for k, v in context.platform.get("cloud", {}).items() if k in PLATFORM_OUTPUTS},
-            "platform",
+        return checked_cloud_outputs(
+            {
+                k: v
+                for k, v in context.platform.get("cloud", {}).items()
+                if k in PLATFORM_OUTPUTS or k in APP_OUTPUTS or APP_SECRET_OUTPUT.fullmatch(k)
+            }
         )
     except (ValueError, TypeError, AttributeError):
         raise DdakToolError(ErrorCode.CONFIG_INVALID, "플랫폼 출력 형식 오류") from None
@@ -610,7 +617,7 @@ class DeploymentService:
         return self.store.project_settings(project)
 
     def get_platform_outputs(self, project: str, mode: AdapterMode) -> dict[str, Any]:
-        return checked_outputs(self.store.platform_outputs(project, mode.value), "platform")
+        return checked_cloud_outputs(self.store.platform_outputs(project, mode.value))
 
     def guard_infra(self, run_id: str, project: str) -> None:
         """승인 전에는 조회만 가능하고, 실행 중에는 해당 실행의 잠금을 확인한다."""
@@ -877,6 +884,25 @@ class DeploymentService:
             supplied.images if supplied else (),
         )
         carried_observations: dict[str, dict[str, Any]] = {}
+        # 이전 형식의 장부도 provider에는 동일한 검증된 경로로 전달한다.
+        ctx = replace(
+            ctx,
+            previous_release={
+                target: {
+                    **old,
+                    "image_sources": {
+                        **(old.get("image_sources") or {}),
+                        **{
+                            tier: carried_image_source(old, tier, target).model_dump(mode="json")
+                            for tier in carried.get(target, {})
+                        },
+                    },
+                }
+                if target in carried
+                else old
+                for target, old in previous.items()
+            },
+        )
         if ctx.release_artifacts:
             ctx = replace(
                 ctx, release_artifacts=ctx.release_artifacts.model_copy(update={"observations": {}})
@@ -1014,16 +1040,9 @@ class DeploymentService:
                 artifacts = updated.release_artifacts
                 if step.tier in carried.get(target.value, {}):
                     old = previous[target.value]
-                    origin = (old.get("image_sources") or {}).get(step.tier) or {}
-                    raw = origin.get("artifact") or (old.get("artifacts") or {}).get(
-                        "images", {}
-                    ).get(step.tier)
+                    image = carried_image_source(old, step.tier, target.value).artifact
                     observed = ImageObservation.model_validate(output["observation"])
-                    if (
-                        raw is None
-                        or ImageArtifact.model_validate(raw).platform_digests[observed.platform]
-                        != observed.platform_digest
-                    ):
+                    if image.platform_digests[observed.platform] != observed.platform_digest:
                         raise DdakToolError(
                             ErrorCode.PRECONDITION_FAILED, "이월 이미지의 플랫폼 digest가 다르다"
                         )

@@ -343,8 +343,9 @@ async def _prepare_commit(
         platform: dict[str, Any] = {}
         phase = "inventory"
         cloud_outputs = service.get_platform_outputs(target.project, settings.adapter_mode)
-        if cloud_outputs:
-            platform["cloud"] = cloud_outputs
+        if cloud_outputs or request.target != "onprem":
+            # region은 Terraform 출력·사용자 입력이 아니라 제품의 서울 고정 규약이다.
+            platform["cloud"] = {**cloud_outputs, "region": "ap-northeast-2"}
         path = os.environ.get("DDAK_ONPREM_INVENTORY")
         if request.target != "cloud" and path:
             platform["onprem"] = load_inventory(Path(path))

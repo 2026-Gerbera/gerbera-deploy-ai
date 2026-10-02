@@ -5,9 +5,9 @@ import pytest
 from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.enums import Target
 from ddak.core.contracts.errors import DdakToolError
-from ddak.core.contracts.release import ImageObservation, ReleaseArtifacts
+from ddak.core.contracts.release import CarriedImageSource, ImageObservation, ReleaseArtifacts
 from ddak.core.registry import Registry, spec_for
-from ddak.core.snapshots import preview
+from ddak.core.snapshots import digest_bytes, preview
 from ddak.executor.engine import RunStatus
 from ddak.executor.service import DeploymentService
 from tests.unit import test_deployment_service as support
@@ -39,7 +39,14 @@ def image_rig(tmp_path):
     @registry.tool("build_image")
     async def build(inp: Input, ctx: RunContext) -> Output:
         images = dict(ctx.release_artifacts.images) if ctx.release_artifacts else {}
-        images[inp.tier] = artifact(ctx.run_id + inp.tier)
+        images[inp.tier] = artifact(ctx.run_id + inp.tier).model_copy(
+            update={
+                "platform_digests": {
+                    p: digest_bytes((ctx.run_id + inp.tier + p).encode())
+                    for p in ("linux/arm64", "linux/amd64")
+                }
+            }
+        )
         return Output(release_artifacts=ReleaseArtifacts(snapshot=preview(source), images=images))
 
     @registry.tool("deploy_tier")
@@ -48,7 +55,13 @@ def image_rig(tmp_path):
     async def deploy(inp: Input, ctx: RunContext) -> Output:
         assert inp.tier in ctx.images  # 실제 provider에 빈 이미지가 전달되면 안 된다.
         calls.append((inp.target.value, inp.tier, dict(ctx.images)))
-        digest = ctx.images[inp.tier].rsplit("@", 1)[1]
+        image = ctx.release_artifacts.images.get(inp.tier) if ctx.release_artifacts else None
+        if image is None:
+            # C2가 연결할 이월 관측 규약. 새 빌드 산출물에는 이 tier가 없어야 한다.
+            previous = ctx.previous_release[inp.target.value]["image_sources"][inp.tier]
+            image = CarriedImageSource.model_validate(previous).artifact
+        assert image.ref == ctx.images[inp.tier]
+        digest = image.platform_digests["linux/arm64"]
         return Output(observation=ImageObservation(platform="linux/arm64", platform_digest=digest))
 
     @registry.tool("rollback_tier")
@@ -123,6 +136,66 @@ async def test_missing_previous_image_fails_before_approval(image_rig):
     with pytest.raises(DdakToolError, match="local/web"):
         service.prepare(p, RunContext(p.run_id, project=p.project), source)
     assert calls == [] and service.list_runs() == []
+
+
+@pytest.mark.parametrize("legacy", ["missing", "null"])
+async def test_carried_artifact_survives_prepared_restart_and_legacy_record(image_rig, legacy):
+    import json
+
+    service, source, _calls = image_rig
+    await execute(service, source, both_plan("v1-cloud", full=True), targets="cloud")
+    old = service.get_environments("demo")["cloud"]["current"]
+    expected = old["artifacts"]["images"]["web"]
+    old.pop("image_sources")  # 이전 버전 장부도 provider에는 새 고정 경로로 전달한다.
+    if legacy == "null":
+        old["image_sources"] = None
+    with service.store.connection() as db:
+        db.execute("UPDATE env_release SET current=? WHERE target='cloud'", (json.dumps(old),))
+    p = both_plan("v2-cloud")
+    service.prepare(p, RunContext(p.run_id, project=p.project, targets="cloud"), source)
+    root, registry = service.root, service.registry
+    service.close()
+    restarted = DeploymentService(registry, root)
+    try:
+        restarted.approve(p.run_id, approver="operator")
+        restarted.start(p.run_id)
+        result = await restarted.wait(p.run_id)
+        assert result.status is RunStatus.SUCCEEDED
+        assert set(result.context.release_artifacts.images) == {"was"}
+        origin = result.context.previous_release["cloud"]["image_sources"]["web"]
+        assert (
+            CarriedImageSource.model_validate(origin).artifact.model_dump(mode="json") == expected
+        )
+        current = restarted.get_environments("demo")["cloud"]["current"]
+        assert (
+            current["image_sources"]["web"]["observation"]["platform_digest"]
+            == expected["platform_digests"]["linux/arm64"]
+        )
+        assert expected["index_digest"] != expected["platform_digests"]["linux/arm64"]
+    finally:
+        restarted.close()
+
+
+@pytest.mark.parametrize("bad", ["missing", "ref", "platform"])
+async def test_invalid_carried_artifact_stops_before_approval(image_rig, bad):
+    import json
+
+    service, source, _ = image_rig
+    await execute(service, source, both_plan("v1", full=True))
+    old = service.get_environments("demo")["cloud"]["current"]
+    image = old["image_sources"]["web"]["artifact"]
+    if bad == "missing":
+        old["image_sources"]["web"].pop("artifact")
+    elif bad == "ref":
+        old["image_sources"]["web"]["artifact"] = artifact("other").model_dump(mode="json")
+    else:
+        image["platform_digests"].pop("linux/amd64")
+    with service.store.connection() as db:
+        db.execute("UPDATE env_release SET current=? WHERE target='cloud'", (json.dumps(old),))
+    p = both_plan("invalid-carried")
+    with pytest.raises(DdakToolError, match="cloud/web"):
+        service.prepare(p, RunContext(p.run_id, project=p.project), source)
+    assert p.run_id not in {r["run_id"] for r in service.list_runs()}
 
 
 async def test_changed_previous_image_after_approval_cannot_start(image_rig):

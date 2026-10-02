@@ -244,6 +244,15 @@ async def test_fake_first_infra_approval_and_execution_need_no_generator_or_aws(
             next(r.output for r in result.records if r.step_id == "deploy.infra.cloud")["source"]
             == "fixture"
         )
+        cloud = result.context.platform["cloud"]
+        assert {
+            "cluster_name",
+            "ecs_service_name",
+            "target_group_arn",
+            "app_security_group_id",
+            "public_subnet_ids",
+        } <= cloud.keys()
+        assert "region" not in service.get_platform_outputs("demo", AdapterMode.FAKE)
     finally:
         unbind_infra(p.run_id)
     with pytest.raises(DdakToolError, match="FAKE"):

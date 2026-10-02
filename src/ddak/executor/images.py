@@ -10,7 +10,7 @@ from typing import Any
 from ddak.core.config import AdapterMode
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.contracts.plan import Plan
-from ddak.core.contracts.release import ImageArtifact, SnapshotBinding
+from ddak.core.contracts.release import CarriedImageSource, ImageArtifact, SnapshotBinding
 from ddak.core.snapshots import materialize
 
 
@@ -34,6 +34,31 @@ def locked_database(source: Path, snapshot: SnapshotBinding, patch: bytes | None
         raise DdakToolError(
             ErrorCode.CONFIG_INVALID,
             "DB 배포: images.lock.json에 공식 mysql 및 두 플랫폼 digest가 필요하다",
+        ) from None
+
+
+def carried_image_source(previous: Mapping[str, Any], tier: str, target: str) -> CarriedImageSource:
+    """기존 릴리스도 읽되, provider에 전달할 출처는 계약 모델로 검증한다."""
+    try:
+        origin = (previous.get("image_sources") or {}).get(tier)
+        if origin is None:
+            artifacts = previous.get("artifacts") or {}
+            origin = {
+                "artifact": artifacts.get("images", {}).get(tier),
+                "release_id": previous.get("release_id"),
+                "source_sha": previous.get("source_sha"),
+                "candidate_sha": previous.get("candidate_sha"),
+                "snapshot": previous.get("source"),
+                "observation": artifacts.get("observations", {}).get(target, {}).get(tier),
+            }
+        source = CarriedImageSource.model_validate({**origin, "carried_forward": True})
+        if source.artifact.ref != previous["images"][tier]:
+            raise ValueError("ref mismatch")
+        return source
+    except (ValueError, KeyError, TypeError, AttributeError):
+        raise DdakToolError(
+            ErrorCode.PRECONDITION_FAILED,
+            f"{target}/{tier}: 이월 이미지 산출물 또는 digest가 잘못됐다; tier 빌드 필요",
         ) from None
 
 
@@ -63,5 +88,6 @@ def carried_images(
                     ErrorCode.PRECONDITION_FAILED,
                     f"{target}/{step.tier}: 이번 빌드와 이월할 성공 이미지가 없다; tier 빌드 필요",
                 )
+            carried_image_source(old, step.tier, target)
             result.setdefault(target, {})[step.tier] = ref
     return result

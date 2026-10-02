@@ -43,7 +43,10 @@ async def test_detected_commit_is_pinned_and_prepared(rig, monkeypatch):
         policy=FetchPolicy(root=source.parent),
     )
     assert seen[0][0].ref == sha
-    assert seen[0][1]["platform"] == {"onprem": inventory}
+    assert seen[0][1]["platform"] == {
+        "onprem": inventory,
+        "cloud": {"region": "ap-northeast-2"},
+    }
     assert seen[0][1]["cloud_domain"] == "demo.example.test"
     run = service.get_run(rid)
     assert run["status"] == "AWAITING_APPROVAL"

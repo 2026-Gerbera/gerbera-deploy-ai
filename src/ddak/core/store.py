@@ -14,7 +14,7 @@ from typing import Any
 
 from ddak.core.contracts.approval import ApprovalRecord
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
-from ddak.core.contracts.infra_outputs import checked_outputs
+from ddak.core.contracts.infra_outputs import checked_cloud_outputs
 from ddak.core.redact import redact_obj
 
 _DDL = """
@@ -52,7 +52,7 @@ def release_view(value: dict[str, Any]) -> dict[str, Any]:
     safe = redact_obj(value)
     if "platform_outputs" in value:
         # 허용 목록의 비민감 리소스 식별자는 다음 실행의 입력이다. ARN을 마스킹하지 않는다.
-        safe["platform_outputs"] = checked_outputs(value["platform_outputs"], "platform")
+        safe["platform_outputs"] = checked_cloud_outputs(value["platform_outputs"])
     for key in ("files", "source_files"):
         if key not in value:
             continue

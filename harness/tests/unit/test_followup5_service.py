@@ -182,9 +182,10 @@ async def test_platform_outputs_reach_next_request_and_fake_never_seeds_real(rig
         "a" * 40,
         policy=FetchPolicy(root=source.parent),
     )
-    assert seen == [{"cloud": outputs}]
+    expected = {**outputs, "region": "ap-northeast-2"}
+    assert seen == [{"cloud": expected}]
     assert service.approval_view(rid)["run_id"] == rid
-    assert service._load_prepared(rid).context.platform["cloud"] == outputs
+    assert service._load_prepared(rid).context.platform["cloud"] == expected
 
 
 @pytest.mark.parametrize("missing", [False, True])
