@@ -12,10 +12,9 @@ from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
-from pydantic import ConfigDict
+from pydantic import ConfigDict, field_validator
 
 from ddak import app
-from ddak.core.app_repository import AppRepository
 from ddak.core.config import Settings
 from ddak.core.contracts.base import ContractModel, ToolInput
 from ddak.core.contracts.context import RunContext
@@ -100,11 +99,25 @@ async def test_watch_manual_approval_git_roundtrip(tmp_path, monkeypatch, capsys
     git(work, "add", ".")
     git(work, "commit", "-m", "Flask base")
     v1 = git(work, "rev-parse", "HEAD")
-    git(work, "push", "origin", "prod", "HEAD:main", "HEAD:ai-prod", "HEAD:refs/tags/v1")
+    git(work, "tag", "-a", "v1", "-m", "Flask base release")
+    assert git(work, "rev-parse", "refs/tags/v1") != v1
+    git(work, "push", "origin", "prod", "HEAD:main", "HEAD:ai-prod", "refs/tags/v1")
     git(work, "switch", "-c", "ai-prod")
-    repository = AppRepository(work, allow_local=True, secret_scan=lambda path: None)
     policy = FetchPolicy(allowed_schemes=("file",), allowed_hosts=None, root=tmp_path / "intake")
-    url = "https://example.test/demo.git"  # 실제 HTTPS 연결 없음, 아래에서 local bare에만 매핑
+    url = bare.as_uri()
+    git(work, "remote", "set-url", "origin", url)
+    # 운영 설정은 HTTPS만 허용한다. 이 시험에만 로컬 bare URL을 허용한다.
+    from ddak.core.project_settings import ProjectSettings
+    from ddak.executor import service as service_module
+
+    class LocalSettings(ProjectSettings):
+        @field_validator("repo_url", mode="plain")
+        @classmethod
+        def repository_url(cls, value):
+            assert value == url
+            return value
+
+    monkeypatch.setattr(service_module, "ProjectSettings", LocalSettings)
     real_plan = app.plan_deployment
     plan_calls = []
 
@@ -129,12 +142,12 @@ async def test_watch_manual_approval_git_roundtrip(tmp_path, monkeypatch, capsys
     service = DeploymentService(
         registry,
         tmp_path / "state",
-        repositories={"demo": repository},
+        repository_factory=app._repository_factory(tmp_path / "checkouts", allow_local=True),
         planning_flow=app._manual_planning(Settings(), policy),
     )
     service.save_project_settings(
         "demo",
-        {"repo_url": url, "watch_branch": "prod", "default_targets": "both"},
+        {"repo_url": url, "watch_branch": "prod", "default_targets": "both", "auto_detect": True},
         updated_by="operator",
         expected_version=0,
     )
@@ -173,6 +186,15 @@ async def test_watch_manual_approval_git_roundtrip(tmp_path, monkeypatch, capsys
     try:
         first_started = time.monotonic()
         first = await service.request_deployment("demo", ref="v1")
+        # 수동 checkout 주입 없이 승인 대기 재시작도 조립 factory로 복구한다.
+        await service.shutdown()
+        service = DeploymentService(
+            registry,
+            tmp_path / "state",
+            repository_factory=app._repository_factory(tmp_path / "checkouts", allow_local=True),
+            planning_flow=app._manual_planning(Settings(), policy),
+        )
+        assert service.approval_view(first)["repo_url"] == url
         first_release = await deploy(first, v1, "v1", first_started)
         # 별도 개발 checkout에서 이미지/박스만 추가한다. 앱 checkout/ai-prod는 파이프라인 전용.
         dev = tmp_path / "developer"
@@ -197,7 +219,7 @@ async def test_watch_manual_approval_git_roundtrip(tmp_path, monkeypatch, capsys
         monkeypatch.setenv("DDAK_WATCH_REPO_URL", url)
         monkeypatch.setenv("DDAK_SOURCES_DIR", str(policy.root))
         monkeypatch.setattr(app.FetchPolicy, "from_env", classmethod(lambda cls: policy))
-        monkeypatch.setattr(app, "load_watch_targets", lambda: [target])  # O2 prod 전환 미연결 명시
+        assert app._watch_targets(service) == [target]
         real_watcher = app.Watcher
 
         def watcher(targets, handler, *, policy):
@@ -266,8 +288,7 @@ async def test_watch_manual_approval_git_roundtrip(tmp_path, monkeypatch, capsys
                 requested_tools & (missing.keys() - internal.keys())
             ),
             "operational_gaps": [
-                "watch.py main→prod 설정 연결(O2)",
-                "app factory의 운영 앱 checkout/repositories 매핑(O1)",
+                "watch.py 단독 기본 main→prod 정정 요청(O2); app 조립은 저장 설정 반영",
                 "실제 Docker/AWS/LLM 및 사람 승인 소요 시간 미검증",
             ],
         }

@@ -371,6 +371,8 @@ def test_watch_new_commit_runs_plan_and_stops_cleanly(
 
     monkeypatch.setattr(app_mod, "plan_deployment", fake_plan)
     monkeypatch.setattr(app_mod, "Watcher", FakeWatcher)
+    # 이 시험은 watcher→계획 연결만 격리한다. checkout은 로컬 bare E2E에서 검증한다.
+    monkeypatch.setattr(app_mod, "_repository_factory", lambda root: None)
     app = app_mod.create()
 
     async def life() -> asyncio.Task[Any]:

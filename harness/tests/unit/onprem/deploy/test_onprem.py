@@ -136,7 +136,7 @@ class FakeDocker:
                 {
                     "phase": phase,
                     "ok": self.migration_status == "ok",
-                    "current": "001_users",
+                    "current": None if phase == "precheck" else "001_users",
                     "expected": "001_users",
                     "applied": ["001_users"] if phase == "up" else [],
                     "signature": digest("schema"),

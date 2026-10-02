@@ -48,6 +48,14 @@ async def test_manual_request_prepares_pinned_run_without_starting(rig, monkeypa
         )
 
     monkeypatch.setattr(app, "resolve_head", resolve)
+    # 태그 peel은 O1 앱 저장소 경계에서 수행한다. 이 단위 시험은 네트워크를 호출하지 않는다.
+    monkeypatch.setattr(
+        service,
+        "connect_repository",
+        lambda ctx: SimpleNamespace(
+            resolve_tag=lambda ref: resolve(ctx.repo_url, ref, policy=None)
+        ),
+    )
     monkeypatch.setattr(app, "plan_deployment", plan)
     service.planning_flow = app._manual_planning(Settings(), FetchPolicy(root=source.parent))
     rid = await service.request_deployment("demo", ref=ref)

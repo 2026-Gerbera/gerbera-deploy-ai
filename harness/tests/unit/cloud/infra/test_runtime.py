@@ -355,6 +355,7 @@ def test_foundation_reuses_only_matching_owned_resources(tmp_path):
     s3.get_bucket_tagging.return_value = {
         "TagSet": [{"Key": k, "Value": v} for k, v in template["tags"].items()]
     }
+    s3.get_bucket_policy.return_value = {"Policy": json.dumps(template["bucket_policy"])}
     iam.get_policy.return_value = {"Policy": {"DefaultVersionId": "v1"}}
     iam.get_policy_version.side_effect = [
         {"PolicyVersion": {"Document": template["boundary"]}},

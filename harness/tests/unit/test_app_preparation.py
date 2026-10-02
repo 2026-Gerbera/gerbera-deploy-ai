@@ -236,3 +236,215 @@ async def test_settings_change_during_source_copy_rejects_preparation(rig, monke
     )
     assert service.get_run(rid)["status"] == "FAILED_BEFORE_DEPLOY"
     assert service.get_run(rid)["result"]["code"] == "PRECONDITION_FAILED"
+    assert service.get_run(rid)["context"]["project_settings"]["version"] == 1
+    assert service.get_run(rid)["context"]["project_settings"]["cloud_domain"] == "old.example.test"
+    assert not (service.root / "sources" / rid).exists()
+
+
+async def test_watch_targets_follow_saved_settings_without_env(rig, monkeypatch):
+    service, _source, _calls = rig
+    monkeypatch.delenv("DDAK_WATCH_REPO_URL", raising=False)
+    service.save_project_settings(
+        "demo",
+        {
+            "repo_url": "https://github.com/team/app",
+            "watch_branch": "prod",
+            "auto_detect": True,
+            "default_targets": "onprem",
+        },
+        updated_by="operator",
+        expected_version=0,
+    )
+    assert app._watch_targets(service) == [
+        app.WatchTarget("demo", "https://github.com/team/app", "prod", "local")
+    ]
+    service.save_project_settings(
+        "demo", {"auto_detect": False}, updated_by="operator", expected_version=1
+    )
+    monkeypatch.setenv("DDAK_WATCH_REPO_URL", "https://github.com/wrong/repo")
+    assert app._watch_targets(service) == []  # 저장된 OFF를 환경변수로 우회하지 않는다.
+
+
+@pytest.mark.parametrize("missing", ["build_image", "smoke_test"])
+async def test_missing_tool_keeps_plan_settings_and_removes_owned_source(rig, monkeypatch, missing):
+    import json
+
+    from ddak.core.contracts.errors import DdakToolError, ErrorCode
+    from ddak.core.registry import UnknownToolError
+
+    service, source, _ = rig
+    settings = service.save_project_settings(
+        "demo",
+        {
+            "repo_url": "https://github.com/org/app",
+            "watch_branch": "dev",
+            "default_targets": "onprem",
+        },
+        updated_by="operator",
+        expected_version=0,
+    )
+    keep = service.root / "sources" / "unrelated"
+    keep.mkdir(parents=True)
+    (keep / "keep.txt").write_text("preserve")
+
+    def plan(request, **kwargs):
+        p = support.plan(kwargs["run_id"]).model_copy(update={"mode": request.mode})
+        return SimpleNamespace(
+            plan=p, context=RunContext(p.run_id, project=p.project, mode=p.mode), source=source
+        )
+
+    registered = service.registry.get
+
+    def get(name):
+        if name == missing:
+            raise UnknownToolError(name)
+        return registered(name)
+
+    monkeypatch.setattr(service.registry, "get", get)
+    monkeypatch.setattr(app, "plan_deployment", plan)
+    rid = await app._prepare_commit(
+        service,
+        Settings(),
+        WatchTarget("demo", settings["repo_url"], "dev", "local"),
+        "b" * 40,
+        policy=FetchPolicy(root=source.parent),
+    )
+    row = service.get_run(rid)
+    assert row["status"] == "FAILED_BEFORE_DEPLOY"
+    assert row["result"]["phase"] == "prepare"
+    assert row["result"]["code"] == "CONFIG_INVALID"
+    assert row["result"]["missing_tool"] == missing
+    assert row["context"]["project_settings"]["version"] == 1
+    assert row["context"]["project_settings"]["watch_branch"] == "dev"
+    saved_plan = json.loads((service.root / "runs" / rid / "plan.json").read_text())
+    assert any(
+        s["tool"] == missing
+        for section in (saved_plan["build"], saved_plan["deploy"]["local"])
+        for s in section["steps"]
+    )
+    assert not (service.root / "sources" / rid).exists()
+    assert (keep / "keep.txt").read_text() == "preserve"
+    assert source.exists()
+    with pytest.raises(DdakToolError) as error:
+        service.approval_view(rid)
+    assert error.value.code is ErrorCode.PRECONDITION_FAILED
+
+
+async def test_failed_copy_keeps_preexisting_source_directory(rig, monkeypatch):
+    service, source, _ = rig
+    rid = "existing-copy-run"
+    destination = service.root / "sources" / rid
+    destination.mkdir(parents=True)
+    (destination / "keep.txt").write_text("preserve")
+    monkeypatch.setattr(app, "new_run_id", lambda: rid)
+
+    def plan(request, **kwargs):
+        p = support.plan(rid).model_copy(update={"mode": request.mode})
+        return SimpleNamespace(
+            plan=p, context=RunContext(rid, project="demo", mode=p.mode), source=source
+        )
+
+    monkeypatch.setattr(app, "plan_deployment", plan)
+    await app._prepare_commit(
+        service,
+        Settings(),
+        WatchTarget("demo", "https://github.com/org/app", "prod"),
+        "c" * 40,
+        policy=FetchPolicy(root=source.parent),
+    )
+    assert service.get_run(rid)["result"]["phase"] == "source"
+    assert (destination / "keep.txt").read_text() == "preserve"
+
+
+@pytest.mark.parametrize("target", ["local", "cloud"])
+async def test_first_selected_environment_bootstraps_after_other_success(rig, monkeypatch, target):
+    from ddak.core.contracts.enums import RunMode
+
+    service, source, _ = rig
+    previous = {"local": {}, "cloud": {}}
+    previous[target] = None
+    monkeypatch.setattr(app, "_previous_manifests", lambda *a: previous)
+    seen = []
+
+    def plan(request, **kwargs):
+        seen.append(request.mode)
+        p = support.plan(kwargs["run_id"]).model_copy(update={"mode": request.mode})
+        return SimpleNamespace(
+            plan=p, context=RunContext(p.run_id, project="demo", mode=p.mode), source=source
+        )
+
+    monkeypatch.setattr(app, "plan_deployment", plan)
+    rid = await app._prepare_commit(
+        service,
+        Settings(),
+        WatchTarget("demo", "https://github.com/org/app", "prod", target),
+        "c" * 40,
+        policy=FetchPolicy(root=source.parent),
+    )
+    assert seen == [RunMode.BOOTSTRAP]
+    assert service.get_run(rid)["status"] == "AWAITING_APPROVAL"
+
+
+async def test_mixed_initial_states_require_initial_target_only(rig, monkeypatch):
+    service, source, _ = rig
+    monkeypatch.setattr(app, "_previous_manifests", lambda *a: {"local": {}, "cloud": None})
+    monkeypatch.setattr(
+        app, "plan_deployment", lambda *a, **kw: pytest.fail("mixed mode must not plan")
+    )
+    rid = await app._prepare_commit(
+        service,
+        Settings(),
+        WatchTarget("demo", "https://github.com/org/app", "prod", "both"),
+        "c" * 40,
+        policy=FetchPolicy(root=source.parent),
+    )
+    row = service.get_run(rid)
+    assert row["status"] == "FAILED_BEFORE_DEPLOY"
+    assert row["result"]["code"] == "PRECONDITION_FAILED"
+    assert "대상만 선택" in row["result"]["detail"]
+
+
+async def test_cancelled_copy_finishes_before_owned_source_cleanup(rig, monkeypatch):
+    import asyncio
+    import threading
+
+    service, source, _ = rig
+    copying, release = threading.Event(), threading.Event()
+    real_copy = app.copy_source
+    rid = "cancel-copy-run"
+    monkeypatch.setattr(app, "new_run_id", lambda: rid)
+
+    def plan(request, **kwargs):
+        p = support.plan(rid).model_copy(update={"mode": request.mode})
+        return SimpleNamespace(
+            plan=p, context=RunContext(rid, project="demo", mode=p.mode), source=source
+        )
+
+    def copy(src, dest):
+        copying.set()
+        assert release.wait(5)
+        return real_copy(src, dest)
+
+    monkeypatch.setattr(app, "plan_deployment", plan)
+    monkeypatch.setattr(app, "copy_source", copy)
+    task = asyncio.create_task(
+        app._prepare_commit(
+            service,
+            Settings(),
+            WatchTarget("demo", "https://github.com/org/app", "prod"),
+            "c" * 40,
+            policy=FetchPolicy(root=source.parent),
+        )
+    )
+    try:
+        assert await asyncio.to_thread(copying.wait, 2)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+    finally:
+        release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert service.get_run(rid)["result"]["phase"] == "source"
+    assert not (service.root / "sources" / rid).exists()
+    assert source.exists()

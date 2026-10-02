@@ -64,6 +64,12 @@ def _binding(run_id: str, ctx: RunContext) -> InfraBinding:
 
 def run_validate(inp: ValidateInfraInput, ctx: RunContext) -> ValidateInfraOutput:
     binding = _binding(inp.run_id, ctx)
+    if ctx.mode is RunMode.BOOTSTRAP and binding.runtime.settings.layer == "platform":
+        if binding.mode is AdapterMode.FAKE and binding.runtime.foundation_clients is None:
+            raise DdakToolError(
+                ErrorCode.CONFIG_INVALID, "FAKE 기반 준비에는 fixture SDK가 필요하다"
+            )
+        binding.runtime.prepare_bootstrap(session=binding.read_session())
     result = binding.runtime.validate(binding.files)
     return ValidateInfraOutput(
         passed=result.passed,

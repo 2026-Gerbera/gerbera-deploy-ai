@@ -85,9 +85,11 @@ class DeploymentService:
         repositories: Mapping[str, AppRepository] | None = None,
         facts_readers: Mapping[str, FactsReader] | None = None,
         planning_flow: PlanningFlow | None = None,
+        repository_factory: Callable[[RunContext], AppRepository] | None = None,
     ) -> None:
         self.registry, self.root, self.refresh = registry, root, refresh
         self.repositories = dict(repositories or {})
+        self.repository_factory = repository_factory
         self.planning_flow = planning_flow
         root.mkdir(parents=True, exist_ok=True)
         self._lease = (root / "controller.lock").open("a")
@@ -126,6 +128,17 @@ class DeploymentService:
             await asyncio.gather(*pending.values(), return_exceptions=True)
         self.close()
 
+    def connect_repository(self, context: RunContext) -> AppRepository | None:
+        """조립부가 제공한 factory는 승인 입력을 사용해 재시작 후에도 같은 checkout을 연결한다."""
+        repository = (
+            self.repository_factory(context)
+            if self.repository_factory is not None
+            else self.repositories.get(context.project)
+        )
+        if repository is not None and context.repo_url:
+            repository.require_origin(context.repo_url)
+        return repository
+
     def prepare(
         self,
         plan: Plan,
@@ -154,6 +167,13 @@ class DeploymentService:
                     "version": settings["version"],
                 },
                 cloud_domain=validated.cloud_domain or context.cloud_domain,
+            )
+        if context.repo_url and context.project_settings.get("repo_url") not in (
+            None,
+            context.repo_url,
+        ):
+            raise DdakToolError(
+                ErrorCode.PRECONDITION_FAILED, "요청 저장소와 프로젝트 설정이 다르다"
             )
         plan = select_plan(plan, context)
         patch_meta_json = encode_meta(patch_meta)
@@ -383,7 +403,8 @@ class DeploymentService:
         *,
         context: RunContext | None = None,
         phase: str = "prepare",
-    ) -> None:
+        plan: Plan | None = None,
+    ) -> bool:
         # 외부 예외 문자열에는 저장소 URL·소스·자격증명이 있을 수 있다.
         result = {
             "phase": phase,
@@ -393,12 +414,26 @@ class DeploymentService:
         if isinstance(error, DdakToolError):
             result["detail"] = redact(error.message)
         elif isinstance(error, UnknownToolError) and error.args:
+            result["code"] = ErrorCode.CONFIG_INVALID.value
+            result["detail"] = "계획에 필요한 툴이 등록되지 않았다"
             name = str(error.args[0])
             if re.fullmatch(r"[a-z][a-z0-9_]*", name):
                 result["missing_tool"] = name
         saved = self.store.preparation_failed(run_id, project, result)
         if saved and context is not None:
             write_context(self.root / "runs", run_id, context.to_json_dict())
+        if saved and plan is not None:
+            directory = run_dir(self.root / "runs", run_id)
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / "plan.json").write_text(
+                json.dumps(
+                    redact_obj(plan.model_dump(mode="json", by_alias=True)),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                + "\n"
+            )
+        return saved
 
     def get_run(self, run_id: str) -> dict[str, Any]:
         result = self.store.run(run_id)
@@ -433,6 +468,9 @@ class DeploymentService:
     def get_approvals(self, run_id: str) -> list[ApprovalRecord]:
         self.store.run(run_id)
         return self.store.approvals(run_id)
+
+    def list_project_settings(self) -> list[dict[str, Any]]:
+        return self.store.list_project_settings()
 
     def get_project_settings(self, project: str) -> dict[str, Any] | None:
         return self.store.project_settings(project)
@@ -493,6 +531,12 @@ class DeploymentService:
         )
 
     def approval_view(self, run_id: str) -> dict[str, Any]:
+        row = self.store.run(run_id)
+        if row["status"] == "FAILED_BEFORE_DEPLOY" and (row.get("result") or {}).get("phase"):
+            raise DdakToolError(
+                ErrorCode.PRECONDITION_FAILED,
+                "준비에 실패하여 승인할 수 없다. get_run의 result에서 실패 원인을 확인한다",
+            )
         if self.store.prepared(run_id) is None:
             self.store.run(run_id)
             directory = run_dir(self.root / "runs", run_id)
@@ -534,6 +578,8 @@ class DeploymentService:
             "project": p.plan.project,
             "targets": p.context.targets,
             "trigger": p.context.trigger,
+            "repo_url": p.context.repo_url,
+            "ref": p.context.ref,
             "project_settings": dict(p.context.project_settings),
             "subjects": dict(p.requirements),
             "snapshot": p.snapshot.model_dump(mode="json"),
@@ -880,9 +926,11 @@ class DeploymentService:
         git_record: dict[str, Any] = {"status": "NOT_CONFIGURED"}
         merge_conflicts: list[str] = []
         candidate_stop = threading.Event()
-        run_repository = self.repositories.get(ctx.project)
-        git_timing_start = len(run_repository.timings) if run_repository else 0
+        run_repository = None
+        git_timing_start = 0
         try:
+            run_repository = await asyncio.to_thread(self.connect_repository, ctx)
+            git_timing_start = len(run_repository.timings) if run_repository else 0
             rollback_timeouts = {
                 target: len(tiers) * (self.registry.spec("rollback_tier").timeout_s + 2) + 2
                 for target, tiers in planned_rollback_tiers.items()
@@ -898,7 +946,7 @@ class DeploymentService:
             materialize(p.source, directory / "build-source", p.snapshot, p.patch)
             build_files = file_manifest(directory / "build-source")
             ctx = replace(ctx, build_source=str(directory / "build-source"))
-            repository = self.repositories.get(ctx.project)
+            repository = run_repository
             if ctx.source_sha and repository:
                 if ctx.adapter_mode is AdapterMode.FAKE and not repository.allow_local:
                     raise DdakToolError(
@@ -970,7 +1018,7 @@ class DeploymentService:
                 on_invoke=invoked,
                 rollback_timeouts=rollback_timeouts,
             ).run(p.plan, ctx)
-            repository = self.repositories.get(ctx.project)
+            repository = run_repository
             final_context = result.context or ctx
             if (
                 repository

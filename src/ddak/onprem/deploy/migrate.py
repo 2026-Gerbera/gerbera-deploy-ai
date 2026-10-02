@@ -82,6 +82,10 @@ def migrate_db(
             local_registry=host.local_registry,
         )
         for phase in ("precheck", "up", "verify"):
+            # DB의 현재 버전으로 판단한다. 새 컨트롤러나 연속 prepare_db 호출도
+            # 이미 적용된 up은 반복하지 않고 아래 verify로 요청 버전을 확인한다.
+            if phase == "up" and phases[0]["current"] == phases[0]["expected"]:
+                continue
             leftover = host.container(name)
             if leftover:
                 host.remove(leftover, ctx.project, "was", stop_seconds=1)

@@ -11,6 +11,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 
@@ -31,17 +32,84 @@ class AppRepository:
         allow_local: bool = False,
         timeout_s: float = 30,
         secret_scan: Callable[[Path], None] | None = None,
+        expected_url: str | None = None,
     ) -> None:
         self.secret_scan = secret_scan
+        self.expected_url = expected_url
         self.path = path.resolve(strict=True)
         self.allow_local = allow_local
         self.timeout_s = timeout_s
         self.timings: list[dict[str, Any]] = []
 
+    @classmethod
+    def connect(cls, path: Path, repo_url: str, *, allow_local: bool = False) -> AppRepository:
+        """제품 전용 checkout만 만든다. 기존 checkout의 원격을 자동 변경하지 않는다."""
+        parts = urlsplit(repo_url)
+        if (
+            parts.username
+            or parts.password
+            or parts.query
+            or parts.fragment
+            or any(c.isspace() for c in repo_url)
+            or not (
+                (parts.scheme == "https" and parts.hostname)
+                or (allow_local and parts.scheme == "file" and not parts.netloc)
+            )
+        ):
+            raise DdakToolError(ErrorCode.CONFIG_INVALID, "앱 저장소 URL 형식 오류")
+        path.mkdir(parents=True, exist_ok=True)
+        repo = cls(path, allow_local=allow_local, expected_url=repo_url)
+        if not (path / ".git").exists():
+            if any(path.iterdir()):
+                raise DdakToolError(
+                    ErrorCode.PRECONDITION_FAILED, "앱 checkout 경로가 비어 있지 않다"
+                )
+            # 대신 연결 URL을 바꾸는 Git 전역 설정도 승인 URL과 비교한다. 네트워크 조회가 아니다.
+            if repo.git("ls-remote", "--get-url", repo_url) != repo_url:
+                raise DdakToolError(
+                    ErrorCode.PRECONDITION_FAILED, "앱 저장소 URL 재작성은 허용하지 않는다"
+                )
+            repo.git(
+                "clone", "--no-checkout", "--template=", "--origin", "origin", "--", repo_url, "."
+            )
+        repo.require_origin(repo_url)
+        return repo
+
+    def require_origin(self, repo_url: str) -> None:
+        if self.expected_url is not None and self.expected_url != repo_url:
+            raise DdakToolError(
+                ErrorCode.PRECONDITION_FAILED, "승인 저장소와 연결된 저장소가 다르다"
+            )
+        fetch = self.git("remote", "get-url", "--all", "origin").splitlines()
+        push = self.git("remote", "get-url", "--push", "--all", "origin").splitlines()
+        if fetch != [repo_url] or push != [repo_url]:
+            raise DdakToolError(
+                ErrorCode.PRECONDITION_FAILED, "origin의 실제 fetch/push 대상이 승인 URL과 다르다"
+            )
+        self.expected_url = repo_url
+
+    def resolve_tag(self, ref: str) -> str:
+        """annotated 태그 객체가 아닌 최종 커밋을 고정한다. lightweight도 지원한다."""
+        if not ref.startswith("refs/tags/v"):
+            raise DdakToolError(ErrorCode.CONFIG_INVALID, "v* 태그 ref가 필요하다")
+        self.git("check-ref-format", ref)
+        if self.expected_url is not None:
+            self.require_origin(self.expected_url)
+        refs = {}
+        for line in self.git("ls-remote", "origin", ref, ref + "^{}").splitlines():
+            sha, name = line.split("\t", 1)
+            refs[name] = git_sha(sha)
+        resolved = refs.get(ref + "^{}") or refs.get(ref)
+        if resolved is None:
+            raise DdakToolError(ErrorCode.CONFIG_INVALID, f"요청한 태그를 찾을 수 없다: {ref}")
+        return resolved
+
     def git(self, *args: str, ok: tuple[int, ...] = (0,)) -> str:
         return self.git_bytes(*args, ok=ok).decode("utf-8", errors="strict").strip()
 
     def git_bytes(self, *args: str, ok: tuple[int, ...] = (0,)) -> bytes:
+        if args and args[0] in {"fetch", "push"} and self.expected_url is not None:
+            self.require_origin(self.expected_url)
         started = time.monotonic()
         env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
         argv = [

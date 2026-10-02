@@ -360,3 +360,53 @@ def test_configured_template_cannot_diverge_from_approved_build(repository, tmp_
 
     with pytest.raises(DdakToolError, match="prod 템플릿과 승인"):
         repo.validate_candidate(sha, previous, source, build, tmp_path / "check", lambda: None)
+
+
+def test_old_ai_config_can_be_invalid_when_approved_prod_is_valid(repository, tmp_path):
+    repo, bare, _v1, _v2 = repository
+    (repo.path / "deploy.yaml").write_text("tiers: {was: {}}\nobsolete_setting: true\n")
+    git(repo.path, "add", "deploy.yaml")
+    git(repo.path, "commit", "-m", "Old config format")
+    git(repo.path, "push", "origin", "ai-prod")
+    git(repo.path, "switch", "-c", "prod", "origin/prod")
+    (repo.path / "deploy.yaml").write_text("tiers: {was: {}}\nenv_example: config/env.template\n")
+    (repo.path / "config").mkdir()
+    (repo.path / "config/env.template").write_text("APP_ENV=production\n")
+    git(repo.path, "add", ".")
+    git(repo.path, "commit", "-m", "Valid product config")
+    git(repo.path, "push", "origin", "prod")
+    sha = git(repo.path, "rev-parse", "HEAD")
+    files = file_manifest(repo.path)
+    repo.secret_scan = lambda path: None
+    result = repo.prepare_candidate(sha, files, files, None, tmp_path / "candidate", lambda: None)
+    assert (
+        git(bare, "show", result["candidate_sha"] + ":deploy.yaml")
+        == (repo.path / "deploy.yaml").read_text().strip()
+    )
+
+
+@pytest.mark.parametrize(
+    "name", ["Var/x.py", "Instance/x.py", "Node_Modules/x.py", ".Cache/x.py", "data.Sqlite"]
+)
+def test_case_sensitive_ordinary_source_paths_are_allowed(repository, name):
+    repo, _bare, _v1, _v2 = repository
+    path = repo.path / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("ordinary source\n")
+    git(repo.path, "add", "--force", name)
+    git(repo.path, "commit", "-m", "Ordinary source path")
+    assert name in tree_manifest(repo, "HEAD")
+
+
+@pytest.mark.parametrize(
+    "name", [".eNv", ".EnV.local", ".ENV-dir/file.py", "config/.eNv.production"]
+)
+def test_mixed_case_dot_env_paths_remain_blocked(repository, name):
+    repo, _bare, _v1, _v2 = repository
+    path = repo.path / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("fixture only\n")
+    git(repo.path, "add", "--force", name)
+    git(repo.path, "commit", "-m", "Excluded fixture path")
+    with pytest.raises(DdakToolError):
+        tree_manifest(repo, "HEAD")

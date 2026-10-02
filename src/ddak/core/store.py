@@ -146,6 +146,18 @@ class Store:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def list_project_settings(self) -> list[dict[str, Any]]:
+        with self.connection() as db:
+            projects = [
+                row[0]
+                for row in db.execute("SELECT project FROM project_settings ORDER BY project")
+            ]
+        return [
+            settings
+            for project in projects
+            if (settings := self.project_settings(project)) is not None
+        ]
+
     def project_settings(self, project: str) -> dict[str, Any] | None:
         with self.connection() as db:
             row = db.execute(

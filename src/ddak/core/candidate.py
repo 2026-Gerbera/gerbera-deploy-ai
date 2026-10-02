@@ -22,11 +22,15 @@ def _secret_name(path: Path) -> bool:
     return path.name.lower() == ".env" or path.suffix.lower() in {".pem", ".key"}
 
 
+def _dot_env(path: Path) -> bool:
+    return any(part.lower().startswith(".env") for part in path.parts)
+
+
 def template_file(path: Path, configured: frozenset[str] = frozenset()) -> bool:
     return (
         (path.name in {".env.example", ".env.sample"} or path.as_posix() in configured)
         and not excluded(path.parent)
-        and not excluded(Path(path.parent.as_posix().lower()))
+        and not _dot_env(path.parent)
         and not _secret_name(path)
     )
 
@@ -87,7 +91,7 @@ def tree_manifest(
             or ".." in path.parts
             or _secret_name(Path(name))
             or (
-                (excluded(Path(name)) or excluded(Path(name.lower())))
+                (excluded(Path(name)) or _dot_env(Path(name)))
                 and not template_file(Path(name), configured)
             )
         ):
@@ -239,8 +243,17 @@ def prepare_candidate(
             "fetch", "--no-tags", "origin", "refs/heads/ai-prod:refs/remotes/origin/ai-prod"
         )
         starting = git_sha(repository.git("rev-parse", "refs/remotes/origin/ai-prod"))
-    tree_manifest(repository, starting)  # 제외 파일/링크는 checkout 이전에도 거부한다.
-    previous_templates = tree_manifest(repository, starting, templates=True)
+    try:
+        previous_configured = _template_paths(repository, starting)
+    except DdakToolError as exc:
+        if exc.code is not ErrorCode.CONFIG_INVALID:
+            raise
+        # 과거 ai-prod의 낡은 설정은 승인할 prod 설정으로 해석한다.
+        previous_configured = configured
+    tree_manifest(repository, starting, configured=previous_configured)
+    previous_templates = tree_manifest(
+        repository, starting, templates=True, configured=previous_configured
+    )
     guard()
     repository.git("worktree", "add", "--detach", str(workspace), starting)
     work = AppRepository(
@@ -248,6 +261,7 @@ def prepare_candidate(
         allow_local=repository.allow_local,
         timeout_s=repository.timeout_s,
         secret_scan=repository.secret_scan,
+        expected_url=repository.expected_url,
     )
     scanner = repository.secret_scan or scan_staged
     audit = workspace.parent / "candidate-attempt.json"
