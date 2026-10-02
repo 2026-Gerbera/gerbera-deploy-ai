@@ -103,6 +103,9 @@ def create_binding(
         state_bucket=f"ddak-state-{account}-{sha256(ctx.project.encode()).hexdigest()[:16]}",
         layer=bundle.layer,
         outputs=bundle.outputs,
+        alb_security_group_addresses=("aws_security_group.alb",)
+        if bundle.layer == "platform"
+        else (),
         rds_master_secret_arn=ctx.platform.get("cloud", {}).get("rds_master_secret_arn"),
     )
     runtime = InfraRuntime(

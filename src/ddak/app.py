@@ -28,6 +28,7 @@ from urllib.parse import urlsplit
 from fastapi import FastAPI
 
 from ddak.cd import configure_cloud_tls
+from ddak.cloud.deploy import seed_registry_secrets
 from ddak.cloud.infra import bind_infra, create_binding, has_infra_binding, read_bundle
 from ddak.cloud.tls import ensure_tls
 from ddak.core.ai.status import llm_status
@@ -37,12 +38,13 @@ from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.deploy_request import DeployRequest
 from ddak.core.contracts.enums import RunMode
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
-from ddak.core.contracts.plan import Plan
+from ddak.core.contracts.plan import Plan, PlanStep
 from ddak.core.contracts.plan_facts import FileMeta
 from ddak.core.contracts.tools.generate_infra import GenerateInfraInput, GenerateInfraOutput
 from ddak.core.logging import get_logger
 from ddak.core.project_settings import ProjectSettings
 from ddak.core.registry import REGISTRY, Registry, import_tools
+from ddak.core.runtime import tool_context
 from ddak.core.snapshots import copy_source
 from ddak.executor.approval_meta import check_infra_summary, encode_meta
 from ddak.executor.infra import refresh_infra_context
@@ -107,6 +109,14 @@ def _platform_bootstrap_plan(plan: Plan, ctx: RunContext, summary: dict | None) 
     return prepared
 
 
+def _refresh_cloud_context(step: PlanStep, output: dict[str, Any], ctx: RunContext) -> RunContext:
+    """Terraform 출력을 반영하고 첫 CodeBuild 전에 레지스트리 자격증명을 채운다."""
+    updated = refresh_infra_context(step, output, ctx)
+    if step.tool == "apply_infra" and output.get("layer") == "platform":
+        seed_registry_secrets(updated)
+    return updated
+
+
 async def _infra_approval(service: DeploymentService, plan: Plan, ctx: RunContext):
     if ctx.targets == "onprem" or not any(s.tool == "apply_infra" for s in plan.deploy.cloud.steps):
         return {}, None
@@ -123,12 +133,13 @@ async def _infra_approval(service: DeploymentService, plan: Plan, ctx: RunContex
         )
         bounded = replace(ctx, deadline=time.monotonic() + tool.spec.timeout_s)
         try:
-            result = await asyncio.wait_for(
-                tool.fn(request, bounded)
-                if tool.is_async
-                else asyncio.to_thread(tool.fn, request, bounded),
-                tool.spec.timeout_s,
-            )
+            with tool_context("generate_infra", ctx.run_id):
+                result = await asyncio.wait_for(
+                    tool.fn(request, bounded)
+                    if tool.is_async
+                    else asyncio.to_thread(tool.fn, request, bounded),
+                    tool.spec.timeout_s,
+                )
         except TimeoutError:
             # 동기 생성기의 스레드를 강제 종료하지 않는다. 이 run 번들은 재사용/적용하지 않는다.
             raise DdakToolError(
@@ -459,7 +470,7 @@ def create() -> FastAPI:
         deployment_factory=lambda: DeploymentService(
             registry,
             settings.run_dir.parent,
-            refresh=refresh_infra_context,
+            refresh=_refresh_cloud_context,
             planning_flow=_manual_planning(settings, FetchPolicy.from_env()),
             repository_factory=_repository_factory(settings.run_dir.parent / "repositories"),
         ),
