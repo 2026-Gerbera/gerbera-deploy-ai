@@ -30,6 +30,7 @@ from fastapi import FastAPI
 
 from ddak.cd import configure_cloud_tls
 from ddak.cloud.build import preflight_local_build
+from ddak.cloud.deploy import seed_registry_secrets
 from ddak.cloud.infra import (
     bind_infra,
     create_binding,
@@ -45,11 +46,11 @@ from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.deploy_request import DeployRequest
 from ddak.core.contracts.enums import RunMode
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
-from ddak.core.contracts.plan import Plan
+from ddak.core.contracts.plan import Plan, PlanStep
 from ddak.core.contracts.plan_facts import FileMeta
 from ddak.core.contracts.tools.generate_infra import GenerateInfraInput, GenerateInfraOutput
 from ddak.core.logging import get_logger
-from ddak.core.project_settings import ProjectSettings
+from ddak.core.project_settings import ProjectSettings, watch_source
 from ddak.core.redact import redact_obj
 from ddak.core.registry import REGISTRY, Registry, import_tools
 from ddak.core.runlog import run_dir
@@ -118,6 +119,14 @@ def _platform_bootstrap_plan(plan: Plan, ctx: RunContext, summary: dict | None) 
         for s in prepared.build.steps
     ]
     return prepared
+
+
+def _refresh_cloud_context(step: PlanStep, output: dict[str, Any], ctx: RunContext) -> RunContext:
+    """Terraform 출력을 반영하고 첫 CodeBuild 전에 레지스트리 자격증명을 채운다."""
+    updated = refresh_infra_context(step, output, ctx)
+    if step.tool == "apply_infra" and output.get("layer") == "platform":
+        seed_registry_secrets(updated)
+    return updated
 
 
 async def _infra_approval(service: DeploymentService, plan: Plan, ctx: RunContext):
@@ -194,7 +203,7 @@ async def _infra_approval(service: DeploymentService, plan: Plan, ctx: RunContex
     return {"infra": digest}, summary
 
 
-def _watch_targets(service: DeploymentService) -> list[WatchTarget]:
+def _watch_configuration(service: DeploymentService) -> tuple[list[WatchTarget], list[str]]:
     saved = {s["project"]: s for s in service.list_project_settings()}
     targets = [
         WatchTarget(
@@ -214,7 +223,28 @@ def _watch_targets(service: DeploymentService) -> list[WatchTarget]:
             for t in load_watch_targets()
             if service.resolve_project(t.project) not in saved
         ]
-    return targets
+    preferred = service.resolve_project(os.environ.get("DDAK_WATCH_PROJECT") or "flaskr")
+    chosen: dict[tuple[str, str], WatchTarget] = {}
+    warnings = []
+    for target in sorted(targets, key=lambda t: (t.project != preferred, t.project)):
+        try:
+            identity = watch_source(target.repo_url, target.ref)
+        except ValueError:
+            warnings.append(f"자동 감시 설정 오류: {target.project}의 저장소 URL을 확인하세요")
+            continue
+        if identity in chosen:
+            winner = chosen[identity]
+            warnings.append(
+                f"중복 자동 감시: {winner.project}만 감시하고 {target.project}는 제외했습니다. "
+                "같은 저장소·브랜치의 기존 프로젝트 설정에서 자동 감지를 끄세요"
+            )
+        else:
+            chosen[identity] = target
+    return list(chosen.values()), warnings
+
+
+def _watch_targets(service: DeploymentService) -> list[WatchTarget]:
+    return _watch_configuration(service)[0]
 
 
 def _attach_watch(app: FastAPI, settings: Settings) -> None:
@@ -222,6 +252,7 @@ def _attach_watch(app: FastAPI, settings: Settings) -> None:
     policy = FetchPolicy.from_env()
     policy = replace(policy, root=policy.root.expanduser().resolve())
     inner = app.router.lifespan_context
+    app.state.watch_warnings = lambda: _watch_configuration(app.state.deployment)[1]
 
     async def on_new_commit(t: WatchTarget, sha: str) -> None:
         service = app.state.deployment
@@ -236,6 +267,7 @@ def _attach_watch(app: FastAPI, settings: Settings) -> None:
 
             async def supervise():
                 current = []
+                previous_warnings = []
                 watcher = None
                 task = None
 
@@ -248,7 +280,11 @@ def _attach_watch(app: FastAPI, settings: Settings) -> None:
 
                 try:
                     while not stopped.is_set():
-                        targets = _watch_targets(a.state.deployment)
+                        targets, warnings = _watch_configuration(a.state.deployment)
+                        if warnings != previous_warnings:
+                            for warning in warnings:
+                                _log.warning(warning)
+                            previous_warnings = warnings
                         if targets != current:
                             await stop_watcher()
                             current = targets
@@ -565,6 +601,17 @@ def _configure_onprem(service: DeploymentService) -> None:
         return  # 저장된 사람이 정한 설정은 프로필이 덮어쓰지 않는다.
     repo = os.environ.get("DDAK_WATCH_REPO_URL")
     if repo:
+        identity = watch_source(repo, os.environ.get("DDAK_WATCH_BRANCH") or "prod")
+        for s in service.list_project_settings():
+            if s["project"] == project or not s.get("auto_detect") or not s.get("repo_url"):
+                continue
+            try:
+                other_source = watch_source(s["repo_url"], s.get("watch_branch", "prod"))
+            except ValueError:
+                continue  # 기존 잘못된 URL은 감시 조립에서 경고하고 제외한다.
+            if other_source == identity:
+                # 환경변수 후보는 감시 조립에서 선택·경고한다. 중복 설정은 만들지 않는다.
+                return
         service.save_project_settings(
             project,
             {
@@ -588,7 +635,7 @@ def create(*, cli_host: str | None = None, onprem_profile: bool = False) -> Fast
         service = DeploymentService(
             registry,
             settings.run_dir.parent,
-            refresh=refresh_infra_context,
+            refresh=_refresh_cloud_context,
             planning_flow=_manual_planning(settings, FetchPolicy.from_env()),
             repository_factory=_repository_factory(settings.run_dir.parent / "repositories"),
             build_preflight=_local_build_preflight,

@@ -69,9 +69,13 @@ async def test_existing_bundle_validates_and_binds_plan_hash_to_approval(rig, mo
 async def test_missing_generator_bundle_is_visible_named_failure(rig, monkeypatch):
     service, source, _ = rig
     monkeypatch.setattr(app, "has_infra_binding", lambda rid: False)
-    # 이번 시험은 실행 툴은 있지만 생성 번들만 없는 경우다.
+    # 생성기 미등록 상황은 fixture가 고정한다. merge로 등록된 실제 AI는 호출하지 않는다.
     loaded = app.load_tools()
-    service.registry = loaded
+    registry = Registry(loaded.specs)
+    for name in loaded.registered():
+        if name != "generate_infra":
+            registry.tool(name)(loaded.get(name).fn)
+    service.registry = registry
 
     def plan(request, **kwargs):
         p = infra_plan(kwargs["run_id"]).model_copy(update={"mode": request.mode})

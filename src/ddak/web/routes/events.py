@@ -9,11 +9,10 @@ from fastapi.responses import StreamingResponse
 
 from ddak.core.contracts.events import RunEvent
 from ddak.core.redact import redact_obj
-from ddak.executor.engine import RunStatus
-from ddak.web.dependencies import deployment, templates
+from ddak.web.dependencies import TERMINAL_STATUSES, deployment, templates
 
 router = APIRouter(prefix="/runs")
-_FINAL = {status.value for status in RunStatus}
+_FINAL = TERMINAL_STATUSES
 
 
 def _sse(event: dict) -> bytes:
@@ -26,11 +25,18 @@ def _sse(event: dict) -> bytes:
 @router.get("/{run_id}/progress")
 async def progress_page(request: Request, run_id: str):
     try:
-        deployment(request).store.run(run_id)
+        run = deployment(request).get_run(run_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="실행을 찾을 수 없습니다") from exc
     return templates.TemplateResponse(
-        request=request, name="progress.html", context={"run_id": run_id}
+        request=request,
+        name="progress.html",
+        context={
+            "run_id": run_id,
+            "project": run["project"],
+            "status": run["status"],
+            "terminal_states": sorted(_FINAL),
+        },
     )
 
 
@@ -38,7 +44,7 @@ async def progress_page(request: Request, run_id: str):
 async def run_events(request: Request, run_id: str) -> StreamingResponse:
     service = deployment(request)
     try:
-        service.store.run(run_id)
+        service.get_run(run_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="실행을 찾을 수 없습니다") from exc
     header = request.headers.get("last-event-id", "-1")
@@ -61,6 +67,17 @@ async def run_events(request: Request, run_id: str) -> StreamingResponse:
                 yield _sse(event)
                 if event.get("type") == "run.state" and event.get("status") in _FINAL:
                     return
+            row = service.get_run(run_id)
+            if row["status"] in _FINAL:
+                yield _sse(
+                    {
+                        "seq": max((e["seq"] for e in replay), default=after) + 1,
+                        "type": "run.state",
+                        "run_id": run_id,
+                        "status": row["status"],
+                    }
+                )
+                return
             unsubscribe = service.subscribe(run_id, receive)
         except KeyError:
             return

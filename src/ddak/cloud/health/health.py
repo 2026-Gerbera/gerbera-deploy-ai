@@ -46,9 +46,9 @@ def health_check(ctx: RunContext) -> ProviderResult:
     if not ctx.cloud_domain:
         raise DdakToolError(ErrorCode.CONFIG_INVALID, "cloud_domain이 설정되지 않았다")
     platform = cloud_platform(ctx)
-    region = required(platform, "region")
-    cluster = required(platform, "ecs_cluster")
-    service_name = required(platform, "ecs_service")
+    region = str(platform.get("region") or "ap-northeast-2")
+    cluster = required(platform, "cluster_name")
+    service_name = required(platform, "ecs_service_name")
     target_group = required(platform, "target_group_arn")
     ecs = client("ecs", ctx, region)
     elbv2 = client("elbv2", ctx, region)

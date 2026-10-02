@@ -1,11 +1,30 @@
 {% extends "base.html" %}
 {% block title %}배포 승인 · Gerbera{% endblock %}
+{% block breadcrumb %}Deployment approval{% endblock %}
 {% block content %}
-<section class="hero"><p class="eyebrow">HUMAN APPROVAL</p><h1>{{ approval.project }} 변경 승인</h1><p><code>{{ approval.run_id }}</code></p></section>
-<section class="card"><h2>승인 대상 해시</h2><dl>{% for kind, digest in approval.subjects.items() %}<dt>{{ kind }}</dt><dd><code>{{ digest }}</code></dd>{% endfor %}</dl></section>
-{% if approval.patch %}<section class="card"><div class="row"><h2>AI 코드 수정안</h2><a href="/runs/{{ approval.run_id }}/approved-patch.diff">승인 후 diff 다운로드</a></div><p class="badge">승인 전 제안</p><pre>{{ approval.patch }}</pre></section>{% endif %}
-<section class="card"><h2>계획</h2>
-  <div class="tracks"><div><h3>Build</h3><p>{{ approval.plan.build.steps|length }} steps</p></div><div><h3>On-prem</h3><p>{{ approval.plan.deploy.local.steps|length }} steps</p></div><div><h3>Cloud</h3><p>{{ approval.plan.deploy.cloud.steps|length }} steps</p></div><div><h3>Verify</h3><p>{{ approval.plan.verify.steps|length }} steps</p></div></div>
+<section class="page-heading approval-heading"><div><p class="eyebrow">HUMAN APPROVAL</p><h1>배포 전 최종 확인</h1><p><strong>{{ approval.project }}</strong>의 코드와 인프라 변경사항을 검토하세요.</p></div><span class="approval-lock">▣ 승인 전에는 어떤 리소스도 변경되지 않습니다</span></section>
+<section class="approval-grid">
+  <div class="approval-main">
+    <section class="card"><div class="card-header"><div><p class="section-kicker">SOURCE</p><h2>배포할 소스</h2></div></div>
+      <dl class="detail-list"><div><dt>Repository / ref</dt><dd>{{ approval.repo_url or '기록 없음' }} · {{ approval.ref or '기록 없음' }}</dd></div><div><dt>원본 SHA</dt><dd><code>{{ approval.source_sha or '기록 없음' }}</code></dd></div><div><dt>빌드 backend / 저장소</dt><dd>{{ approval.build_backend }} · {{ approval.image_repository or '플랫폼 설정' }}</dd></div></dl>
+      {% if approval.preparation_warnings %}<div class="notice amber"><span>!</span><div><h3>준비 경고</h3><ul>{% for warning in approval.preparation_warnings %}<li>{{ warning }}</li>{% endfor %}</ul></div></div>{% endif %}
+      {% if approval.preparation_failures %}<h3>준비 불가 환경</h3>{% for target, tools in approval.preparation_failures.items() %}<p>{{ target }}: {% if approval.preparation_errors.get(target) %}{{ approval.preparation_errors[target].code }} · {{ approval.preparation_errors[target].detail }}{% else %}미등록 {{ tools|join(', ') }}{% endif %}</p>{% endfor %}{% endif %}
+      {% if approval.source_checks %}<h3>소스 검사</h3><p>출처: {{ approval.source_checks.source }} · 원본 예외 적용 {{ approval.source_checks.ignored_count }}건</p><ul>{% for finding in approval.source_checks.findings %}<li>{{ finding.rule }} · {{ finding.path }} · {{ finding.count }}건</li>{% endfor %}</ul>{% endif %}
+      {% if approval.patch_meta %}<h3>패치 메타</h3><pre class="code-panel">{{ approval.patch_meta|tojson(indent=2) }}</pre>{% endif %}
+    </section>
+    <section class="card"><div class="card-header"><div><p class="section-kicker">PIPELINE</p><h2>실행 계획</h2></div><code class="run-id">{{ approval.run_id }}</code></div>
+      {% if approval.plan %}<div class="tracks"><div><span class="track-number">01</span><h3>Build</h3><p>{{ approval.plan.build.steps|length }} steps</p></div><div><span class="track-number">02</span><h3>On-prem</h3><p>{{ approval.plan.deploy.local.steps|length }} steps</p></div><div><span class="track-number">03</span><h3>AWS Cloud</h3><p>{{ approval.plan.deploy.cloud.steps|length }} steps</p></div><div><span class="track-number">04</span><h3>Verify</h3><p>{{ approval.plan.verify.steps|length }} steps</p></div></div>
+      <div class="table-wrap"><table><thead><tr><th>Step</th><th>Tool</th><th>Target</th></tr></thead><tbody>
+      {% for section in (approval.plan.build, approval.plan.deploy.local, approval.plan.deploy.cloud, approval.plan.verify) %}{% for step in section.steps %}<tr><td><code>{{ step.id }}</code></td><td>{{ step.tool }}</td><td>{{ step.target or 'common' }}</td></tr>{% endfor %}{% endfor %}
+      </tbody></table></div>{% else %}<p>과거 실행의 계획 상세 기록이 없습니다.</p>{% endif %}
+    </section>
+    {% if approval.infra_summary %}<section class="card"><div class="card-header"><div><p class="section-kicker">INFRASTRUCTURE</p><h2>Terraform · IAM 변경</h2></div><span class="status warning-status"><i></i>Review required</span></div><div class="notice amber"><span>!</span><div><strong>권한 및 리소스 변경을 확인하세요</strong><p>화면의 요약과 아래 infra 해시가 일치할 때만 승인하세요.</p></div></div><pre class="code-panel">{{ approval.infra_summary|tojson(indent=2) }}</pre></section>{% endif %}
+    {% if approval.patch %}<section class="card"><div class="card-header"><div><p class="section-kicker">CODE PATCH</p><h2>AI 코드 수정안</h2></div></div><pre class="code-panel diff-panel">{{ approval.patch }}</pre></section>{% endif %}
+  </div>
+  <aside class="approval-aside">
+    <section class="card hash-card"><p class="section-kicker">APPROVAL SUBJECTS</p><h2>승인 대상 해시</h2><p>아래 해시는 승인 이후에도 실행 전 다시 검증됩니다.</p><dl>{% for kind, digest in approval.subjects.items() %}<div><dt>{{ kind }}</dt><dd><code>{{ digest }}</code></dd></div>{% endfor %}</dl></section>
+    <section class="card checklist"><h3>승인 체크리스트</h3><ul><li><span>✓</span>대상 저장소와 브랜치 확인</li><li><span>✓</span>IAM 최소 권한 변경 확인</li><li><span>✓</span>삭제·교체 리소스 확인</li><li><span>✓</span>롤백 범위 확인</li></ul></section>
+  </aside>
 </section>
-<form class="actions" method="post" action="/runs/{{ approval.run_id }}/approval"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button danger" name="decision" value="denied">거절</button><button class="button" name="decision" value="approved">승인하고 배포</button></form>
+<form class="approval-bar" method="post" action="/runs/{{ approval.run_id }}/approval"><div><strong>이 변경사항을 실행할까요?</strong><span>승인하면 Terraform 적용과 이미지 빌드가 시작됩니다.</span></div><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><div><button class="button ghost danger-text" name="decision" value="denied">거절</button><button class="button" name="decision" value="approved">승인하고 배포 시작 →</button></div></form>
 {% endblock %}

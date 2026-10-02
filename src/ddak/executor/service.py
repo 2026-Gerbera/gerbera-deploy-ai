@@ -664,6 +664,9 @@ class DeploymentService:
                     "ref",
                 )
             }
+            result["context"]["public_url"] = (
+                (context.get("platform") or {}).get("onprem", {}).get("public_url")
+            )
         return result
 
     def list_runs(self, limit: int = 20) -> list[dict[str, Any]]:
@@ -935,6 +938,7 @@ class DeploymentService:
             "trigger": p.context.trigger,
             "repo_url": p.context.repo_url,
             "ref": p.context.ref,
+            "source_sha": p.context.source_sha,
             "project_settings": dict(p.context.project_settings),
             "preparation_failures": dict(p.context.preparation_failures),
             "preparation_errors": dict(p.context.preparation_errors),

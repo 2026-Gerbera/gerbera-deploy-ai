@@ -1,0 +1,5 @@
+{% if public_links %}
+<section class="card"><div class="card-header"><div><p class="section-kicker">PUBLIC ENDPOINTS</p><h2>배포 공개 주소</h2><p class="card-description">실행 시 인벤토리·설정에 기록된 주소입니다. 현재 서비스 상태는 접속해 확인하세요.</p></div></div>
+<dl class="detail-list">{% for link in public_links %}<div><dt>{{ link.label }}</dt><dd><a class="text-link" href="{{ link.url }}" target="_blank" rel="noopener noreferrer">{{ link.url }}</a> · <a class="text-link" href="{{ link.version_url }}" target="_blank" rel="noopener noreferrer">/version ↗</a></dd></div>{% endfor %}</dl>
+</section>
+{% endif %}
