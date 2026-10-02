@@ -3,8 +3,7 @@
 두 환경의 smoke_test 결과와 이미지 관측을 비교해 "같아야 하는데 다른 것"만 실패로 센다.
 - 판정: match / mismatch / expected_diff / skipped
 - 예상된 차이(환경이 달라서 정상적으로 다른 값)는 코드의 고정 목록이다. AI가 정하지 않는다.
-- 아직 툴로 등록하지 않았다. 실행기가 두 환경 결과를 넘기는 방법이 정해지면
-  tool.py에서 이 함수를 부른다.
+- tool.py가 이번 run의 smoke 결과(verify/smoke 보관소)와 RunContext.release_artifacts를 넘긴다.
 """
 
 from __future__ import annotations

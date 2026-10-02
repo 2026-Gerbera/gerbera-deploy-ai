@@ -147,3 +147,67 @@ def test_patch_without_target_pattern_is_rejected(source: Path) -> None:
     result = check_patch(source, diff(only_comment))
     assert not result.passed and result.patterns == []
     assert "pattern" in codes(result)
+
+
+# ---- 우회 시도(PR #7 리뷰 6번) ----
+def test_git_header_for_other_file_is_rejected(source: Path) -> None:
+    patch = b"diff --git a/Dockerfile b/Dockerfile\n" + diff(GOOD)
+    result = check_patch(source, patch)
+    assert not result.passed and "scope" in codes(result)
+
+
+def test_header_only_change_to_other_file_is_rejected(source: Path) -> None:
+    mode_change = b"diff --git a/Dockerfile b/Dockerfile\nold mode 100644\nnew mode 100755\n"
+    result = check_patch(source, diff(GOOD) + mode_change)
+    assert not result.passed and "scope" in codes(result)
+
+
+@pytest.mark.parametrize("name", ["a/../flaskr/__init__.py", "a//etc/x.py", 'a/"q".py'])
+def test_unsafe_path_is_rejected(source: Path, name: str) -> None:
+    patch = diff(GOOD).replace(f"a/{APP}".encode(), name.encode(), 1)
+    patch = patch.replace(f"b/{APP}".encode(), ("b/" + name[2:]).encode(), 1)
+    assert "scope" in codes(check_patch(source, patch))
+
+
+def test_truncated_hunk_is_rejected(source: Path) -> None:
+    patch = diff(GOOD).rstrip(b"\n").rsplit(b"\n", 2)[0] + b"\n"
+    assert "format" in codes(check_patch(source, patch))
+
+
+def test_uppercase_secret_default_is_rejected(source: Path) -> None:
+    bad = GOOD.replace('os.environ["SECRET_KEY"]', 'os.environ.get("SECRET_KEY", "DEVFALLBACK")')
+    assert "secret_literal" in codes(check_patch(source, diff(bad)))
+
+
+def test_pattern_word_in_comment_does_not_allow_code(source: Path) -> None:
+    bad = GOOD.replace("    return app\n", "    app.debug = True  # SECRET_KEY\n    return app\n")
+    assert "pattern" in codes(check_patch(source, diff(bad)))
+
+
+def test_env_word_in_string_does_not_allow_code(source: Path) -> None:
+    bad = GOOD.replace("    return app\n", '    app.name = "os.environ"\n    return app\n')
+    assert "pattern" in codes(check_patch(source, diff(bad)))
+
+
+def test_new_call_outside_allowlist_is_rejected_after_apply(source: Path) -> None:
+    # 줄 검사의 위험 호출 목록에 없는 호출도 AST 비교가 막는다
+    bad = GOOD.replace('os.environ["SECRET_KEY"]', 'os.environ["SECRET_KEY"] or os.kill(1, 9)')
+    result = check_patch(source, diff(bad))
+    assert not result.passed and "dangerous" in codes(result)
+
+
+def test_concatenated_secret_name_is_rejected_after_apply(source: Path) -> None:
+    # 비밀 이름·값을 이어붙여 줄 검사를 피해도 AST 비교가 막는다
+    bad = GOOD.replace('        SECRET_KEY=os.environ["SECRET_KEY"],\n', "").replace(
+        "    return app\n",
+        '    app.config["SEC" + "RET_KEY"] = os.environ.get("APP_" + "KEY", "hard" + "coded")\n'
+        "    return app\n",
+    )
+    result = check_patch(source, diff(bad))
+    assert not result.passed and "secret_literal" in codes(result)
+    assert all("hard" not in v.message for v in result.violations)
+
+
+def test_new_import_outside_allowlist_is_rejected_after_apply(source: Path) -> None:
+    bad = GOOD.replace("import os\n", "import os\nimport sys\n")
+    assert "dangerous" in codes(check_patch(source, diff(bad)))

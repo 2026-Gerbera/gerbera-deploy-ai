@@ -112,14 +112,15 @@ async def test_smoke_opens_local_verified_through_executor() -> None:
                         )
                     ]
                 },
-                "cloud": {"steps": [step("verify.smoke.cloud", wait_for=["local_verified"])]},
+                "cloud": {"steps": [step("verify.smoke.cloud", signal="cloud_verified")]},
             },
         }
     )
     result = await Executor(load_tools()).run(plan, RunContext(run_id=RUN))
     assert result.status is RunStatus.SUCCEEDED
     outputs = [r.output for r in result.records if r.output]
-    assert [o["target"] for o in outputs] == ["local", "cloud"]
+    # 두 트랙은 서로 기다리지 않으므로 끝나는 순서는 정해져 있지 않다
+    assert sorted(o["target"] for o in outputs) == ["cloud", "local"]
     assert all(o["passed"] is True for o in outputs)
 
 
