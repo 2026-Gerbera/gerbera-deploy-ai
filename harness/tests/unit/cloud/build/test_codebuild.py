@@ -26,6 +26,8 @@ SHA = "0123456789abcdef0123456789abcdef01234567"
 REPO_URL = "https://github.com/gerbera-demo/flaskr"
 SOURCE = GitSource(repository_url=REPO_URL, commit_sha=SHA)
 S3_SOURCE = S3Source(bucket="ddak-source", key="flaskr/run-1.zip", version_id="v-123", revision=SHA)
+RID = "run-20261002-054700-ab12"
+IMAGE_REPO = "docker.io/gerbera/flaskr"
 INDEX = "sha256:" + "1" * 64
 AMD64 = "sha256:" + "2" * 64
 ARM64 = "sha256:" + "3" * 64
@@ -90,8 +92,9 @@ def test_exported_names_follow_tier() -> None:
 
 OVERRIDES = [
     {"name": "BUILD_TIERS", "value": "was,web", "type": "PLAINTEXT"},
-    {"name": "RELEASE_ID", "value": "rel-1", "type": "PLAINTEXT"},
+    {"name": "RELEASE_ID", "value": RID, "type": "PLAINTEXT"},
     {"name": "SOURCE_REVISION", "value": SHA, "type": "PLAINTEXT"},
+    {"name": "IMAGE_REPO", "value": IMAGE_REPO, "type": "PLAINTEXT"},
 ]
 
 
@@ -109,7 +112,7 @@ def test_start_build_pins_github_commit_and_sends_plaintext_overrides(
             "environmentVariablesOverride": OVERRIDES,
         },
     )
-    assert start_build(client, "ddak-build", SOURCE, ["was", "web"], "rel-1") == BUILD_ID
+    assert start_build(client, "ddak-build", SOURCE, ["was", "web"], RID, IMAGE_REPO) == BUILD_ID
 
 
 def test_start_build_s3_fallback_pins_version_and_sends_revision(
@@ -126,18 +129,33 @@ def test_start_build_s3_fallback_pins_version_and_sends_revision(
             "environmentVariablesOverride": OVERRIDES,
         },
     )
-    assert start_build(client, "ddak-build", S3_SOURCE, ["was", "web"], "rel-1") == BUILD_ID
+    assert start_build(client, "ddak-build", S3_SOURCE, ["was", "web"], RID, IMAGE_REPO) == BUILD_ID
+
+
+# Docker Hub 토큰 모양(가짜). RELEASE_ID를 시크릿 타입으로 바꿔 토큰을 태그로 빼내는 경로 차단
+TOKEN_LIKE = "dckr" + "_pat_" + "AbCdEfGhIjKlMnOpQrStUvWxYz0"
 
 
 @pytest.mark.parametrize(
-    ("tiers", "release_id"),
-    [([], "rel-1"), (["was", "was"], "rel-1"), (["Was"], "rel-1"), (["was"], "rel 1;rm")],
+    ("tiers", "release_id", "image_repo"),
+    [
+        ([], RID, IMAGE_REPO),
+        (["was", "was"], RID, IMAGE_REPO),
+        (["Was"], RID, IMAGE_REPO),
+        (["was"], "rel 1;rm", IMAGE_REPO),
+        (["was"], "rel-1", IMAGE_REPO),  # run ID 형식만
+        (["was"], TOKEN_LIKE, IMAGE_REPO),
+        (["was"], RID, "docker.io/gerbera/flaskr:latest"),  # 태그 금지
+        (["was"], RID, "gerbera/flaskr"),  # docker.io만
+        (["was"], RID, "docker.io/Gerbera/flaskr"),
+        (["was"], RID, ""),
+    ],
 )
 def test_start_build_rejects_bad_input_before_calling(
-    client: Any, stub: Stubber, tiers: list[str], release_id: str
+    client: Any, stub: Stubber, tiers: list[str], release_id: str, image_repo: str
 ) -> None:
     with pytest.raises(DdakToolError):
-        start_build(client, "ddak-build", SOURCE, tiers, release_id)
+        start_build(client, "ddak-build", SOURCE, tiers, release_id, image_repo)
 
 
 @pytest.mark.parametrize(
@@ -156,14 +174,14 @@ def test_start_build_rejects_unpinned_or_bad_source(
     client: Any, stub: Stubber, source: GitSource | S3Source
 ) -> None:
     with pytest.raises(DdakToolError) as err:
-        start_build(client, "ddak-build", source, ["was"], "rel-1")
+        start_build(client, "ddak-build", source, ["was"], RID, IMAGE_REPO)
     assert err.value.code is ErrorCode.CONFIG_INVALID
 
 
 def test_start_build_hides_aws_error_detail(client: Any, stub: Stubber) -> None:
     stub.add_client_error("start_build", "AccessDeniedException", "arn:aws:iam::123456789012:x")
     with pytest.raises(DdakToolError) as err:
-        start_build(client, "ddak-build", SOURCE, ["was"], "rel-1")
+        start_build(client, "ddak-build", SOURCE, ["was"], RID, IMAGE_REPO)
     assert err.value.code is ErrorCode.ADAPTER_FAILED
     assert "123456789012" not in str(err.value)
 
@@ -174,7 +192,15 @@ def test_run_build_polls_until_success_and_reads_digests(client: Any, stub: Stub
     stub.add_response("batch_get_builds", _build("IN_PROGRESS"), {"ids": [BUILD_ID]})
     stub.add_response("batch_get_builds", _build("SUCCEEDED", _exported()), {"ids": [BUILD_ID]})
     result = run_build(
-        client, "ddak-build", SOURCE, ["was"], "rel-1", 100.0, clock=clock, sleep=clock.sleep
+        client,
+        "ddak-build",
+        SOURCE,
+        ["was"],
+        RID,
+        IMAGE_REPO,
+        100.0,
+        clock=clock,
+        sleep=clock.sleep,
     )
     assert result.build_id == BUILD_ID
     assert result.revision == SHA
@@ -191,14 +217,23 @@ def test_run_build_fails_when_built_commit_differs(client: Any, stub: Stubber) -
     stub.add_response("start_build", {"build": {"id": BUILD_ID}})
     stub.add_response("batch_get_builds", _build("SUCCEEDED", _exported(), resolved=other))
     with pytest.raises(DdakToolError) as err:
-        run_build(client, "ddak-build", SOURCE, ["was"], "rel-1", 100.0, clock=FakeClock())
+        run_build(client, "ddak-build", SOURCE, ["was"], RID, IMAGE_REPO, 100.0, clock=FakeClock())
     assert err.value.code is ErrorCode.ADAPTER_FAILED
 
 
-def test_check_built_source_uses_version_id_for_s3() -> None:
-    check_built_source({"resolvedSourceVersion": "v-123"}, S3_SOURCE)
+def test_check_built_source_uses_build_source_version_for_s3() -> None:
+    # S3는 resolvedSourceVersion이 채워지지 않는다(API 문서). 빌드의 sourceVersion과 비교한다
+    check_built_source({"sourceVersion": "v-123"}, S3_SOURCE)
     with pytest.raises(DdakToolError):
-        check_built_source({"resolvedSourceVersion": SHA}, S3_SOURCE)
+        check_built_source({"sourceVersion": "v-999"}, S3_SOURCE)
+    with pytest.raises(DdakToolError):
+        check_built_source({"resolvedSourceVersion": "v-123"}, S3_SOURCE)
+
+
+def test_check_built_source_uses_resolved_commit_for_github() -> None:
+    check_built_source({"resolvedSourceVersion": SHA, "sourceVersion": SHA}, SOURCE)
+    with pytest.raises(DdakToolError):
+        check_built_source({"sourceVersion": SHA}, SOURCE)  # 요청값 되풀이만으로는 안 된다
     with pytest.raises(DdakToolError):
         check_built_source({}, SOURCE)
 

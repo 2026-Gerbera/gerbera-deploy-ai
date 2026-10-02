@@ -4,16 +4,16 @@ from __future__ import annotations
 
 import pytest
 
-from ddak.cloud.build.codebuild import GitSource
+from ddak.cloud.build.codebuild import GitSource, S3Source
 from ddak.cloud.build.fake import FakeCodeBuild, fake_digest
-from ddak.cloud.build.registries import DockerHub
 from ddak.cloud.build.release import build_release, build_tier
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.contracts.release import ImageArtifact, ReleaseArtifacts, SnapshotBinding
 
 SHA = "0123456789abcdef0123456789abcdef01234567"
 SOURCE = GitSource(repository_url="https://github.com/gerbera-demo/flaskr", commit_sha=SHA)
-REGISTRY = DockerHub(namespace="gerbera")
+RID = "run-20261002-054700-ab12"
+IMAGE_REPO = "docker.io/gerbera/ddak"
 SNAPSHOT = SnapshotBinding(
     source_snapshot_hash="sha256:" + "a" * 64, build_snapshot_hash="sha256:" + "a" * 64
 )
@@ -29,9 +29,8 @@ def _build(client: FakeCodeBuild, tiers: list[str], **kwargs: object):
         "project": "ddak-build",
         "source": SOURCE,
         "tiers": tiers,
-        "release_id": "r1",
-        "registry": REGISTRY,
-        "repository": "ddak",
+        "release_id": RID,
+        "image_repo": IMAGE_REPO,
         "snapshot": SNAPSHOT,
         "deadline": 100.0,
         "clock": lambda: 0.0,
@@ -104,9 +103,8 @@ def _tier(client: FakeCodeBuild, tier: str, current: object, **kwargs: object):
         "current": current,
         "project": "ddak-build",
         "source": SOURCE,
-        "release_id": "r1",
-        "registry": REGISTRY,
-        "repository": "ddak",
+        "release_id": RID,
+        "image_repo": IMAGE_REPO,
         "snapshot": SNAPSHOT,
         "deadline": 100.0,
         "clock": lambda: 0.0,
@@ -144,3 +142,27 @@ def test_rejects_previous_result_from_other_snapshot() -> None:
         _tier(client, "was", current)
     assert exc.value.code is ErrorCode.PRECONDITION_FAILED
     assert client.started == []
+
+
+def test_same_repo_value_drives_push_and_artifact_ref() -> None:
+    client = FakeCodeBuild()
+    got = _build(client, ["web"])
+    env = {v["name"]: v["value"] for v in client.started[0]["environmentVariablesOverride"]}
+    assert env["IMAGE_REPO"] == IMAGE_REPO
+    assert got.artifacts.images["web"].ref.startswith(IMAGE_REPO + "@")
+
+
+def test_rejects_bad_image_repo_before_building() -> None:
+    client = FakeCodeBuild()
+    with pytest.raises(DdakToolError) as exc:
+        _build(client, ["web"], image_repo="docker.io/gerbera/ddak:latest")
+    assert exc.value.code is ErrorCode.CONFIG_INVALID
+    assert client.started == []
+
+
+def test_s3_fallback_passes_without_resolved_source_version() -> None:
+    s3 = S3Source(bucket="ddak-source", key="flaskr/run.zip", version_id="v-123", revision=SHA)
+    client = FakeCodeBuild()
+    got = _build(client, ["web"], source=s3)
+    assert "resolvedSourceVersion" not in client.batch_get_builds(ids=[got.build_id])["builds"][0]
+    assert got.revision == SHA
