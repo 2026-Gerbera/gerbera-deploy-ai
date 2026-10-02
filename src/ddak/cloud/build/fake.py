@@ -40,9 +40,11 @@ class FakeCodeBuild:
                 {"name": name, "value": fake_digest(tier, revision, platform)}
                 for platform, name in platform_names.items()
             ]
+        # 실제 프로젝트의 기본 buildspec은 실패 전용이다. override 없이 시작하면 실패한다
+        status = self.fail_status or ("SUCCEEDED" if kwargs.get("buildspecOverride") else "FAILED")
         build: dict[str, Any] = {
             "id": build_id,
-            "buildStatus": self.fail_status or "SUCCEEDED",
+            "buildStatus": status,
             "sourceVersion": kwargs["sourceVersion"],
             "exportedEnvironmentVariables": exported,
         }
