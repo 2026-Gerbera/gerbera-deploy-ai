@@ -2,8 +2,9 @@
 
 AI가 만든 unified diff는 신뢰하지 않는 입력이다. 사람 승인 화면에 올리기 전에 코드가 검사한다.
 1. 형식: UTF-8, 크기·파일 수 상한, 기존 일반 파일 수정만(새 파일·삭제·이름 변경 금지).
-   hunk 밖의 줄은 diff --git·index·---·+++·@@만 허용한다(모드 변경 등 다른 헤더는 거부).
-   diff --git 경로는 ---/+++ 경로와 같아야 한다. 경로의 ..·절대 경로·따옴표·역슬래시는 거부한다
+   O1 core.snapshots.apply_diff와 같은 형식만 받는다: hunk 밖의 줄은 ---·+++·@@만
+   (diff --git·index 등 Git 확장 헤더는 거부), 파일마다 ---/+++ 쌍 하나와 그 바로 뒤 hunk 하나.
+   경로의 ..·절대 경로·따옴표·역슬래시는 거부한다. 이 형식의 diff는 build_patch로 만든다
 2. 허용 파일: 정책의 허용 파일(분석이 패턴을 찾은 파일)과 허용 확장자(.py)만
 3. 허용 패턴: 지운 줄은 모두 대상 패턴(서명 키 하드코딩, localhost·127.0.0.1 주소, 쿠키 Secure,
    ProxyFix) 줄이어야 한다. 추가한 줄은 대상 패턴 줄, 환경변수를 읽는 줄, import, 괄호·빈 줄·주석만.
@@ -23,11 +24,12 @@ AI가 만든 unified diff는 신뢰하지 않는 입력이다. 사람 승인 화
 from __future__ import annotations
 
 import ast
+import difflib
 import re
 import subprocess
 import tempfile
 from collections import Counter
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
@@ -61,9 +63,9 @@ _DANGEROUS = re.compile(
     r"|\bctypes\b|\bpty\b|\bbreakpoint\s*\(",
     re.I,
 )
-_HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
-_HEADER_OK = ("diff --git ", "index ", "--- ", "+++ ", "@@ ")
-_GIT_HEADER = re.compile(r"^diff --git a/(\S+) b/(\S+)$")
+# 줄 수는 ASCII 숫자 7자리까지(유니코드 숫자·아주 긴 숫자로 int()가 예외를 내지 않게)
+_HUNK = re.compile(r"^@@ -(\d{1,7})(?:,(\d{1,7}))? \+(\d{1,7})(?:,(\d{1,7}))? @@", re.ASCII)
+_HEADER_OK = ("--- ", "+++ ", "@@ ")
 
 # 적용 후 AST 비교에서 원본에 없던 호출로 허용하는 이름. "*."은 호출 결과에 붙은 메서드다
 ENV_CALLS = frozenset(
@@ -113,12 +115,14 @@ class _FileDiff:
 
 def _unsafe_path(name: str) -> bool:
     pure = PurePosixPath(name)
+    # 정규화 표기와 다르면 거부: sub//app.py·./app.py로 같은 파일을 두 번 고치지 못하게
     return (
         not name
         or name.startswith(('"', "/"))
-        or "\\" in name
+        or any(c in name for c in ("\\", "\t", "\r", "\0"))
         or ".." in pure.parts
         or pure.is_absolute()
+        or pure.as_posix() != name
     )
 
 
@@ -127,13 +131,26 @@ def _parse(text: str) -> tuple[list[_FileDiff], list[Violation]]:
     problems: list[Violation] = []
     current: _FileDiff | None = None
     old_name: str | None = None
-    git_path: str | None = None  # diff --git 헤더가 말한 경로(+++가 나오기 전까지)
+    pair_ready = False  # ---/+++ 쌍 바로 뒤(다음 줄은 @@여야 한다)
+    last_tag: str | None = None  # 바로 앞 줄이 hunk 본문이면 그 태그(-, +, 공백)
     old_no = new_no = old_left = new_left = 0
     for raw in text.split("\n"):
+        prev_tag, last_tag = last_tag, None
+        if raw.startswith("\\ No newline"):
+            # git은 바로 앞 줄의 줄바꿈을 지운다. 그 줄이 자기 쪽(원본/수정본)의 마지막 줄일 때만
+            # 받는다. 아니면 다음 문맥 줄이 앞 줄에 붙어 검사기가 본 것과 다르게 적용된다
+            ends_side = (
+                (prev_tag == "-" and old_left == 0)
+                or (prev_tag == "+" and new_left == 0)
+                or (prev_tag == " " and old_left == new_left == 0)
+            )
+            if not ends_side:
+                problems.append(Violation("format", message="줄바꿈 없음 표시 위치가 잘못됐다"))
+                break
+            continue
         if old_left > 0 or new_left > 0:
-            if raw.startswith("\\ No newline"):
-                continue
             tag, body = (raw[:1], raw[1:]) if raw else (" ", "")
+            last_tag = tag
             if current is None:
                 problems.append(Violation("format", message="파일 헤더 없는 hunk"))
                 break
@@ -155,23 +172,26 @@ def _parse(text: str) -> tuple[list[_FileDiff], list[Violation]]:
                 break
             continue
         if raw and not raw.startswith(_HEADER_OK):
-            # 모드 변경·이름 변경·바이너리 등 내용 밖의 변경. 줄 내용은 싣지 않는다
-            problems.append(Violation("scope", message="기존 텍스트 파일 내용 수정만 허용"))
+            # diff --git·index·모드 변경·이름 변경·바이너리 등. 줄 내용은 싣지 않는다
+            problems.append(Violation("scope", message="일반 unified diff 헤더(---/+++/@@)만 허용"))
             continue
-        if raw.startswith("diff --git "):
-            if git_path is not None:
-                problems.append(Violation("scope", git_path, message="내용 없는 파일 헤더"))
-            match = _GIT_HEADER.match(raw)
-            if not match or match.group(1) != match.group(2) or _unsafe_path(match.group(1)):
-                problems.append(Violation("scope", message="diff --git 헤더 경로가 잘못됐다"))
-                git_path = ""
-            else:
-                git_path = match.group(1)
-            old_name = None
-        elif raw.startswith("--- "):
-            old_name = raw[4:].split("\t", 1)[0]
+        if pair_ready and not raw.startswith("@@ "):
+            problems.append(Violation("format", message="---/+++ 쌍 바로 뒤에 hunk가 필요하다"))
+            break
+        if raw.startswith(("--- ", "+++ ")) and "\t" in raw:
+            # 탭 뒤 시각 접미사(1970-01-01 …)를 git은 생성·삭제로 읽는다. build_patch는 안 만든다
+            problems.append(Violation("scope", message="파일 이름 뒤 접미사는 허용하지 않는다"))
+            break
+        if raw.startswith("--- "):
+            if old_name is not None:
+                problems.append(Violation("format", message="--- 뒤에 +++가 필요하다"))
+                break
+            old_name = raw[4:]
         elif raw.startswith("+++ "):
-            new_name = raw[4:].split("\t", 1)[0]
+            if old_name is None:
+                problems.append(Violation("format", message="+++ 앞에 ---가 필요하다"))
+                break
+            new_name = raw[4:]
             name = new_name if new_name != "/dev/null" else (old_name or "")
             current = _FileDiff(path=name[2:] if name.startswith(("a/", "b/")) else name)
             current.created_or_deleted = "/dev/null" in (old_name, new_name)
@@ -180,25 +200,58 @@ def _parse(text: str) -> tuple[list[_FileDiff], list[Violation]]:
             bad_old = old_name not in (None, "/dev/null") and not old_name.startswith("a/")
             if not name.startswith(("a/", "b/")) or bad_old or _unsafe_path(current.path):
                 problems.append(Violation("scope", message="패치 경로가 잘못됐다"))
-            if git_path is not None and git_path != current.path:
+            if any(f.path == current.path for f in files):
                 problems.append(
-                    Violation("scope", current.path, message="diff --git 헤더와 경로가 다르다")
+                    Violation("format", current.path, message="파일마다 hunk 하나만 허용")
                 )
-            git_path = None
             files.append(current)
+            old_name, pair_ready = None, True
         elif raw.startswith("@@ "):
             match = _HUNK.match(raw)
-            if not match or current is None or git_path is not None:
+            if not match or current is None:
                 problems.append(Violation("format", message="hunk 헤더 오류"))
                 break
+            if not pair_ready:
+                # 헤더 하나 아래 두 번째 hunk. O1 apply_diff가 거부한다
+                problems.append(
+                    Violation("format", current.path, message="파일마다 hunk 하나만 허용")
+                )
+                break
+            pair_ready = False
             old_no, new_no = int(match.group(1)), int(match.group(3))
             old_left = int(match.group(2)) if match.group(2) is not None else 1
             new_left = int(match.group(4)) if match.group(4) is not None else 1
-    if git_path is not None:
-        problems.append(Violation("scope", git_path, message="내용 없는 파일 헤더"))
+    if old_name is not None or pair_ready:
+        problems.append(Violation("format", message="hunk 없는 파일 헤더"))
     if old_left > 0 or new_left > 0:
         problems.append(Violation("format", message="hunk 줄 수가 모자란다"))
     return files, problems
+
+
+def build_patch(changes: Mapping[str, tuple[str, str]]) -> bytes:
+    """{경로: (원본, 수정본)}으로 apply_diff·check_patch 형식의 diff를 만든다.
+
+    파일마다 ---/+++ 쌍과 hunk 하나(파일 전체를 문맥으로)다. 줄바꿈(CRLF/LF)은 원본 그대로 둔다.
+    내용이 같은 파일은 넣지 않는다.
+    """
+
+    def lines(text: str) -> list[str]:
+        # git처럼 LF에서만 나눈다(str.splitlines는 CR·폼피드 등에서도 나눈다)
+        return re.findall(r"[^\n]*\n|[^\n]+$", text)
+
+    out: list[str] = []
+    for path, (old, new) in sorted(changes.items()):
+        if old == new:
+            continue
+        old_lines, new_lines = lines(old), lines(new)
+        context = max(len(old_lines), len(new_lines))
+        for line in difflib.unified_diff(
+            old_lines, new_lines, fromfile=f"a/{path}", tofile=f"b/{path}", n=context
+        ):
+            out.append(line)
+            if not line.endswith("\n"):
+                out.append("\n\\ No newline at end of file\n")
+    return "".join(out).encode("utf-8")
 
 
 def _code_only(line: str) -> str:
@@ -277,6 +330,11 @@ def _allowed(path: str, policy: PatchPolicy) -> bool:
     return not policy.allowed_files or path in policy.allowed_files
 
 
+def _existing_file(source: Path, path: str) -> bool:
+    target = source / path
+    return not target.is_symlink() and target.is_file()
+
+
 def _syntax(root: Path, paths: Iterable[str]) -> list[Violation]:
     problems = []
     for path in paths:
@@ -286,6 +344,8 @@ def _syntax(root: Path, paths: Iterable[str]) -> list[Violation]:
             ast.parse((root / path).read_text("utf-8"), filename=path)
         except SyntaxError as error:
             problems.append(Violation("syntax", path, error.lineno, "적용 후 문법 오류"))
+        except (UnicodeDecodeError, ValueError, OSError):  # ValueError: NUL 바이트
+            problems.append(Violation("format", path, message="UTF-8 파이썬 파일로 읽을 수 없다"))
     return problems
 
 
@@ -417,8 +477,13 @@ def _ast_diff(source: Path, root: Path, paths: Iterable[str]) -> list[Violation]
     for path in paths:
         if not path.endswith(".py"):
             continue
-        old = ast.parse((source / path).read_text("utf-8"), filename=path)
-        new = ast.parse((root / path).read_text("utf-8"), filename=path)
+        try:
+            old = ast.parse((source / path).read_text("utf-8"), filename=path)
+            new = ast.parse((root / path).read_text("utf-8"), filename=path)
+        except (SyntaxError, UnicodeDecodeError, ValueError, OSError):
+            # 원본이 이미 파싱되지 않으면 비교할 수 없다. 통과시키지 않는다
+            problems.append(Violation("syntax", path, message="원본을 파싱할 수 없어 비교 불가"))
+            continue
 
         def calls(tree: ast.AST) -> list[tuple[str, ast.AST]]:
             return [(_call_name(n), n) for n in ast.walk(tree) if isinstance(n, ast.Call)]
@@ -473,6 +538,11 @@ def check_patch(source: Path, patch: bytes, policy: PatchPolicy | None = None) -
             )
         if not _allowed(diff.path, policy):
             result.violations.append(Violation("scope", diff.path, message="허용 파일이 아니다"))
+        elif not diff.created_or_deleted and not _existing_file(source, diff.path):
+            # /dev/null 없이도 git은 없는 파일을 만들 수 있다(old 줄 수 0). 기존 일반 파일만 받는다
+            result.violations.append(
+                Violation("scope", diff.path, message="기존 일반 파일이 아니다")
+            )
         line_problems, found = _check_lines(diff)
         result.violations += line_problems
         touched |= found
