@@ -1,0 +1,24 @@
+{
+  "additionalProperties": false,
+  "description": "run_id + tier. tier는 실행기가 build.<tier> step에서 채운다.",
+  "properties": {
+    "run_id": {
+      "description": "실행 ID. 모든 툴의 필수 입력",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+      "title": "Run Id",
+      "type": "string"
+    },
+    "tier": {
+      "description": "deploy.yaml에 정의된 tier",
+      "pattern": "^[a-z][a-z0-9_-]{0,31}$",
+      "title": "Tier",
+      "type": "string"
+    }
+  },
+  "required": [
+    "run_id",
+    "tier"
+  ],
+  "title": "BuildImageInput",
+  "type": "object"
+}
