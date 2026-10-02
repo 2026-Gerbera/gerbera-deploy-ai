@@ -28,7 +28,7 @@ O1 코드는 구현했고 승인 전 검사·후보·local build·운영 API를 
 
 ## 바로 실행하기 전에 남은 위험
 
-1. 로컬 Docker 로그인 판정은 system info의 Username 메타데이터에 의존한다. 실제 WSL Docker/credential helper와 호환 여부, push 권한은 미검증이다. buildx/QEMU는 준비돼 있어야 한다.
+1. Docker Username 누락·중복·namespace 불일치는 추가6에서 승인 경고로 낮췄다. 실제 WSL Docker/credential helper의 push 권한은 여전히 미검증이다. buildx/QEMU는 준비돼 있어야 하며 플랫폼 검사는 계속 차단한다.
 2. 현재 temp-box는 `/version`에 db.dialect가 없고 ready가 ok bool을 반환한다. 현재 smoke는 status=ok와 MySQL dialect 및 게시판 동작을 요구한다. 실제 gerbera-application 체크아웃은 확인하지 못했다. 앱/스모크 계약을 민영님이 맞추지 않으면 실제 배포가 성공해도 스모크에서 실패한다.
 3. 자동 3tier 첫 계획의 DB 우선 순서를 O2가 거부한다. 리허설은 deploy.yaml에서 DB tier를 빼고 기존 DB·마이그레이션 연결을 사용한다. DB/볼륨을 삭제하지 않는다.
 4. onprem만 배포할 때 cloud의 이전 manifest=None이 변경 탐지에 들어가 전부 변경으로 보일 수 있다. 재빌드/재배포가 늘며 시간에 영향을 준다.
@@ -57,7 +57,7 @@ O1 코드는 구현했고 승인 전 검사·후보·local build·운영 API를 
 - 기존 approvals.py/settings.py/dashboard·result·approval 템플릿/정적 파일은 수정하지 않았다.
 - 새 `web/routes/ops.py`와 `ops.html`, `ops_approval.html`, `_ops.html`. app.create의 include_router 연결만 병합한다.
 - dashboard/result의 `content` 블록에서 hero 다음에 `{% include '_ops.html' %}`를 넣을 수 있다. project 및 선택 run 변수를 받는다. 대체됨은 SUPERSEDED다.
-- 승인 데이터: preparation_failures, source_checks(source/ignored_count/findings), patch_meta, infra_summary. `/ops/runs/{run_id}/approval`은 이 정보를 보여주고 기존 POST 승인/실행 경로를 쓴다. 기존 GET 승인 라우트의 DdakToolError는 4xx로 처리해야 한다.
+- 승인 데이터: preparation_failures, preparation_errors, preparation_warnings(문자열 목록), source_checks(source/ignored_count/findings), patch_meta, infra_summary. `/ops/runs/{run_id}/approval`은 이 정보를 보여주고 기존 POST 승인/실행 경로를 쓴다. C3 승인 화면에도 preparation_warnings를 목록으로 표시한다. 기존 GET 승인 라우트의 DdakToolError는 4xx로 처리해야 한다.
 - 설정 저장은 공개 save_project_settings(expected_version), 배포 버튼은 enqueue_deployment(project, targets=None, ref=None)를 쓴다. request_deployment는 완료까지 기다리는 내부 API로 남긴다.
 - project_state.blocked_targets로 차단을 표시한다. NEEDS_HUMAN 원문은 해제 후에도 남는다. unlock_project(project, actor, reason), unlock_history(project, limit=20) 공개 API.
 - `verify/report/rules.py:12`의 cloud_domain_missing high 경고를 onprem 단독에서 제외해야 한다. 기존 SSE /events 501도 담당 확인.
@@ -101,6 +101,16 @@ PR 본문: CodeBuild와 같은 buildspec을 사용하는 local backend, 승인 �
 4. 기존 C3 승인 페이지에 source_checks/preparation_errors/patch_meta/infra_summary 표시를 합친다. 그전에는 `/ops/runs/{run_id}/approval`을 쓴다.
 
 ## 바뀐 파일 목록
+
+### 추가6 — Docker 로그인 사전 확인
+
+- Username 누락·중복은 로그인 확인 불가 경고, 단일 값의 namespace 불일치는 권한 확인 경고로 처리한다. 값 자체는 경고에 담지 않는다. buildx·QEMU 검사는 유지한다.
+- preflight가 반환한 경고는 RunContext.preparation_warnings에 저장하고 승인 해시·재시작 복원·refresh 불변 검사에 포함한다. 승인 데이터와 새 ops 승인 화면에 표시한다.
+- 빌드 phase stderr는 subprocess 메모리에서 고정된 인증 오류 패턴만 판별하고 파일·로그·오류 원문으로 내보내지 않는다. 인증 오류는 `docker login 필요`와 push 권한 확인 안내, 그 외 오류는 기존 일반 실패다. 패키지 buildspec 명령은 바꾸지 않았다.
+- 회귀: 로컬 빌드와 운영 연결 58 passed(0.39초). 최초 57 passed/1 failed는 새 테스트가 이미 삭제된 `_prepared` 메모리 속성을 참조한 오류였으며 서비스 재생성으로 수정해 SQLite 복원까지 확인했다. 실제 Docker 실행은 하지 않았다.
+- 이 추가분 변경: local.py, app.py, core/contracts/context.py, executor/service.py, ops_approval.html, test_local.py, test_fullchain_fix8.py 및 인계서·런북·결정·개발 기록. 연결분 worktree는 수정하지 않았다.
+
+### 수정8 전체
 
 - `harness/Makefile`
 - `harness/contracts/schemas/analyze_project.output.json`

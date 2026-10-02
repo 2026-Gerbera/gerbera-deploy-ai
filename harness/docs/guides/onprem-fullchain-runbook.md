@@ -17,7 +17,7 @@ gitleaks version
 - Claude는 같은 WSL 사용자로 로그인한다. `claude auth`의 상태 확인 명령은 설치 버전의 도움말에서 확인한다. `claude -p` 실호출은 운영자가 확인한다. 모델 기본은 Sonnet 5.5, 추론 강도 low이며 medium을 선택할 수 있다. 계정에서 해당 모델을 쓸 수 있는지는 이 개발에서 검증하지 않았다.
 - 사용자가 미리 `docker login`을 한다. 제품은 토큰을 입력받거나 login을 실행하지 않고 기존 Docker CLI 설정을 쓴다. 저장소는 `2026gerbera/flaskr`다. push 권한은 실제 빌드에서 확인된다.
 - 실행 중인 buildx builder가 linux/amd64·linux/arm64를 모두 지원해야 한다. QEMU·builder는 사람이 먼저 준비한다. 제품이 설치·생성하지 않는다. 사전 검사에서 확인 불가하면 승인 전에 멈춘다.
-- **로그인 확인 제한:** 제품은 `docker system info`의 Username 메타데이터를 사용한다. 이 정보를 주지 않는 Docker/credential helper 구성은 로그인했어도 준비 단계에서 거부한다. 키 파일·토큰을 출력해 해결하지 말고 그 경우의 Docker 버전을 O1에 전달한다.
+- **로그인 확인 제한:** `docker system info`의 Username이 없거나 여러 개면 승인 화면에 경고하고 계속한다. 값이 하나인데 저장소 namespace와 다를 때도 경고한다(조직 저장소일 수 있다). 이 정보는 push 권한의 증명이 아니다. 실제 빌드/push 인증 오류는 `docker login 필요`와 저장소 권한 확인 안내로 표시한다. 토큰·원문 stderr는 표시하지 않는다. buildx·QEMU 플랫폼 검사 실패는 계속 차단한다.
 - 앱 저장소는 자격증명 없는 HTTPS URL, prod·ai-prod·main 브랜치가 필요하다. 현재 사용자 Git 신원·일반 push 권한·gitleaks가 준비돼 있어야 한다. prod는 PR merge만, ai-prod/main은 제품의 일반 push를 허용한다. 환경 기록은 deployed/* 태그다.
 - 앱 소스의 `docker/web.Dockerfile`, `docker/was.Dockerfile`을 확인한다. 현재 플랫폼 buildspec은 이 경로를 쓴다. 앱의 임의 buildspec은 실행하지 않는다.
 - [3티어 가이드](O1-three-tier.md)의 VM 키 로그인·호스트 지문·Docker·네트워크·인벤토리를 준비한다. 런타임 env와 마이그레이션 env는 분리된 0600 파일이다. 값은 코드·문서·로그에 넣지 않는다.

@@ -85,7 +85,6 @@ async def test_local_build_login_warning_reaches_persisted_approval_page(rig, mo
     monkeypatch.setattr(
         app, "preflight_local_build", lambda repo: preflight_local_build(repo, runner=runner)
     )
-    service.build_preflight = app._local_build_preflight
     # app adapter의 REAL 분기만 검증하고 실제 배포 인벤토리는 이 준비에서 요구하지 않는다.
     ctx = RunContext(
         "run-warning", project="demo", build_backend="local", image_repository="test-team/app"
@@ -98,18 +97,22 @@ async def test_local_build_login_warning_reaches_persisted_approval_page(rig, mo
     expected = preflight_local_build(ctx.image_repository, runner=runner)
     assert service.get_run(rid)["status"] == "AWAITING_APPROVAL"
     assert service.approval_view(rid)["preparation_warnings"] == expected
-    service._prepared.clear()  # SQLite에 보관한 준비 컨텍스트에서도 경고를 복원한다.
-    assert service.approval_view(rid)["preparation_warnings"] == expected
+    service.close()
+    reopened = service_support.DeploymentService(service.registry, service.root)
+    assert reopened.approval_view(rid)["preparation_warnings"] == expected
     application = FastAPI()
     application.state.settings = Settings()
-    application.state.deployment = service
+    application.state.deployment = reopened
     request = Request(
         {"type": "http", "method": "GET", "path": "/ops", "app": application, "headers": []}
     )
     response = await approval_page(request, rid)
     assert response.status_code == 200
     assert "준비 경고" in response.body.decode() and expected[0] in response.body.decode()
-    service.approve(rid, approver="fixture")
+    try:
+        reopened.approve(rid, approver="fixture")
+    finally:
+        reopened.close()
 
 
 def test_tempbox_analyze_assemble_runtime_config_with_fake_ssh(tmp_path, vm):
