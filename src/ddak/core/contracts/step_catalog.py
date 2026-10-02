@@ -76,7 +76,7 @@ def _env_steps(env: Literal["local", "cloud"], tiers: Sequence[TierName]) -> lis
     out += [
         d(f"deploy.dbinit.{env}", "prepare_db", C, S, wait_for=image_ready,
           skip_rule="db_initialized"),
-        d(f"deploy.db.{env}", "prepare_db", C, S, allowed_params=("migrations",),
+        d(f"deploy.migrate.{env}", "prepare_db", C, S, allowed_params=("migrations",),
           wait_for=image_ready, skip_rule="no_new_migrations"),
         d(f"deploy.storage.{env}", "prepare_storage", OPT, S, wait_for=image_ready,
           skip_rule="optional"),

@@ -11,6 +11,7 @@ from ddak.core.redact import redact
 
 from .policy import (
     PolicyViolation,
+    inspect_ecs,
     inspect_policy,
     policy_json,
     protect_platform_resource,
@@ -103,6 +104,11 @@ def summarize_plan(
                     protect_platform_resource(kind, value, state_bucket)
         if kind == "aws_codebuild_project" and change.get("after"):
             protect_platform_resource(kind, change["after"], state_bucket)
+        if (
+            kind in {"aws_ecs_service", "aws_ecs_task_definition"}
+            and change.get("after") is not None
+        ):
+            inspect_ecs(kind, change["after"])
         actions = change.get("actions")
         require(
             actions

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from ddak import app
-from ddak.core.config import Settings
+from ddak.core.config import AdapterMode, Settings
 from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.enums import Target
 from ddak.core.contracts.tools.plan_infra import PlanInfraInput, PlanInfraOutput
@@ -81,7 +81,7 @@ async def test_missing_generator_bundle_is_visible_named_failure(rig, monkeypatc
     monkeypatch.setattr(app, "plan_deployment", plan)
     rid = await app._prepare_commit(
         service,
-        Settings(),
+        Settings(adapter_mode=AdapterMode.REAL),
         WatchTarget("demo", "https://github.com/org/app", "prod"),
         "a" * 40,
         policy=FetchPolicy(root=source.parent),
@@ -102,7 +102,7 @@ async def test_local_selection_does_not_require_cloud_bundle(rig, monkeypatch):
     ) == ({}, None)
 
 
-async def test_generated_bundle_is_assembled_validated_approved_and_applied(
+async def test_real_generator_bundle_is_assembled_and_validated_without_apply(
     rig, monkeypatch, tmp_path
 ):
     from dataclasses import replace
@@ -111,11 +111,10 @@ async def test_generated_bundle_is_assembled_validated_approved_and_applied(
     from ddak.cloud.infra import InfraBinding, InfraRuntime, unbind_infra
     from ddak.core.contracts.tools.generate_infra import GenerateInfraInput, GenerateInfraOutput
     from ddak.core.snapshots import digest_bytes
-    from ddak.executor.engine import RunStatus
     from ddak.executor.infra import refresh_infra_context
     from tests.unit.cloud.infra import test_runtime as fixtures
 
-    service, source, _ = rig
+    service, _source, _ = rig
     loaded = app.load_tools()
     names = ("generate_infra", "validate_infra", "plan_infra", "apply_infra")
     registry = Registry([*service.registry.specs, *(spec_for(n) for n in names)])
@@ -166,16 +165,12 @@ async def test_generated_bundle_is_assembled_validated_approved_and_applied(
     service.registry = registry
     service.refresh = refresh_infra_context
     p = infra_plan("run-generated")
-    ctx = RunContext(p.run_id, project=p.project)
+    ctx = RunContext(p.run_id, project=p.project, adapter_mode=AdapterMode.REAL)
     try:
         subjects, metadata = await app._infra_approval(service, p, ctx)
         assert "HCL source=fixture" in metadata["headline"]
         assert not any(c[0][1] == "apply" for c in runners[0].calls)
-        service.prepare(p, ctx, source, subjects=subjects, infra_summary=metadata)
-        service.approve(p.run_id, approver="operator")
-        service.start(p.run_id)
-        assert (await service.wait(p.run_id)).status is RunStatus.SUCCEEDED
-        assert any(c[0][1] == "apply" for c in runners[0].calls)
+        assert subjects["infra"] == metadata["plan_sha256"]
     finally:
         unbind_infra(p.run_id)
 
@@ -200,4 +195,70 @@ async def test_sync_generator_timeout_never_creates_binding(rig, monkeypatch):
     monkeypatch.setattr(app, "bind_infra", lambda *_: pytest.fail("must not bind timeout result"))
     p = infra_plan("generator-timeout")
     with pytest.raises(DdakToolError, match="generate_infra 제한 시간"):
-        await app._infra_approval(service, p, RunContext(p.run_id, project=p.project))
+        await app._infra_approval(
+            service, p, RunContext(p.run_id, project=p.project, adapter_mode=AdapterMode.REAL)
+        )
+
+
+@pytest.mark.parametrize("targets", ["cloud", "both"])
+async def test_fake_first_infra_approval_and_execution_need_no_generator_or_aws(
+    rig, monkeypatch, targets
+):
+    from ddak.cloud.infra import fixture_binding, unbind_infra
+    from ddak.cloud.infra.runtime import CommandRunner
+    from ddak.core.contracts.enums import RunMode
+    from ddak.core.contracts.errors import DdakToolError
+    from ddak.executor.engine import RunStatus
+    from ddak.executor.infra import refresh_infra_context
+
+    service, source, _ = rig
+    loaded = app.load_tools()
+    names = ("validate_infra", "plan_infra", "apply_infra")
+    registry = Registry([*service.registry.specs, *(spec_for(n) for n in names)])
+    for name in service.registry.registered():
+        registry.tool(name)(service.registry.get(name).fn)
+    for name in names:
+        registry.tool(name)(loaded.get(name).fn)
+    service.registry = registry
+    service.refresh = refresh_infra_context
+    monkeypatch.setattr(
+        "boto3.Session", lambda *a, **k: pytest.fail("FAKE must not create AWS session")
+    )
+    monkeypatch.setattr(
+        CommandRunner, "run", lambda *a, **k: pytest.fail("FAKE must not execute CLI")
+    )
+    p = infra_plan(f"fake-first-{targets}").model_copy(update={"mode": RunMode.BOOTSTRAP})
+    ctx = RunContext(p.run_id, project=p.project, mode=p.mode, targets=targets)
+    try:
+        subjects, metadata = await app._infra_approval(service, p, ctx)
+        assert "source=fixture" in metadata["headline"]
+        p = app._platform_bootstrap_plan(p, ctx, metadata)
+        service.prepare(p, ctx, source, subjects=subjects, infra_summary=metadata)
+        with pytest.raises(DdakToolError):
+            service.start(p.run_id)
+        service.approve(p.run_id, approver="operator")
+        service.start(p.run_id)
+        result = await service.wait(p.run_id)
+        assert result.status is RunStatus.SUCCEEDED, result
+        assert (
+            next(r.output for r in result.records if r.step_id == "deploy.infra.cloud")["source"]
+            == "fixture"
+        )
+        cloud = result.context.platform["cloud"]
+        assert {
+            "cluster_name",
+            "ecs_service_name",
+            "target_group_arn",
+            "app_security_group_id",
+            "public_subnet_ids",
+        } <= cloud.keys()
+        assert "region" not in service.get_platform_outputs("demo", AdapterMode.FAKE)
+    finally:
+        unbind_infra(p.run_id)
+    with pytest.raises(DdakToolError, match="FAKE"):
+        fixture_binding(
+            RunContext("real-rejected", project="demo", adapter_mode=AdapterMode.REAL),
+            root=service.root,
+            approvals=lambda: [],
+            guard=lambda: None,
+        )

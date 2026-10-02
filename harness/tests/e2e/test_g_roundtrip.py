@@ -44,8 +44,15 @@ class Output(ContractModel):
 
 
 @pytest.mark.anyio
-async def test_watch_manual_approval_git_roundtrip(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("relative_defaults", [False, True])
+async def test_watch_manual_approval_git_roundtrip(
+    tmp_path, monkeypatch, capsys, relative_defaults
+):
     started = time.monotonic()
+    if relative_defaults:
+        monkeypatch.chdir(tmp_path)
+    settings = Settings.from_env({})
+    state_root = settings.run_dir.parent if relative_defaults else tmp_path / "state"
     real_registry = app.load_tools()
     missing = {name: real_registry.spec(name).owners for name in sorted(real_registry.missing())}
     registry = Registry(real_registry.specs)
@@ -103,7 +110,11 @@ async def test_watch_manual_approval_git_roundtrip(tmp_path, monkeypatch, capsys
     assert git(work, "rev-parse", "refs/tags/v1") != v1
     git(work, "push", "origin", "prod", "HEAD:main", "HEAD:ai-prod", "refs/tags/v1")
     git(work, "switch", "-c", "ai-prod")
-    policy = FetchPolicy(allowed_schemes=("file",), allowed_hosts=None, root=tmp_path / "intake")
+    policy = FetchPolicy(
+        allowed_schemes=("file",),
+        allowed_hosts=None,
+        root=Path("var/sources") if relative_defaults else tmp_path / "intake",
+    )
     url = bare.as_uri()
     git(work, "remote", "set-url", "origin", url)
     # 운영 설정은 HTTPS만 허용한다. 이 시험에만 로컬 bare URL을 허용한다.
@@ -139,7 +150,9 @@ async def test_watch_manual_approval_git_roundtrip(tmp_path, monkeypatch, capsys
     monkeypatch.setattr(app, "plan_deployment", plan)
     monkeypatch.setattr(app, "resolve_head", resolve)
     monkeypatch.delenv("DDAK_ONPREM_INVENTORY", raising=False)
-    connected_repository = app._repository_factory(tmp_path / "checkouts", allow_local=True)
+    connected_repository = app._repository_factory(
+        Path("var/checkouts") if relative_defaults else tmp_path / "checkouts", allow_local=True
+    )
     scanner_calls = []
 
     def fixture_scanner(workspace):
@@ -153,9 +166,9 @@ async def test_watch_manual_approval_git_roundtrip(tmp_path, monkeypatch, capsys
 
     service = DeploymentService(
         registry,
-        tmp_path / "state",
+        state_root,
         repository_factory=fixture_repository,
-        planning_flow=app._manual_planning(Settings(), policy),
+        planning_flow=app._manual_planning(settings, policy),
     )
     service.save_project_settings(
         "demo",
@@ -168,6 +181,8 @@ async def test_watch_manual_approval_git_roundtrip(tmp_path, monkeypatch, capsys
     async def deploy(rid, source_sha, label, requested_at):
         prepared_at = time.monotonic()
         view = service.approval_view(rid)
+        assert service.root.is_absolute() and service.store.path.is_absolute()
+        assert service._load_prepared(rid).source.is_absolute()
         assert service.get_run(rid)["status"] == "AWAITING_APPROVAL", service.get_run(rid)["result"]
         assert not any(run == rid for _, run in calls)
         service.approve(rid, approver="operator")
@@ -202,9 +217,9 @@ async def test_watch_manual_approval_git_roundtrip(tmp_path, monkeypatch, capsys
         await service.shutdown()
         service = DeploymentService(
             registry,
-            tmp_path / "state",
+            state_root,
             repository_factory=fixture_repository,
-            planning_flow=app._manual_planning(Settings(), policy),
+            planning_flow=app._manual_planning(settings, policy),
         )
         assert service.approval_view(first)["repo_url"] == url
         first_release = await deploy(first, v1, "v1", first_started)

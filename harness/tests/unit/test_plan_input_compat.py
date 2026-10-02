@@ -37,7 +37,7 @@ async def test_forced_decisions_and_modified_migration_warning_survive_restart(r
     p.deploy.local.steps.insert(
         0,
         support.step(
-            "deploy.db.local",
+            "deploy.migrate.local",
             "prepare_db",
             target=Target.LOCAL,
             tier="was",
@@ -61,6 +61,11 @@ async def test_forced_decisions_and_modified_migration_warning_survive_restart(r
         )
     )
     if forced_skip:
+        # 빌드 생략은 초기 배포가 아니다. 먼저 실제 서비스 경로로 성공 이미지를 기록한다.
+        from tests.unit.test_followup5_service import deploy
+
+        await deploy(service, source, calls, "baseline", ["was"])
+        calls.contexts.clear()
         p.build.steps.clear()
         p.build.skipped.append(
             SkippedStep(

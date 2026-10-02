@@ -44,6 +44,27 @@ class ImageObservation(ContractModel):
     platform_digest: Sha256
 
 
+class CarriedImageSource(ContractModel):
+    """previous_release[target].image_sources[tier]. 새 빌드 snapshot과 분리한다."""
+
+    artifact: ImageArtifact
+    release_id: str | None = None
+    source_sha: str | None = None
+    candidate_sha: str | None = None
+    snapshot: SnapshotBinding | None = None
+    observation: ImageObservation | None = None
+    carried_forward: Literal[True] = True
+
+    @model_validator(mode="after")
+    def validate_observation(self) -> Self:
+        if self.observation is not None and (
+            self.artifact.platform_digests[self.observation.platform]
+            != self.observation.platform_digest
+        ):
+            raise ValueError("이월 관측 digest와 이미지가 다르다")
+        return self
+
+
 class ReleaseArtifacts(ContractModel):
     snapshot: SnapshotBinding
     images: dict[TierName, ImageArtifact]

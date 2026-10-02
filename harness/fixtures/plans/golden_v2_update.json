@@ -60,7 +60,7 @@
           ]
         },
         {
-          "id": "deploy.db.local",
+          "id": "deploy.migrate.local",
           "tool": "prepare_db",
           "target": "local",
           "params": {
@@ -173,7 +173,7 @@
           ]
         },
         {
-          "id": "deploy.db.cloud",
+          "id": "deploy.migrate.cloud",
           "tool": "prepare_db",
           "target": "cloud",
           "params": {

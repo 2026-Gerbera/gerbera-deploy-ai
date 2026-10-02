@@ -116,7 +116,7 @@ def service_rehearsals(
                 "inject_env_config",
                 keys=[] if version == 0 else ["SECRET_KEY"],
             ),
-            _step("deploy.db.local", "prepare_db", migrations=["001_fixture"]),
+            _step("deploy.migrate.local", "prepare_db", migrations=["001_fixture"]),
             _step("deploy.was.local", "deploy_tier", tier="was"),
             _step("verify.health.local", "health_check"),
             _step("verify.smoke.local", "smoke_test"),

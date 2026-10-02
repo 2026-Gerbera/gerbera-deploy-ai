@@ -30,9 +30,18 @@ from ddak.core.contracts.deploy_request import DeployRequest
 from ddak.core.contracts.enums import Effect, Layer, RunMode, Target
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.contracts.events import EventType, RunEvent
-from ddak.core.contracts.infra_outputs import PLATFORM_OUTPUTS, checked_outputs
+from ddak.core.contracts.infra_outputs import (
+    APP_OUTPUTS,
+    APP_SECRET_OUTPUT,
+    PLATFORM_OUTPUTS,
+    checked_cloud_outputs,
+)
 from ddak.core.contracts.plan import Plan, PlanStep
-from ddak.core.contracts.release import ReleaseArtifacts, SnapshotBinding
+from ddak.core.contracts.release import (
+    ImageObservation,
+    ReleaseArtifacts,
+    SnapshotBinding,
+)
 from ddak.core.project_settings import ProjectSettings
 from ddak.core.redact import redact, redact_obj
 from ddak.core.registry import Registry, UnknownToolError
@@ -42,6 +51,7 @@ from ddak.core.store import Store, release_view
 from ddak.executor.approval_meta import check_infra_summary, encode_meta
 from ddak.executor.engine import Executor, RunResult, RunStatus, TrackStatus, check_signals
 from ddak.executor.events import EventBus
+from ddak.executor.images import carried_image_source, carried_images, locked_database
 from ddak.executor.selection import select_plan
 
 ApprovalKind = Literal["patch", "deploy", "infra", "dockerfile", "foundation"]
@@ -90,9 +100,12 @@ def environment_release(
 
 def platform_outputs(context: RunContext) -> dict[str, Any]:
     try:
-        return checked_outputs(
-            {k: v for k, v in context.platform.get("cloud", {}).items() if k in PLATFORM_OUTPUTS},
-            "platform",
+        return checked_cloud_outputs(
+            {
+                k: v
+                for k, v in context.platform.get("cloud", {}).items()
+                if k in PLATFORM_OUTPUTS or k in APP_OUTPUTS or APP_SECRET_OUTPUT.fullmatch(k)
+            }
         )
     except (ValueError, TypeError, AttributeError):
         raise DdakToolError(ErrorCode.CONFIG_INVALID, "플랫폼 출력 형식 오류") from None
@@ -127,6 +140,7 @@ class DeploymentService:
         planning_flow: PlanningFlow | None = None,
         repository_factory: Callable[[RunContext], AppRepository] | None = None,
     ) -> None:
+        root = root.expanduser().resolve()
         self.registry, self.root, self.refresh = registry, root, refresh
         self.repositories = dict(repositories or {})
         self.repository_factory = repository_factory
@@ -192,6 +206,9 @@ class DeploymentService:
         infra_summary: dict[str, Any] | None = None,
         expected_settings_version: int | None = None,
     ) -> str:
+        if source.expanduser().is_symlink():
+            raise DdakToolError(ErrorCode.CONFIG_INVALID, "소스 심볼릭 링크는 지원하지 않는다")
+        source = source.expanduser().resolve()
         if context.source_binding is not None:
             raise DdakToolError(
                 ErrorCode.CONFIG_INVALID, "source_binding은 승인 뒤 실행기만 채운다"
@@ -221,6 +238,86 @@ class DeploymentService:
                 ErrorCode.PRECONDITION_FAILED, "요청 저장소와 프로젝트 설정이 다르다"
             )
         plan = select_plan(plan, context)
+        if context.adapter_mode is AdapterMode.REAL and plan.deploy.local.steps:
+            inventory = context.platform.get("onprem")
+            tiers = inventory.get("tiers") if isinstance(inventory, Mapping) else None
+            if not isinstance(tiers, Mapping) or not tiers:
+                raise DdakToolError(
+                    ErrorCode.CONFIG_INVALID, "실제 온프렘 배포 인벤토리가 필요하다"
+                )
+            needed = {s.tier for s in plan.deploy.local.steps if s.tool == "deploy_tier" and s.tier}
+            needed |= {s.tier or "was" for s in plan.deploy.local.steps if s.tool == "prepare_db"}
+            missing = needed - tiers.keys()
+            if missing:
+                raise DdakToolError(
+                    ErrorCode.CONFIG_INVALID,
+                    "온프렘 인벤토리 tier 누락: " + ", ".join(sorted(missing)),
+                )
+        snapshot = preview(source, patch)
+        if context.release_artifacts and context.release_artifacts.snapshot != snapshot:
+            raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "입력 이미지의 소스 결합이 다르다")
+        database_deploy = any(
+            s.tool == "deploy_tier" and s.tier == "db" for s in plan.deploy.local.steps
+        )
+        if database_deploy and any(
+            s.tool == "deploy_tier" and s.tier == "db" for s in plan.deploy.cloud.steps
+        ):
+            raise DdakToolError(
+                ErrorCode.PLAN_INVALID,
+                "온프렘 MySQL은 cloud db 배포에 공유할 수 없다; 클라우드 DB 계획 연결 필요",
+            )
+        if database_deploy and any(
+            s.tool == "build_image" and s.tier == "db" for s in plan.build.steps
+        ):
+            raise DdakToolError(
+                ErrorCode.PLAN_INVALID,
+                "온프렘 db는 공식 이미지 사용: O2 계획에서 build.db를 제외해야 한다",
+            )
+        if database_deploy and not (
+            context.release_artifacts and "db" in context.release_artifacts.images
+        ):
+            db_image = locked_database(source, snapshot, patch)
+            supplied_images = (
+                dict(context.release_artifacts.images) if context.release_artifacts else {}
+            )
+            context = replace(
+                context,
+                images={**context.images, "db": db_image.ref},
+                release_artifacts=ReleaseArtifacts(
+                    snapshot=snapshot, images={**supplied_images, "db": db_image}
+                ),
+            )
+        if (
+            database_deploy
+            and context.release_artifacts
+            and not context.release_artifacts.images["db"].ref.startswith(
+                ("mysql@", "docker.io/library/mysql@")
+            )
+        ):
+            raise DdakToolError(
+                ErrorCode.CONFIG_INVALID, "DB는 digest 고정 공식 MySQL 이미지만 허용한다"
+            )
+        previous = {
+            target: row["current"]
+            for target, row in self.store.environments(context.project).items()
+            if row["current"] and row["status"] != "NEEDS_HUMAN"
+        }
+        supplied = context.release_artifacts
+        carried = carried_images(
+            plan, previous, context.adapter_mode, supplied.images if supplied else ()
+        )
+        if any(set(context.images) & set(tiers) for tiers in carried.values()):
+            raise DdakToolError(
+                ErrorCode.CONFIG_INVALID, "미빌드 tier 이미지는 환경의 성공 기록만 사용한다"
+            )
+        context = replace(
+            context,
+            previous_release={target: previous[target] for target in carried},
+            images={
+                **({t: a.ref for t, a in supplied.images.items()} if supplied else {}),
+                **context.images,
+            },
+        )
         patch_meta_json = encode_meta(patch_meta)
         infra_summary_json = encode_meta(infra_summary, infra=True)
         if (patch_meta is not None and not patch) or (
@@ -250,7 +347,6 @@ class DeploymentService:
                 raise DdakToolError(
                     ErrorCode.PLAN_INVALID, "내장/계획 밖 툴은 계획에서 실행할 수 없다"
                 )
-        snapshot = preview(source, patch)
         if facts_reader is None:
             # O2가 아직 연결되지 않은 로컬 호출의 명시적인 기본 facts = 소스 manifest 해시.
             facts_reader = source_facts
@@ -521,7 +617,7 @@ class DeploymentService:
         return self.store.project_settings(project)
 
     def get_platform_outputs(self, project: str, mode: AdapterMode) -> dict[str, Any]:
-        return checked_outputs(self.store.platform_outputs(project, mode.value), "platform")
+        return checked_cloud_outputs(self.store.platform_outputs(project, mode.value))
 
     def guard_infra(self, run_id: str, project: str) -> None:
         """승인 전에는 조회만 가능하고, 실행 중에는 해당 실행의 잠금을 확인한다."""
@@ -733,6 +829,19 @@ class DeploymentService:
             raise DdakToolError(ErrorCode.LOCK_HELD, "동일 run은 한 번만 실행한다")
         p = self._load_prepared(run_id)
         self._check_approval(p)
+        previous = {
+            target: row["current"]
+            for target, row in self.store.environments(p.plan.project).items()
+            if row["current"] and row["status"] != "NEEDS_HUMAN"
+        }
+        supplied = p.context.release_artifacts
+        carried_images(
+            p.plan, previous, p.context.adapter_mode, supplied.images if supplied else ()
+        )
+        if any(previous.get(t) != old for t, old in p.context.previous_release.items()):
+            raise DdakToolError(
+                ErrorCode.PRECONDITION_FAILED, "승인 뒤 이월 이미지 기준이 변경됐다"
+            )
         if p.context.adapter_mode is AdapterMode.REAL and p.context.mode is RunMode.UPDATE:
             environments = self.store.environments(p.plan.project)
             for target, section in (("local", p.plan.deploy.local), ("cloud", p.plan.deploy.cloud)):
@@ -758,8 +867,42 @@ class DeploymentService:
         self._entered.add(p.plan.run_id)
         directory = run_dir(self.root / "runs", p.plan.run_id)
         envs = self.store.environments(p.plan.project)
-        previous = {target: row["current"] for target, row in envs.items() if row["current"]}
+        previous = {
+            target: row["current"]
+            for target, row in envs.items()
+            if row["current"] and row["status"] != "NEEDS_HUMAN"
+        }
         ctx = replace(p.context, lock_token=token, previous_release=previous)
+        database_deploy = any(
+            s.tool == "deploy_tier" and s.tier == "db" for s in p.plan.deploy.local.steps
+        )
+        supplied = p.context.release_artifacts
+        carried = carried_images(
+            p.plan,
+            p.context.previous_release,
+            p.context.adapter_mode,
+            supplied.images if supplied else (),
+        )
+        carried_observations: dict[str, dict[str, Any]] = {}
+        # 이전 형식의 장부도 provider에는 동일한 검증된 경로로 전달한다.
+        ctx = replace(
+            ctx,
+            previous_release={
+                target: {
+                    **old,
+                    "image_sources": {
+                        **(old.get("image_sources") or {}),
+                        **{
+                            tier: carried_image_source(old, tier, target).model_dump(mode="json")
+                            for tier in carried.get(target, {})
+                        },
+                    },
+                }
+                if target in carried
+                else old
+                for target, old in previous.items()
+            },
+        )
         if ctx.release_artifacts:
             ctx = replace(
                 ctx, release_artifacts=ctx.release_artifacts.model_copy(update={"observations": {}})
@@ -849,6 +992,22 @@ class DeploymentService:
             ):
                 raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "빌드 사본이 승인 뒤 변경됐다")
 
+        def tool_context(step: PlanStep, target: Target | None, current: RunContext) -> RunContext:
+            # 전역 state.ctx에는 새 빌드만 둔다. 병렬 환경의 서로 다른 이전 digest를 섞지 않는다.
+            if (
+                target is Target.CLOUD
+                and database_deploy
+                and not any(
+                    s.tier == "db" and s.tool == "deploy_tier" for s in p.plan.deploy.cloud.steps
+                )
+            ):
+                current = replace(
+                    current, images={t: ref for t, ref in current.images.items() if t != "db"}
+                )
+            if target is None or target.value not in carried:
+                return current
+            return replace(current, images={**current.images, **carried[target.value]})
+
         async def after(step: PlanStep, output: dict[str, Any], current: RunContext) -> RunContext:
             updated = current
             target = step.target
@@ -864,6 +1023,14 @@ class DeploymentService:
                         ErrorCode.PRECONDITION_FAILED, "빌드 결과의 스냅샷이 다르다"
                     )
                 artifacts = artifacts.model_copy(update={"observations": {}})
+                if database_deploy and supplied and "db" in supplied.images:
+                    if "db" in artifacts.images and artifacts.images["db"] != supplied.images["db"]:
+                        raise DdakToolError(
+                            ErrorCode.PRECONDITION_FAILED, "빌드가 승인된 공식 DB 이미지를 변경했다"
+                        )
+                    artifacts = artifacts.model_copy(
+                        update={"images": {**artifacts.images, "db": supplied.images["db"]}}
+                    )
                 updated = replace(
                     current,
                     release_artifacts=artifacts,
@@ -871,11 +1038,27 @@ class DeploymentService:
                 )
             if output.get("observation") is not None and target and step.tier:
                 artifacts = updated.release_artifacts
-                if artifacts is None:
+                if step.tier in carried.get(target.value, {}):
+                    old = previous[target.value]
+                    image = carried_image_source(old, step.tier, target.value).artifact
+                    observed = ImageObservation.model_validate(output["observation"])
+                    if image.platform_digests[observed.platform] != observed.platform_digest:
+                        raise DdakToolError(
+                            ErrorCode.PRECONDITION_FAILED, "이월 이미지의 플랫폼 digest가 다르다"
+                        )
+                    carried_observations.setdefault(target.value, {})[step.tier] = (
+                        observed.model_dump(mode="json")
+                    )
+                elif artifacts is None:
                     raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "빌드 산출물 없이 관측했다")
-                data = artifacts.model_dump(mode="json")
-                data["observations"].setdefault(target.value, {})[step.tier] = output["observation"]
-                updated = replace(updated, release_artifacts=ReleaseArtifacts.model_validate(data))
+                else:
+                    data = artifacts.model_dump(mode="json")
+                    data["observations"].setdefault(target.value, {})[step.tier] = output[
+                        "observation"
+                    ]
+                    updated = replace(
+                        updated, release_artifacts=ReleaseArtifacts.model_validate(data)
+                    )
             if step.tool == "apply_infra" and self.refresh is None:
                 raise DdakToolError(ErrorCode.INFRA_MISSING, "C1 환경 출력 갱신 연결이 필요하다")
             if self.refresh:
@@ -905,6 +1088,10 @@ class DeploymentService:
                     ErrorCode.PRECONDITION_FAILED, "승인 source_binding과 빌드 산출물이 다르다"
                 )
             platform_outputs(updated)
+            if any(set(updated.images) & set(tiers) for tiers in carried.values()):
+                raise DdakToolError(
+                    ErrorCode.PRECONDITION_FAILED, "미빌드 tier 이미지의 전역 덮어쓰기 거부"
+                )
             if target:
                 if self.registry.spec(step.tool).effect is Effect.STATE_CHANGE:
                     checks[target].clear()
@@ -928,7 +1115,10 @@ class DeploymentService:
                     )
                 artifacts = updated.release_artifacts
                 observed = artifacts.observations.get(target.value, {}) if artifacts else {}
-                if not updated.images or set(updated.images) - set(observed):
+                expected = set(tool_context(step, target, updated).images)
+                if not expected or expected - (
+                    set(observed) | set(carried_observations.get(target.value, {}))
+                ):
                     raise DdakToolError(
                         ErrorCode.PRECONDITION_FAILED, "필수 tier 이미지 관측이 없다"
                     )
@@ -997,6 +1187,10 @@ class DeploymentService:
         run_repository = None
         git_timing_start = 0
         try:
+            if any(previous.get(t) != old for t, old in p.context.previous_release.items()):
+                raise DdakToolError(
+                    ErrorCode.PRECONDITION_FAILED, "승인 뒤 이월 이미지 기준이 변경됐다"
+                )
             try:
                 run_repository = await asyncio.to_thread(self.connect_repository, ctx)
                 if (
@@ -1104,6 +1298,7 @@ class DeploymentService:
                 rollback=rollback,
                 before_step=before,
                 after_step=after,
+                tool_context=tool_context,
                 on_invoke=invoked,
                 rollback_timeouts=rollback_timeouts,
             ).run(p.plan, ctx)
@@ -1213,9 +1408,42 @@ class DeploymentService:
                 continue
             track = result.tracks.get(target)
             if track is TrackStatus.DONE:
+                target_release = release
+                if (
+                    target == "cloud"
+                    and database_deploy
+                    and not any(
+                        s.tier == "db" and s.tool == "deploy_tier"
+                        for s in p.plan.deploy.cloud.steps
+                    )
+                ):
+                    target_artifacts = release["artifacts"]
+                    if target_artifacts:
+                        target_artifacts = {
+                            **target_artifacts,
+                            "images": {
+                                t: a for t, a in target_artifacts["images"].items() if t != "db"
+                            },
+                            "observations": {
+                                env: {t: o for t, o in items.items() if t != "db"}
+                                for env, items in target_artifacts["observations"].items()
+                            },
+                        }
+                    target_release = {
+                        **release,
+                        "images": {t: ref for t, ref in release["images"].items() if t != "db"},
+                        "artifacts": target_artifacts,
+                    }
+                current_release = environment_release(
+                    target_release, previous.get(target, {}), target
+                )
+                if target == "local" and database_deploy:
+                    current_release["image_sources"]["db"]["source"] = "approved_mysql_artifact"
+                for tier, observation in carried_observations.get(target, {}).items():
+                    current_release["image_sources"][tier]["observation"] = observation
                 changes[target] = (
                     "SUCCEEDED",
-                    environment_release(release, previous.get(target, {}), target),
+                    current_release,
                 )
             elif track is TrackStatus.ROLLED_BACK:
                 changes[target] = ("ROLLED_BACK", None)

@@ -174,6 +174,62 @@ def static_gate(
         return GateResult(False, "HCL_INVALID")
 
 
+def inspect_ecs(kind: str, body: dict[str, Any], *, hcl: bool = False) -> None:
+    """ECS 배포 소유권. lifecycle은 plan의 after에 없으므로 HCL에서만 검사한다."""
+    if kind == "aws_ecs_service":
+        breaker = body.get("deployment_circuit_breaker")
+        require(
+            isinstance(breaker, list)
+            and len(breaker) == 1
+            and isinstance(breaker[0], dict)
+            and breaker[0].get("enable") is True
+            and breaker[0].get("rollback") is True,
+            "ECS_CIRCUIT_BREAKER_REQUIRED",
+        )
+        if hcl:
+            lifecycle = body.get("lifecycle")
+            require(
+                isinstance(lifecycle, list)
+                and len(lifecycle) == 1
+                and isinstance(lifecycle[0], dict),
+                "ECS_DEPLOYMENT_OWNED_BY_C2",
+            )
+            ignored = lifecycle[0].get("ignore_changes")
+            require(
+                isinstance(ignored, list) and all(isinstance(v, str) for v in ignored),
+                "ECS_DEPLOYMENT_OWNED_BY_C2",
+            )
+            names = {v.removeprefix("${").removesuffix("}") for v in ignored}
+            require({"task_definition", "desired_count"} <= names, "ECS_DEPLOYMENT_OWNED_BY_C2")
+    if kind == "aws_ecs_task_definition":
+        encoded = body.get("container_definitions")
+        if not isinstance(encoded, str):
+            raise PolicyViolation("CONTAINER_DEFINITIONS_UNKNOWN")
+        if encoded.startswith("${jsonencode(") and encoded.endswith(")}"):
+            encoded = encoded[len("${jsonencode(") : -2]
+        try:
+            containers = json.loads(encoded)
+        except (ValueError, TypeError):
+            raise PolicyViolation("CONTAINER_DEFINITIONS_UNKNOWN") from None
+        require(isinstance(containers, list) and bool(containers), "CONTAINER_DEFINITIONS_UNKNOWN")
+        require(
+            all(
+                isinstance(c, dict)
+                and not any(
+                    k.lower() in {"environment", "environmentfiles", "secrets"} and v
+                    for k, v in c.items()
+                )
+                for c in containers
+            ),
+            "CONTAINER_ENV_MANAGED_BY_C2",
+        )
+        names = [c.get("name") for c in containers]
+        require(
+            all(n in ("web", "was") for n in names) and len(set(names)) == len(names),
+            "ECS_CONTAINER_NAME_MUST_MATCH_TIER",
+        )
+
+
 def _resource(kind: str, body: dict[str, Any], layer: str) -> None:
     forbidden = {
         "provisioner",
@@ -236,28 +292,7 @@ def _resource(kind: str, body: dict[str, Any], layer: str) -> None:
             "SECRET_NAME_SCOPE",
         )
         require("policy" not in body, "SECRET_RESOURCE_POLICY_FORBIDDEN")
-    if kind == "aws_ecs_task_definition":
-        encoded = body.get("container_definitions")
-        if not isinstance(encoded, str):
-            raise PolicyViolation("CONTAINER_DEFINITIONS_UNKNOWN")
-        if encoded.startswith("${jsonencode(") and encoded.endswith(")}"):
-            encoded = encoded[len("${jsonencode(") : -2]
-        try:
-            containers = json.loads(encoded)
-        except (ValueError, TypeError):
-            raise PolicyViolation("CONTAINER_DEFINITIONS_UNKNOWN") from None
-        require(isinstance(containers, list) and bool(containers), "CONTAINER_DEFINITIONS_UNKNOWN")
-        require(
-            all(
-                isinstance(c, dict)
-                and not any(
-                    k.lower() in {"environment", "environmentfiles", "secrets"} and v
-                    for k, v in c.items()
-                )
-                for c in containers
-            ),
-            "CONTAINER_ENV_MANAGED_BY_C2",
-        )
+    inspect_ecs(kind, body, hcl=True)
     if kind == "aws_db_instance":
         require(body.get("manage_master_user_password") is True, "RDS_MANAGED_PASSWORD")
         require(body.get("publicly_accessible") is False, "RDS_PRIVATE")

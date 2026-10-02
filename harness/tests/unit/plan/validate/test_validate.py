@@ -105,7 +105,7 @@ def test_strict_rejects_unknown_id() -> None:
 def test_forbidden_params_always_rejected(key: str) -> None:
     for strict in (True, False):
         with pytest.raises(DdakToolError) as e:
-            check_params("deploy.db.cloud", {key: "x"}, ("migrations",), strict=strict)
+            check_params("deploy.migrate.cloud", {key: "x"}, ("migrations",), strict=strict)
         assert e.value.code is ErrorCode.PLAN_INVALID
 
 
@@ -124,9 +124,9 @@ def test_mandatory_forced_include_recorded() -> None:
 
 
 def test_conditional_ai_skip_is_overridden() -> None:
-    p = run(facts(), draft(("deploy.db.cloud", False)))
-    assert "deploy.db.cloud" in ids(p)
-    assert [i.id for i in p.invalidated] == ["deploy.db.cloud"]
+    p = run(facts(), draft(("deploy.migrate.cloud", False)))
+    assert "deploy.migrate.cloud" in ids(p)
+    assert [i.id for i in p.invalidated] == ["deploy.migrate.cloud"]
 
 
 def test_skip_rules() -> None:
@@ -138,7 +138,7 @@ def test_skip_rules() -> None:
     }
     assert rules["build.web"] == "tree_unchanged"
     assert rules["deploy.web.cloud"] == "digest_deployed"
-    assert rules["deploy.db.local"] == "no_new_migrations"
+    assert rules["deploy.migrate.local"] == "no_new_migrations"
     assert rules["deploy.dbinit.cloud"] == "db_initialized"
     assert rules["deploy.config.cloud"] == "no_new_keys"
     assert rules["deploy.secrets.cloud"] == "no_new_secret"
@@ -149,7 +149,7 @@ def test_skip_rules() -> None:
 def test_params_filled_and_secret_keys_only() -> None:
     p = run(facts())
     cloud = {s.id: s for s in p.deploy.cloud.steps}
-    assert cloud["deploy.db.cloud"].params == {"migrations": ["0002"]}
+    assert cloud["deploy.migrate.cloud"].params == {"migrations": ["0002"]}
     assert cloud["deploy.secrets.cloud"].params == {"keys": ["SECRET_KEY"]}
     assert cloud["deploy.config.cloud"].params["keys"] == ["SECRET_KEY", "SESSION_COOKIE_SECURE"]
 
@@ -162,7 +162,7 @@ def test_optional_follows_ai() -> None:
 
 def test_no_inter_environment_wait() -> None:
     both = {s.id: s for s in run(facts()).deploy.cloud.steps}
-    assert both["deploy.db.cloud"].wait_for == ["images_ready"]
+    assert both["deploy.migrate.cloud"].wait_for == ["images_ready"]
     only_cloud = run(facts(target="cloud", changed={"cloud": {"was": True, "web": False}}))
     assert all("local_verified" not in s.wait_for for s in only_cloud.deploy.cloud.steps)
     assert not only_cloud.deploy.local.steps
@@ -179,19 +179,19 @@ def test_default_mode_drops_strict_mode_rejects() -> None:
 
 
 def test_both_modes_keep_floor() -> None:
-    d = draft(("verify.report", False), ("deploy.db.cloud", False))
+    d = draft(("verify.report", False), ("deploy.migrate.cloud", False))
     for strict in (False, True):
         p = run(facts(), d, strict_ai_check=strict)
         assert p.toggles["strict_ai_check"] is strict
-        assert {"verify.report", "deploy.db.cloud"} <= ids(p)
-        assert {"verify.report", "deploy.db.cloud"} == {i.id for i in p.invalidated}
+        assert {"verify.report", "deploy.migrate.cloud"} <= ids(p)
+        assert {"verify.report", "deploy.migrate.cloud"} == {i.id for i in p.invalidated}
         assert all(i.result == "forced_include" for i in p.invalidated)
 
 
 def test_forbidden_param_rejected_in_both_modes() -> None:
     for strict in (False, True):
         with pytest.raises(DdakToolError):
-            check_params("deploy.db.cloud", {"domain": "x"}, ("migrations",), strict=strict)
+            check_params("deploy.migrate.cloud", {"domain": "x"}, ("migrations",), strict=strict)
 
 
 def test_forced_skip_recorded_both_modes() -> None:
@@ -216,15 +216,17 @@ def test_r_migration_present(target: str) -> None:
     envs = ["local", "cloud"] if target == "both" else [target]
     for e in envs:
         order = _env_ids(p, e)
-        assert order.index(f"deploy.db.{e}") < order.index(f"deploy.was.{e}")
-        db = next(s for s in getattr(p.deploy, e).steps if s.id == f"deploy.db.{e}")
+        assert order.index(f"deploy.migrate.{e}") < order.index(f"deploy.was.{e}")
+        db = next(s for s in getattr(p.deploy, e).steps if s.id == f"deploy.migrate.{e}")
         assert db.params == {"migrations": ["0002", "0003"]}
 
 
 @pytest.mark.parametrize("target", ["local", "cloud", "both"])
 def test_r_migration_absent(target: str) -> None:
     p = run(facts(target=target, new_migrations=()))
-    assert not [i for e in ("local", "cloud") for i in _env_ids(p, e) if i.startswith("deploy.db.")]
+    assert not [
+        i for e in ("local", "cloud") for i in _env_ids(p, e) if i.startswith("deploy.migrate.")
+    ]
 
 
 def test_r_migration_violations_rejected() -> None:
@@ -237,11 +239,15 @@ def test_r_migration_violations_rejected() -> None:
             id=i, tool=tool, layer=Layer.CONDITIONAL, effect=Effect.STATE_CHANGE, params=params
         )
 
-    db = st("deploy.db.cloud", "prepare_db", migrations=["0002"])
+    db = st("deploy.migrate.cloud", "prepare_db", migrations=["0002"])
     tier = st("deploy.was.cloud", "deploy_tier")
     f = facts(target="cloud")
     check_migrations(f, {"cloud": [db, tier]})
-    for steps in ([tier], [tier, db], [st("deploy.db.cloud", "prepare_db", migrations=[]), tier]):
+    for steps in (
+        [tier],
+        [tier, db],
+        [st("deploy.migrate.cloud", "prepare_db", migrations=[]), tier],
+    ):
         with pytest.raises(DdakToolError) as e:
             check_migrations(f, {"cloud": steps})
         assert e.value.code is ErrorCode.PLAN_INVALID and "R-migration" in e.value.message

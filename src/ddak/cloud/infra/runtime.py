@@ -28,7 +28,7 @@ from botocore.exceptions import ClientError
 
 from ddak.core.contracts.approval import ApprovalRecord
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
-from ddak.core.contracts.infra_outputs import checked_outputs, output_kind
+from ddak.core.contracts.infra_outputs import IMAGE_REPOSITORY_PATTERN, checked_outputs, output_kind
 
 from .plan import filter_outputs, summarize_plan
 from .policy import GateResult, PolicyViolation, static_gate
@@ -206,7 +206,7 @@ class AwsSettings:
         for name, (expression, kind) in self.outputs.items():
             if name == "image_repository" and self.layer == "platform":
                 if kind != "string" or not re.fullmatch(
-                    r'"[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*"', expression
+                    '"' + IMAGE_REPOSITORY_PATTERN + '"', expression
                 ):
                     raise DdakToolError(ErrorCode.CONFIG_INVALID, "이미지 저장소 출력 형식 오류")
                 continue

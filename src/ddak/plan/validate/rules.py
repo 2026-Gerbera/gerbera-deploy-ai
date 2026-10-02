@@ -39,13 +39,13 @@ def warning(code: str, message: str) -> PlanWarning:
 def check_migrations(facts: Facts, steps: Mapping[str, Iterable[PlanStep]]) -> None:
     """R-migration(끌 수 없음). steps = 환경 -> 그 환경 deploy 섹션의 포함 step(실행 순서).
 
-    새 마이그레이션이 있으면 deploy.db.<e>가 정확한 params로 tier 배포보다 앞에 있어야 하고,
+    새 마이그레이션이 있으면 deploy.migrate.<e>가 정확한 params로 tier 배포보다 앞에 있어야 하고,
     없으면 없어야 한다.
     """
     want = sorted(facts.new_migrations)
     for env, seq in steps.items():
         order = [s.id for s in seq]
-        db_id = f"deploy.db.{env}"
+        db_id = f"deploy.migrate.{env}"
         if not want:
             if db_id in order:
                 raise _invalid(f"{R_MIGRATION}: 새 마이그레이션이 없는데 {db_id}가 있다")

@@ -38,6 +38,7 @@ _RESERVED_PARAMS = frozenset({"run_id", "target", "tier", "lock_token"})
 RollbackHook = Callable[[Target, RunContext], Awaitable[None]]
 BeforeStepHook = Callable[[PlanStep, RunContext], Awaitable[None]]
 AfterStepHook = Callable[[PlanStep, dict[str, Any], RunContext], Awaitable[RunContext]]
+ToolContextHook = Callable[[PlanStep, Target | None, RunContext], RunContext]
 _QUIESCE_TIMEOUT_S = 0.1
 _ROLLBACK_TIMEOUT_S = 300.0
 _VERIFIED_TOOLS = frozenset({"health_check", "smoke_test", "verify_tls", "compare_env_results"})
@@ -336,6 +337,7 @@ class Executor:
         rollback: RollbackHook | None = None,
         before_step: BeforeStepHook | None = None,
         after_step: AfterStepHook | None = None,
+        tool_context: ToolContextHook | None = None,
         on_invoke: Callable[[PlanStep, RunContext], None] | None = None,
         rollback_timeouts: Mapping[Target, float] | None = None,
     ) -> None:
@@ -344,6 +346,7 @@ class Executor:
         self._rollback = rollback
         self._before_step = before_step
         self._after_step = after_step
+        self._tool_context = tool_context
         self._on_invoke = on_invoke
         self._rollback_timeouts = dict(rollback_timeouts or {})
 
@@ -694,6 +697,8 @@ class Executor:
                 deadline = min(deadline, state.ctx.deadline)
             async with state.context_lock:
                 ctx = replace(state.ctx, deadline=deadline)
+                if self._tool_context is not None:
+                    ctx = self._tool_context(step, target, ctx)
                 inp = build_input(registered, step, track_target, ctx)
                 if spec.requires_lock and not ctx.lock_token:
                     raise DdakToolError(

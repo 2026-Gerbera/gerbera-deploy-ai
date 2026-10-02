@@ -32,7 +32,7 @@ LOCAL_VERIFIED = "local_verified"  # G1: 온프렘 헬스·스모크 통과
 CLOUD_VERIFIED = "cloud_verified"  # 클라우드 헬스·TLS·스모크 통과
 SignalName = Literal["infra_ready", "images_ready", "local_verified", "cloud_verified"]
 
-# 💭 step id 형식: <단계>.<대상물>[.<트랙>]  예) build.was, deploy.db.cloud, verify.compare
+# 💭 step id 형식: <단계>.<대상물>[.<트랙>]  예) build.was, deploy.migrate.cloud, verify.compare
 STEP_ID_PATTERN = r"^[a-z][a-z0-9_]*(\.[a-z0-9_]+){1,3}$"
 
 

@@ -14,6 +14,7 @@ import asyncio
 import contextlib
 import hashlib
 import importlib
+import json
 import os
 import shutil
 import threading
@@ -28,7 +29,13 @@ from urllib.parse import urlsplit
 from fastapi import FastAPI
 
 from ddak.cd import configure_cloud_tls
-from ddak.cloud.infra import bind_infra, create_binding, has_infra_binding, read_bundle
+from ddak.cloud.infra import (
+    bind_infra,
+    create_binding,
+    fixture_binding,
+    has_infra_binding,
+    read_bundle,
+)
 from ddak.cloud.tls import ensure_tls
 from ddak.core.ai.status import llm_status
 from ddak.core.app_repository import AppRepository, FakeAppRepository
@@ -42,7 +49,9 @@ from ddak.core.contracts.plan_facts import FileMeta
 from ddak.core.contracts.tools.generate_infra import GenerateInfraInput, GenerateInfraOutput
 from ddak.core.logging import get_logger
 from ddak.core.project_settings import ProjectSettings
+from ddak.core.redact import redact_obj
 from ddak.core.registry import REGISTRY, Registry, import_tools
+from ddak.core.runlog import run_dir
 from ddak.core.snapshots import copy_source
 from ddak.executor.approval_meta import check_infra_summary, encode_meta
 from ddak.executor.infra import refresh_infra_context
@@ -110,6 +119,15 @@ def _platform_bootstrap_plan(plan: Plan, ctx: RunContext, summary: dict | None) 
 async def _infra_approval(service: DeploymentService, plan: Plan, ctx: RunContext):
     if ctx.targets == "onprem" or not any(s.tool == "apply_infra" for s in plan.deploy.cloud.steps):
         return {}, None
+    if not has_infra_binding(ctx.run_id) and ctx.adapter_mode is AdapterMode.FAKE:
+        bind_infra(
+            fixture_binding(
+                ctx,
+                root=service.root / "infra-fixture",
+                approvals=lambda: service.store.approvals(ctx.run_id),
+                guard=lambda: service.guard_infra(ctx.run_id, ctx.project),
+            )
+        )
     if not has_infra_binding(ctx.run_id):
         if "generate_infra" not in service.registry.registered():
             raise DdakToolError(ErrorCode.INFRA_MISSING, "generate_infra 툴이 등록되지 않았다")
@@ -187,6 +205,7 @@ def _watch_targets(service: DeploymentService) -> list[WatchTarget]:
 def _attach_watch(app: FastAPI, settings: Settings) -> None:
     """O2 감시 구현은 유지하고 조립부에서 저장 설정의 대상/브랜치를 공급한다."""
     policy = FetchPolicy.from_env()
+    policy = replace(policy, root=policy.root.expanduser().resolve())
     inner = app.router.lifespan_context
 
     async def on_new_commit(t: WatchTarget, sha: str) -> None:
@@ -245,10 +264,12 @@ async def _prepare_commit(
     trigger: Literal["auto", "manual"] = "auto",
 ) -> str:
     """감지한 SHA를 계획·승인에 연결한다. 실행은 승인 이후에만 가능하다."""
+    policy = replace(policy, root=policy.root.expanduser().resolve())
     run_id = new_run_id()
     context = None
     plan = None
     owned_source = None
+    facts = None
     phase = "request"
     try:
         saved = service.get_project_settings(target.project) or {}
@@ -322,8 +343,9 @@ async def _prepare_commit(
         platform: dict[str, Any] = {}
         phase = "inventory"
         cloud_outputs = service.get_platform_outputs(target.project, settings.adapter_mode)
-        if cloud_outputs:
-            platform["cloud"] = cloud_outputs
+        if cloud_outputs or request.target != "onprem":
+            # region은 Terraform 출력·사용자 입력이 아니라 제품의 서울 고정 규약이다.
+            platform["cloud"] = {**cloud_outputs, "region": "ap-northeast-2"}
         path = os.environ.get("DDAK_ONPREM_INVENTORY")
         if request.target != "cloud" and path:
             platform["onprem"] = load_inventory(Path(path))
@@ -341,6 +363,12 @@ async def _prepare_commit(
             platform=platform,
         )
         plan = bundle.plan
+        if getattr(bundle, "facts", None) is not None:
+            facts = bundle.facts.model_dump(mode="json")
+            # Facts에는 키 이름/종류만 있다. 자유 서술 reason은 값 유출을 막기 위해 보관하지 않는다.
+            for key in facts.get("env_keys", []):
+                key["reason"] = None
+            facts = redact_obj(facts)
         _log.info("새 커밋 계획 생성", run_id=run_id, project=target.project, commit=sha)
         latest = service.get_project_settings(target.project) or {}
         phase = "settings"
@@ -368,7 +396,10 @@ async def _prepare_commit(
         if not source.exists() and not source.is_symlink():
             owned_source = source
         # asyncio 취소는 복사 스레드를 멈추지 않는다. 종료를 확인한 뒤 실패 사본을 정리한다.
-        copying = asyncio.create_task(asyncio.to_thread(copy_source, bundle.source, source))
+        if bundle.source.expanduser().is_symlink():
+            raise DdakToolError(ErrorCode.CONFIG_INVALID, "소스 심볼릭 링크는 지원하지 않는다")
+        bundle_source = bundle.source.expanduser().resolve()
+        copying = asyncio.create_task(asyncio.to_thread(copy_source, bundle_source, source))
         try:
             await asyncio.shield(copying)
         except asyncio.CancelledError:
@@ -417,10 +448,22 @@ async def _prepare_commit(
             raise
     else:
         _log.info("새 커밋 승인 대기", run_id=run_id, project=target.project, commit=sha)
+    finally:
+        if facts is not None:
+            try:
+                directory = run_dir(service.root / "runs", run_id)
+                directory.mkdir(parents=True, exist_ok=True)
+                path = directory / "facts.json"
+                path.touch(mode=0o600, exist_ok=True)
+                path.write_text(json.dumps(facts, ensure_ascii=False, indent=2) + "\n")
+            except OSError:
+                _log.warning("facts 내보내기 실패", run_id=run_id)
     return run_id
 
 
 def _manual_planning(settings: Settings, policy: FetchPolicy):
+    policy = replace(policy, root=policy.root.expanduser().resolve())
+
     async def prepare(service: DeploymentService, request: DeployRequest) -> str:
         target = WatchTarget(request.project, request.repo_url, request.ref, request.target)
         return await _prepare_commit(
@@ -431,6 +474,7 @@ def _manual_planning(settings: Settings, policy: FetchPolicy):
 
 
 def _repository_factory(root: Path, *, allow_local: bool = False):
+    root = root.expanduser().resolve()
     lock = threading.Lock()
 
     def connect(ctx: RunContext) -> AppRepository:
