@@ -1,5 +1,6 @@
 # 플랫폼 소유 buildspec(C2). 앱 소스의 buildspec.yml은 쓰지 않는다.
-# CodeBuild 프로젝트(Terraform, 정준우)는 코드 소유 틀의 변수로 이 파일 내용을 받는다(💭 확정 필요).
+# codebuild.py가 매 빌드 이 파일 원문을 StartBuild buildspecOverride로 보낸다. Terraform 프로젝트의
+# 기본 buildspec은 실패 전용이다(cloud/infra/policy.py OVERRIDE_REQUIRED_BUILDSPEC).
 #
 # 프로젝트 쪽 전제(Terraform):
 #   - privileged mode 켬(docker buildx), 이미지 aws/codebuild/standard(x86_64)
