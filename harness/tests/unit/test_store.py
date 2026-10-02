@@ -224,3 +224,28 @@ def test_project_settings_use_optimistic_version(store: Store) -> None:
             updated_by="tester",
             expected_version=0,
         )
+
+
+def test_legacy_domain_save_merges_only_supplied_settings(tmp_path):
+    store = Store(tmp_path / "settings.sqlite")
+    first = store.save_project_settings(
+        "demo",
+        {
+            "repo_url": "https://github.com/example/app",
+            "watch_branch": "prod",
+            "auto_detect": True,
+            "default_targets": "both",
+        },
+        updated_by="operator",
+        expected_version=0,
+    )
+    changed = store.save_project_settings(
+        "demo",
+        {"cloud_domain": "app.example.test", "dns_mode": "external", "hosted_zone_id": None},
+        updated_by="legacy-web",
+        expected_version=first["version"],
+    )
+    for key in ("repo_url", "watch_branch", "auto_detect", "default_targets"):
+        assert changed[key] == first[key]
+    assert changed["version"] == first["version"] + 1
+    assert store.project_settings("demo") == changed

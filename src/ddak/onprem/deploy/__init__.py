@@ -17,5 +17,14 @@ from ddak.onprem.deploy.containers import DockerHost
 from ddak.onprem.deploy.demo import reset_demo
 from ddak.onprem.deploy.preflight import preflight_inventory
 from ddak.onprem.deploy.provider import OnPremProvider
+from ddak.onprem.deploy.provider import _Inventory as InventoryConfig
+from ddak.onprem.deploy.provider import _Tier as TierConfig
 
-__all__ = ["DockerHost", "OnPremProvider", "preflight_inventory", "reset_demo"]
+__all__ = [
+    "DockerHost",
+    "InventoryConfig",
+    "OnPremProvider",
+    "TierConfig",
+    "preflight_inventory",
+    "reset_demo",
+]

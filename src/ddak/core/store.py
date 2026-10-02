@@ -14,6 +14,7 @@ from typing import Any
 
 from ddak.core.contracts.approval import ApprovalRecord
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
+from ddak.core.contracts.infra_outputs import checked_outputs
 from ddak.core.redact import redact_obj
 
 _DDL = """
@@ -37,6 +38,8 @@ CREATE TABLE IF NOT EXISTS env_release (
 CREATE TABLE IF NOT EXISTS project_settings (
  project TEXT PRIMARY KEY, version INTEGER NOT NULL, data TEXT NOT NULL,
  updated_by TEXT NOT NULL, updated_at REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS prepared_runs (
+ run_id TEXT PRIMARY KEY, payload TEXT NOT NULL);
 """
 
 
@@ -47,6 +50,9 @@ def _json(value: Any) -> str:
 def release_view(value: dict[str, Any]) -> dict[str, Any]:
     """파일명에 password 등이 있어도 비밀값 없는 해시 장부는 그대로 보존한다."""
     safe = redact_obj(value)
+    if "platform_outputs" in value:
+        # 허용 목록의 비민감 리소스 식별자는 다음 실행의 입력이다. ARN을 마스킹하지 않는다.
+        safe["platform_outputs"] = checked_outputs(value["platform_outputs"], "platform")
     for key in ("files", "source_files"):
         if key not in value:
             continue
@@ -106,6 +112,33 @@ class Store:
             result["result"] = json.loads(result["result"])
         return result
 
+    def preparation_failed(self, run_id: str, project: str, result: dict[str, Any]) -> bool:
+        """계획/prepare 실패도 목록에 남긴다. 이미 승인·실행한 run은 덮어쓰지 않는다."""
+        with self.connection() as db:
+            cursor = db.execute(
+                "INSERT INTO runs VALUES (?, ?, 'FAILED_BEFORE_DEPLOY', '', ?, ?, ?) "
+                "ON CONFLICT(run_id) DO UPDATE SET status='FAILED_BEFORE_DEPLOY', "
+                "finished=excluded.finished, result=excluded.result "
+                "WHERE runs.status='AWAITING_APPROVAL' AND runs.project=excluded.project",
+                (run_id, project, time.time(), time.time(), _json(result)),
+            )
+            return cursor.rowcount == 1
+
+    def save_prepared(self, run_id: str, payload: dict[str, Any]) -> None:
+        # 실행 입력의 해시가 바뀌면 안 된다. 표시용 redact 데이터와 구분해 0600 DB에 보관한다.
+        with self.connection() as db:
+            db.execute(
+                "INSERT INTO prepared_runs VALUES (?, ?)",
+                (run_id, json.dumps(payload, ensure_ascii=False, sort_keys=True)),
+            )
+
+    def prepared(self, run_id: str) -> dict[str, Any] | None:
+        with self.connection() as db:
+            row = db.execute(
+                "SELECT payload FROM prepared_runs WHERE run_id=?", (run_id,)
+            ).fetchone()
+        return json.loads(row[0]) if row else None
+
     def list_runs(self, limit: int = 20) -> list[dict[str, Any]]:
         """관리 화면용 최근 실행 목록. 저장된 결과는 이미 redact된 값이다."""
         safe_limit = max(1, min(limit, 100))
@@ -116,6 +149,32 @@ class Store:
                 (safe_limit,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def list_project_settings(self) -> list[dict[str, Any]]:
+        with self.connection() as db:
+            projects = [
+                row[0]
+                for row in db.execute("SELECT project FROM project_settings ORDER BY project")
+            ]
+        return [
+            settings
+            for project in projects
+            if (settings := self.project_settings(project)) is not None
+        ]
+
+    def platform_outputs(self, project: str, source_mode: str) -> dict[str, Any]:
+        """마지막 기록된 허용 출력. FAKE 결과를 REAL 준비에 재사용하지 않는다."""
+        with self.connection() as db:
+            rows = db.execute(
+                "SELECT releases.manifest FROM releases JOIN runs USING(run_id) "
+                "WHERE runs.project=? ORDER BY runs.finished DESC",
+                (project,),
+            ).fetchall()
+        for row in rows:
+            record = json.loads(row[0])
+            if record.get("source_mode") == source_mode and record.get("platform_outputs"):
+                return record["platform_outputs"]
+        return {}
 
     def project_settings(self, project: str) -> dict[str, Any] | None:
         with self.connection() as db:
@@ -148,13 +207,14 @@ class Store:
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute(
-                "SELECT version FROM project_settings WHERE project=?", (project,)
+                "SELECT version, data FROM project_settings WHERE project=?", (project,)
             ).fetchone()
             current = row["version"] if row else 0
             if expected_version is not None and current != expected_version:
                 raise DdakToolError(
                     ErrorCode.PRECONDITION_FAILED, "설정이 다른 화면에서 변경됐다. 새로고침하세요"
                 )
+            safe_data = _json({**(json.loads(row["data"]) if row else {}), **json.loads(safe_data)})
             version = current + 1
             db.execute(
                 "INSERT OR REPLACE INTO project_settings VALUES (?, ?, ?, ?, ?)",
@@ -233,6 +293,11 @@ class Store:
             if cursor.rowcount != 1:
                 raise DdakToolError(ErrorCode.APPROVAL_REQUIRED, "승인된 새 실행만 시작할 수 있다")
         return token
+
+    def assert_idle(self, project: str) -> None:
+        with self.connection() as db:
+            if db.execute("SELECT 1 FROM locks WHERE project=?", (project,)).fetchone():
+                raise DdakToolError(ErrorCode.LOCK_HELD, "다른 실행/복구가 진행 중이다")
 
     def check_lock(self, project: str, run_id: str, token: str | None) -> None:
         with self.connection() as db:
@@ -316,6 +381,11 @@ class Store:
                 (status, time.time(), _json(result), run_id),
             )
 
+    def release_record(self, run_id: str) -> dict[str, Any] | None:
+        with self.connection() as db:
+            row = db.execute("SELECT manifest FROM releases WHERE run_id=?", (run_id,)).fetchone()
+        return json.loads(row[0]) if row else None
+
     def mark_stopped(self, run_id: str, status: str) -> None:
         if status not in {"CANCELLED", "NEEDS_HUMAN"}:
             raise ValueError("허용되지 않는 중지 상태")
@@ -334,7 +404,8 @@ class Store:
             )
             db.execute(
                 "UPDATE runs SET status='CANCELLED', finished=? "
-                "WHERE status IN ('AWAITING_APPROVAL','APPROVED')",
+                "WHERE status IN ('AWAITING_APPROVAL','APPROVED') "
+                "AND run_id NOT IN (SELECT run_id FROM prepared_runs)",
                 (time.time(),),
             )
         return [r[0] for r in rows]

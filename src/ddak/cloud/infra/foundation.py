@@ -31,6 +31,21 @@ def foundation_template(settings: AwsSettings) -> dict[str, Any]:
         "versioning": "Enabled",
         "encryption": "AES256",
         "block_public_access": True,
+        "bucket_policy": {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Deny",
+                    "Principal": "*",
+                    "Action": "s3:*",
+                    "Resource": [
+                        f"arn:aws:s3:::{settings.state_bucket}",
+                        f"arn:aws:s3:::{settings.state_bucket}/*",
+                    ],
+                    "Condition": {"Bool": {"aws:SecureTransport": "false"}},
+                }
+            ],
+        },
         "boundary": boundary_document(settings.account_id),
         "boundary_arn": settings.boundary_arn,
         "build_boundary": build_boundary_document(settings.account_id),
@@ -48,6 +63,8 @@ def apply_foundation(
     approvals: Callable[[], Sequence[ApprovalRecord]],
     guard: Callable[[], None],
     marker: Path,
+    infra_subject: str | None = None,
+    expected_bucket_exists: bool | None = None,
 ) -> dict[str, str]:
     """marker는 조립부가 project/run별 고정 영속 경로로 전달해야 한다.
 
@@ -57,7 +74,11 @@ def apply_foundation(
     bound_to = digest(canonical(template))
     guard()
     check_approval(
-        approvals(), run_id=run_id, project=settings.project, kind="foundation", bound_to=bound_to
+        approvals(),
+        run_id=run_id,
+        project=settings.project,
+        kind="infra" if infra_subject else "foundation",
+        bound_to=infra_subject or bound_to,
     )
     if marker.exists():
         raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "이전 기반 적용 상태를 확인해야 한다")
@@ -73,6 +94,10 @@ def apply_foundation(
             if exc.response["Error"]["Code"] not in ("404", "NoSuchBucket"):
                 raise
             bucket_exists = False
+        if expected_bucket_exists is not None and bucket_exists != expected_bucket_exists:
+            raise DdakToolError(
+                ErrorCode.PRECONDITION_FAILED, "계획 이후 기반 버킷 상태가 바뀌었다"
+            )
         existing = {}
         if bucket_exists:
             tags = s3.get_bucket_tagging(
@@ -81,6 +106,22 @@ def apply_foundation(
             existing = {x["Key"]: x["Value"] for x in tags}
             if any(existing.get(k) != v for k, v in template["tags"].items()):
                 raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "기반 버킷 관리 태그가 다르다")
+            try:
+                policy = json.loads(
+                    s3.get_bucket_policy(
+                        **{
+                            "Bucket": settings.state_bucket,
+                            "ExpectedBucketOwner": settings.account_id,
+                        }
+                    )["Policy"]
+                )
+                if canonical(policy) != canonical(template["bucket_policy"]):
+                    raise DdakToolError(
+                        ErrorCode.PRECONDITION_FAILED, "기존 버킷 TLS 정책이 다르다"
+                    )
+            except ClientError as exc:
+                if exc.response["Error"]["Code"] != "NoSuchBucketPolicy":
+                    raise
         policies = [
             (BOUNDARY_NAME, settings.boundary_arn, template["boundary"]),
             ("ddak-build-boundary", settings.build_boundary_arn, template["build_boundary"]),
@@ -107,7 +148,28 @@ def apply_foundation(
                 Bucket=settings.state_bucket,
                 CreateBucketConfiguration={"LocationConstraint": REGION},
             )
+            private_write(
+                marker.with_name(marker.name + "-bucket-created.json"),
+                canonical(
+                    {
+                        "bucket": settings.state_bucket,
+                        "account_id": settings.account_id,
+                        "project": settings.project,
+                        "run_id": run_id,
+                        "status": "created_before_tagging",
+                    }
+                ),
+            )
         kwargs = {"Bucket": settings.state_bucket, "ExpectedBucketOwner": settings.account_id}
+        # 새 버킷은 가능한 한 먼저 관리 태그를 쓴다. 이 호출도 실패하면 생성 증거를 보존한다.
+        s3.put_bucket_tagging(
+            **kwargs,
+            Tagging={
+                "TagSet": [
+                    {"Key": k, "Value": v} for k, v in {**existing, **template["tags"]}.items()
+                ]
+            },
+        )
         s3.put_public_access_block(
             **kwargs,
             PublicAccessBlockConfiguration={
@@ -117,19 +179,12 @@ def apply_foundation(
                 "RestrictPublicBuckets": True,
             },
         )
+        s3.put_bucket_policy(**kwargs, Policy=json.dumps(template["bucket_policy"]))
         s3.put_bucket_versioning(**kwargs, VersioningConfiguration={"Status": "Enabled"})
         s3.put_bucket_encryption(
             **kwargs,
             ServerSideEncryptionConfiguration={
                 "Rules": [{"ApplyServerSideEncryptionByDefault": {"SSEAlgorithm": "AES256"}}]
-            },
-        )
-        s3.put_bucket_tagging(
-            **kwargs,
-            Tagging={
-                "TagSet": [
-                    {"Key": k, "Value": v} for k, v in {**existing, **template["tags"]}.items()
-                ]
             },
         )
         for name, document in create_policies:

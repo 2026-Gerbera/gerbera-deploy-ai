@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -11,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from ddak.cd.interface import ProviderResult
 from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.errors import ErrorCode
+from ddak.onprem.deploy.config import _private_env
 from ddak.onprem.deploy.containers import DockerHost, fail, image_ref
 
 if TYPE_CHECKING:
@@ -48,7 +50,25 @@ def migrate_db(
         raise fail("마이그레이션 ID 오류", ErrorCode.CONFIG_INVALID)
     with provider._session("was", ctx) as (host, config):
         ref = image_ref(ctx.images.get("was", ""))
-        args = provider._args(config, ctx.project, "was")
+        if config.migration_env_file:
+            migration_env = Path(config.migration_env_file)
+            if config.env_file and (
+                migration_env.resolve() == Path(config.env_file).resolve()
+                or (
+                    migration_env.exists()
+                    and Path(config.env_file).exists()
+                    and migration_env.samefile(config.env_file)
+                )
+            ):
+                raise fail("마이그레이션 env는 앱 env와 분리해야 한다", ErrorCode.CONFIG_INVALID)
+            _private_env(migration_env)  # 기존 전용 파일이 없으면 새 계정/빈 env를 만들지 않는다.
+            _private_env(migration_env, keys=(), migration_alias=True)
+        migration_config = (
+            config.model_copy(update={"env_file": config.migration_env_file})
+            if config.migration_env_file
+            else config
+        )
+        args = provider._args(migration_config, ctx.project, "was", migration=True)
         host.run("image", "pull", "--platform", config.platform, ref)
         observation, local_image = host.image(ref, config.platform)
         provider._volumes(host, config, local_image)
@@ -62,6 +82,10 @@ def migrate_db(
             local_registry=host.local_registry,
         )
         for phase in ("precheck", "up", "verify"):
+            # DB의 현재 버전으로 판단한다. 새 컨트롤러나 연속 prepare_db 호출도
+            # 이미 적용된 up은 반복하지 않고 아래 verify로 요청 버전을 확인한다.
+            if phase == "up" and phases[0]["current"] == phases[0]["expected"]:
+                continue
             leftover = host.container(name)
             if leftover:
                 host.remove(leftover, ctx.project, "was", stop_seconds=1)
@@ -103,6 +127,8 @@ def migrate_db(
                     raise fail("MIGRATE_RESULT 형식 오류") from None
                 if result.phase != phase or not result.ok:
                     raise fail("마이그레이션 단계 실패")
+                if phase == "precheck" and migrations and result.expected != migrations[-1]:
+                    raise fail("요청한 마이그레이션과 이미지 버전이 다르다; up 실행 차단")
                 if phase == "verify" and (
                     result.current != result.expected
                     or (migrations and result.expected != migrations[-1])

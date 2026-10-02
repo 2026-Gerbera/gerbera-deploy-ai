@@ -160,9 +160,9 @@ def test_optional_follows_ai() -> None:
     assert [s.id for s in run(facts()).verify.skipped] == ["verify.watch.cloud"]
 
 
-def test_gate_local_verified() -> None:
+def test_no_inter_environment_wait() -> None:
     both = {s.id: s for s in run(facts()).deploy.cloud.steps}
-    assert "local_verified" in both["deploy.db.cloud"].wait_for
+    assert both["deploy.db.cloud"].wait_for == ["images_ready"]
     only_cloud = run(facts(target="cloud", changed={"cloud": {"was": True, "web": False}}))
     assert all("local_verified" not in s.wait_for for s in only_cloud.deploy.cloud.steps)
     assert not only_cloud.deploy.local.steps

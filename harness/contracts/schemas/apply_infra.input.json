@@ -1,0 +1,24 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "lock_token": {
+      "description": "acquire_deploy_lock이 발급한 토큰",
+      "maxLength": 128,
+      "minLength": 8,
+      "title": "Lock Token",
+      "type": "string"
+    },
+    "run_id": {
+      "description": "실행 ID. 모든 툴의 필수 입력",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+      "title": "Run Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "run_id",
+    "lock_token"
+  ],
+  "title": "ApplyInfraInput",
+  "type": "object"
+}

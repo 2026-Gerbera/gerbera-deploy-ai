@@ -13,6 +13,21 @@ from hcl2.api import loads, parses
 
 from .providers.aws import APP_RESOURCE_TYPES, RESOURCE_TYPES
 
+# StartBuild의 코드 소유 buildspecOverride가 빠지면 앱 저장소 buildspec을 읽지 않고 실패한다.
+OVERRIDE_REQUIRED_BUILDSPEC = "version: 0.2\nphases:\n  build:\n    commands:\n      - exit 1\n"
+
+
+def protect_platform_resource(kind: str, body: dict[str, Any], state_bucket: str | None) -> None:
+    if kind.startswith("aws_s3_bucket") and state_bucket is not None:
+        require(body.get("bucket") != state_bucket, "FOUNDATION_BUCKET_OWNED_BY_CODE")
+    if kind == "aws_codebuild_project":
+        source = body.get("source")
+        require(isinstance(source, list) and len(source) == 1, "CODEBUILD_SOURCE_REQUIRED")
+        require(
+            source[0].get("buildspec") == OVERRIDE_REQUIRED_BUILDSPEC,
+            "CODEBUILD_PLATFORM_BUILDSPEC_REQUIRED",
+        )
+
 
 @dataclass(frozen=True)
 class GateResult:
@@ -112,7 +127,9 @@ def _walk(value: Any):
             yield from _walk(child)
 
 
-def static_gate(files: Mapping[str, str], *, layer: str) -> GateResult:
+def static_gate(
+    files: Mapping[str, str], *, layer: str, state_bucket: str | None = None
+) -> GateResult:
     """리소스 블록만 허용. 변수/provider/backend/outputs는 코드 소유 틀에서 주입한다."""
     try:
         require(layer in ("app", "platform") and bool(files), "BUNDLE_REQUIRED")
@@ -146,6 +163,7 @@ def static_gate(files: Mapping[str, str], *, layer: str) -> GateResult:
                         address = f"{kind}.{label}"
                         require(address not in addresses, "DUPLICATE_RESOURCE")
                         addresses.add(address)
+                        protect_platform_resource(kind, body, state_bucket)
                         _resource(kind, body, layer)
         require(bool(addresses), "BUNDLE_REQUIRED")
         return GateResult(True)

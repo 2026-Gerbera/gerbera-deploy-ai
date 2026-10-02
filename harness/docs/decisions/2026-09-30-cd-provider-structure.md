@@ -1,5 +1,7 @@
 # CD 구조: 공통 인터페이스 + provider 모듈
 
+> 후속(10/1): provider 위치와 GCP·Azure 처리는 [2026-10-01 팀 현황과 결정](2026-10-01-team-status-and-decisions.md) B3이 대체한다(`cloud/deploy/providers/aws.py` 위임 구조, GCP·Azure 골격만). 아래 경로(`cd/providers/`, `plan/infra/ci/cd/verify`)는 당시 기록이다.
+
 - 날짜: 2026-09-30
 - 상태: 결정(CD 구조 ✅). 레지스트리 트리 전체 배치는 제안(💭, [I-38](../harness/06_결정-필요-항목.md))
 - 관련 항목: [I-38](../harness/06_결정-필요-항목.md), 설계 문서 00 장부 29, [04 툴 카탈로그](../../../single-app/docs/04_툴-카탈로그.md)

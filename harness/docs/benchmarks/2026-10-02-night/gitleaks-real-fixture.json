@@ -1,0 +1,20 @@
+{
+  "source": "local-real-cli-synthetic-input",
+  "gitleaks_version": "8.30.1",
+  "records": [
+    {
+      "case": "clean",
+      "started_utc": "2026-10-01T18:54:14.672392+00:00",
+      "elapsed_s": 0.382572833012091,
+      "blocked": false,
+      "passed": true
+    },
+    {
+      "case": "synthetic_token_with_allow_comment",
+      "started_utc": "2026-10-01T18:54:15.055441+00:00",
+      "elapsed_s": 0.022411291996832006,
+      "blocked": true,
+      "passed": true
+    }
+  ]
+}

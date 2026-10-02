@@ -2,9 +2,9 @@
 
 > 기준: 앱 1개 구조(✅ 9/30 최신 개발자 문서 기준)
 >
-> 역할 코드: O1 정준우 · O2 김준석 · O3 장민영 · C1 유상준 · C2 안승환 · C3 양서윤 · TL = 하네스·계약 승인자(미지정, 결정 필요).
+> 역할 코드: O1 정준우 · O2 김준석 · O3 장민영 · C2 안승환 · C3 양서윤 · C1 = 유상준 하차(10/1), C1은 정준우·김준석 분담(분담 ✅, 세부 🟡 김준석 확인) · TL = 하네스·계약 승인자(미지정, 결정 필요).
 
-6명이 3일 동안 병렬로 개발할 때 전원이 같이 쓰는 저장소 구조, 도구, 규칙, 강제 장치입니다. v1(MCP 서버 3개 전제)을 앱 1개 + 툴 레지스트리 구조로 옮긴 판입니다. 팀이 앱 1개 구조에 반대하면, 레지스트리에 입력·출력 스키마가 있으므로 레지스트리를 MCP 서버로 노출하는 얇은 어댑터(P2)를 붙이는 대안이 있습니다.
+5명(10/1 유상준 하차)이 3일 동안 병렬로 개발할 때 전원이 같이 쓰는 저장소 구조, 도구, 규칙, 강제 장치입니다. v1(MCP 서버 3개 전제)을 앱 1개 + 툴 레지스트리 구조로 옮긴 판입니다. 팀이 앱 1개 구조에 반대하면, 레지스트리에 입력·출력 스키마가 있으므로 레지스트리를 MCP 서버로 노출하는 얇은 어댑터(P2)를 붙이는 대안이 있습니다.
 
 - 표기: **✅ 확정** / **🟡 팀 합의 대기** / **💭 고려안**(추천일 뿐, 하네스 기본값으로 씀) / **⏸ 보류**. **[I-n]**은 [06 결정 필요 항목](06_결정-필요-항목.md) 번호입니다. "장부 n"은 2026-09-30 결정 장부 항목입니다.
 - 하네스는 데이터 스키마의 필드(plan.json, 이벤트, deploy.yaml 키, 툴 입출력 필드)를 확정하지 않습니다. 실행기 최소 예시에 필요한 초안만 두고 `TODO(contract)`로 표시합니다. 확정은 [공통 계약 문서](../contracts/README.md)가 합니다.
@@ -40,9 +40,9 @@
 | `src/ddak/executor/engine.py` | 실행기 최소 예시(트랙 병렬 + wait_for/signal + 트랙별 롤백 + `run: finally` 보고) | O1 정준우 |
 | `src/ddak/app.py` | 조립 진입점(툴 모듈 자동 등록, 관리 웹 생성) | 하네스 소유자 |
 | `src/ddak/core/tools/ping/` | 툴 템플릿(복사해서 시작) | 하네스 소유자 |
-| `src/ddak/cd/interface.py`, `src/ddak/cd/providers/` | CD 공통 인터페이스 + provider(aws·onprem·fake) 골격(✅ 9/30 구조, 구현 TODO) | 하네스 소유자 + O1 정준우 / C2 안승환 |
-| `src/ddak/ci/registries/` | 이미지 저장소 어댑터(기본 Docker Hub, ECR 옵션, digest 고정 참조) | C2 안승환 |
-| `src/ddak/infra/providers/aws.py` | AWS 코드 소유 틀 자리(💭 state 층 분리 등) | C1 유상준 |
+| `src/ddak/cd/interface.py`, `src/ddak/cd/dispatch.py`, `src/ddak/cd/fake.py` | CD 공통 인터페이스 + provider 선택(`select_provider`) + 가짜 구현. AWS provider는 `cloud/deploy/providers/aws.py`(위임, PR #1 merge 뒤), 온프렘은 `onprem/deploy/provider.py`(✅ 9/30 구조, 구현 TODO) | 하네스 소유자 + O1 정준우 / C2 안승환 |
+| `src/ddak/cloud/build/registries/` | 이미지 저장소 어댑터(기본 Docker Hub, ECR 옵션, digest 고정 참조) | C2 안승환 |
+| `src/ddak/cloud/infra/providers/aws.py` | AWS 코드 소유 틀 자리(💭 state 층 분리 등) | 정준우(C1 몫) |
 | `scripts/export_schemas.py` | 계약 스키마·툴 카탈로그 스냅샷 | 하네스 소유자 |
 | `scripts/contract_smoke.py` | 레지스트리 구현 현황(등록/미구현). Fake 호출은 TODO(O1) | O1 정준우 |
 | `scripts/patch_eval.py` | 골격(지원 설정 패턴은 P0·데모 ON, 일반 실행 기본 OFF) | O3 장민영 |
@@ -57,12 +57,14 @@
 
 1. `harness/`에서 작업합니다. CI는 저장소 루트의 `.github/workflows/ci.yml`이 이 폴더를 검사합니다.
 2. `make setup-local` → `make ci`로 개발을 시작합니다. Git 훅 설치는 `make setup`입니다.
-3. main push 또는 PR을 사용합니다. 이메일 등록·제목 형식·브랜치명·필수 승인·CODEOWNERS 설정은 요구하지 않습니다.
+3. 각자 브랜치에서 PR로 올립니다(main 직접 push 안 함, merge는 사람만, 2026-10-01). 이메일 등록·제목 형식·브랜치명·필수 승인·CODEOWNERS 설정은 요구하지 않습니다.
 4. main push와 PR 생성·수정에서 CI 세 잡이 자동 실행됩니다. 실패 원인을 확인하고 수정합니다.
 
 현재 CI는 개발 코드 검사이며 제품의 배포 기능은 별도로 구현합니다. 최신 O1 계약은 [착수 결정](../decisions/2026-09-30-o1-start-contracts.md)을 따릅니다.
 
 ## v1(MCP 3개) → v2(앱 1개)에서 바뀐 것
+
+> 아래 표는 v2 전환 당시 기록이다. 현행 모듈 구조는 `cloud/{infra,build,deploy,tls,health}`, `onprem/{deploy,provision,inventory}`, `cd/{interface,dispatch,fake}.py`다(10/1, [팀 현황과 결정](../decisions/2026-10-01-team-status-and-decisions.md)).
 
 | v1 | v2 | 이유 |
 |---|---|---|
@@ -87,4 +89,4 @@
 | pre-commit은 `uv run ruff` | `.venv`의 ruff만 사용, 없으면 `make setup` 안내 | 커밋 중에 의존성 동기화가 일어나지 않게 |
 | commit-msg는 AI 트레일러 제거 | 여기에 더해 author/committer가 AI 신원이면 거부 | `--author`, `GIT_AUTHOR_*` 경로를 커밋 시점에 조기 차단 |
 | 테스트 가짜 비밀값 | 문자열을 이어 붙여 만듦 | gitleaks 예외 설정 없이 CI secrets 잡을 통과 |
-| 읽기 전용 AWS 프로필 | 값이 없으면 `ddak-readonly`로 고정(`cd/providers/aws.py`·`ci` 규칙) | 기본 프로필(쓰기 권한)로 떨어지지 않게(fail closed) |
+| 읽기 전용 AWS 프로필 | 값이 없으면 `ddak-readonly`로 고정(`cloud/deploy/providers/aws.py`·`cloud/build` 규칙) | 기본 프로필(쓰기 권한)로 떨어지지 않게(fail closed) |

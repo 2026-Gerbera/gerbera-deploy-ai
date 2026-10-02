@@ -155,9 +155,7 @@ def plan(run_id: str = "run-2", *, patch: bool = False) -> Plan:
                             "deploy_tier",
                             target=target,
                             tier="was",
-                            wait_for=[
-                                "images_ready" if target is Target.LOCAL else "local_verified"
-                            ],
+                            wait_for=["images_ready"],
                         ),
                         step(
                             f"verify.smoke.{target.value}",
@@ -304,7 +302,7 @@ async def test_build_artifacts_reach_both_deployments_and_final_context(rig: Any
     result = await asyncio.wait_for(service.wait(run_id), timeout=5)
     assert result.status is RunStatus.SUCCEEDED
     deployed = [(name, ctx) for name, ctx in calls.contexts if name.startswith("deploy.")]
-    assert [name for name, _ in deployed] == ["deploy.local", "deploy.cloud"]
+    assert {name for name, _ in deployed} == {"deploy.local", "deploy.cloud"}
     assert all(ctx.images["was"] == image.ref for _, ctx in deployed)
     assert result.context is not None and result.context.release_artifacts is not None
     assert set(result.context.release_artifacts.observations) == {"local", "cloud"}
@@ -341,7 +339,8 @@ async def test_failure_preserves_environment_specific_success_and_rolls_back_clo
     assert environments["local"]["previous"] == previous["local"]
     assert environments["cloud"]["current"] == previous["cloud"]
     assert environments["cloud"]["previous"] is None
-    assert {row["status"] for row in environments.values()} == {"DIVERGED"}
+    assert environments["local"]["status"] == "SUCCEEDED"
+    assert environments["cloud"]["status"] == "ROLLED_BACK"
 
 
 async def test_source_changed_after_approval_does_not_promote_any_environment(rig: Any) -> None:
@@ -386,7 +385,8 @@ async def test_local_only_run_does_not_mark_empty_cloud_section_deployed(
     service.approve(run_id, approver="operator")
     service.start(run_id)
     result = await asyncio.wait_for(service.wait(run_id), timeout=5)
-    assert result.status is (RunStatus.PARITY_FAILED if verify_failed else RunStatus.SUCCEEDED)
+    assert result.status is RunStatus.SUCCEEDED
+    assert not any(name == "compare" for name, _ in calls.contexts)
     assert set(service.store.environments("demo")) == {"local"}
     assert service.store.environments("demo")["local"]["current"]["release_id"] == run_id
     assert not any(name.endswith(".cloud") for name, _ in calls.contexts)
@@ -414,7 +414,7 @@ async def test_service_rollback_uses_registered_tier_budget_instead_of_engine_de
             "deploy_tier",
             target=Target.CLOUD,
             tier="web",
-            wait_for=["local_verified"],
+            wait_for=["images_ready"],
         ),
     )
     run_id = service.prepare(p, RunContext(p.run_id, project=p.project), source)
@@ -423,7 +423,7 @@ async def test_service_rollback_uses_registered_tier_budget_instead_of_engine_de
     result = await asyncio.wait_for(service.wait(run_id), timeout=5)
     assert result.status is RunStatus.FAILED_CLOUD
     assert result.tracks["cloud"] is TrackStatus.ROLLED_BACK
-    assert calls.rolled_back_tiers == ["web", "was"]
+    assert calls.rolled_back_tiers == ["was"]  # web은 아직 실행되지 않았다
 
 
 async def test_heartbeat_retries_transient_sqlite_lock_and_keeps_pipeline_running(
@@ -627,7 +627,7 @@ async def test_cloud_rollback_exception_keeps_successful_local_v2_with_needs_hum
     assert result.tracks["local"] is TrackStatus.DONE
     assert result.tracks["cloud"] is TrackStatus.ROLLBACK_FAILED
     environments = service.store.environments("demo")
-    assert environments["local"]["status"] == "NEEDS_HUMAN"
+    assert environments["local"]["status"] == "SUCCEEDED"
     assert environments["local"]["current"]["release_id"] == run_id
     assert environments["local"]["current"]["source_files"] == file_manifest(source)
     assert environments["local"]["previous"] == previous["local"]
@@ -705,3 +705,391 @@ async def test_finish_integrity_error_returns_needs_human_and_retains_lock(
     assert received[-1].model_dump(mode="json") == events[-1]
     assert all(event["status"] != "SUCCEEDED" for event in events)
     assert all(event.status != "SUCCEEDED" for event in received)
+
+
+@pytest.mark.parametrize(
+    "targets,expected,omitted", [("onprem", "local", "cloud"), ("cloud", "cloud", "local")]
+)
+async def test_explicit_target_runs_only_selected_environment_and_records_trigger(
+    rig: Any, targets: str, expected: str, omitted: str
+) -> None:
+    service, source, calls = rig
+    previous = seed_releases(service)
+    before_env = service.store.environments("demo")
+    p = plan()
+    original = p.model_dump_json()
+    ctx = RunContext(p.run_id, project=p.project, targets=targets, trigger="auto")
+    run_id = service.prepare(p, ctx, source)
+    view = service.approval_view(run_id)
+    assert view["targets"] == targets and view["trigger"] == "auto"
+    assert view["plan"]["deploy"][omitted]["steps"] == []
+    service.approve(run_id, approver="operator")
+    service.start(run_id)
+    result = await service.wait(run_id)
+    assert result.status is RunStatus.SUCCEEDED
+    assert result.tracks[omitted] is TrackStatus.NOT_APPLICABLE
+    assert result.tracks[expected] is TrackStatus.DONE
+    assert not any(name.endswith("." + omitted) for name, _ in calls.contexts)
+    assert not any(name == "compare" for name, _ in calls.contexts)
+    env = service.store.environments(p.project)
+    assert env[omitted]["current"] == previous[omitted]
+    assert env[omitted] == before_env[omitted]
+    assert env[expected]["current"]["trigger"] == "auto"
+    assert p.model_dump_json() == original
+    assert service.store.run(run_id)["result"]["targets"] == targets
+
+
+@pytest.mark.parametrize("kwargs", [{"targets": "all"}, {"trigger": "schedule"}])
+async def test_invalid_run_selection_is_rejected(kwargs: Any) -> None:
+    with pytest.raises(ValueError):
+        RunContext("bad-selection", **kwargs)
+
+
+async def test_explicit_both_rejects_incomplete_plan(rig: Any) -> None:
+    service, source, _ = rig
+    p = plan()
+    p = p.model_copy(update={"deploy": p.deploy.model_copy(update={"cloud": Section()})})
+    with pytest.raises(DdakToolError, match="선택한 대상"):
+        service.prepare(p, RunContext(p.run_id, project=p.project, targets="both"), source)
+
+
+@pytest.mark.parametrize("changed", [{"targets": "cloud"}, {"trigger": "auto"}])
+async def test_refresh_cannot_rewrite_approved_run_selection(rig: Any, changed: Any) -> None:
+    from dataclasses import replace
+
+    service, source, calls = rig
+    service.refresh = lambda step, output, ctx: replace(ctx, **changed)
+    p = plan()
+    rid = service.prepare(p, RunContext(p.run_id, project=p.project, targets="onprem"), source)
+    service.approve(rid, approver="operator")
+    service.start(rid)
+    result = await service.wait(rid)
+    assert result.status is RunStatus.FAILED_BEFORE_DEPLOY
+    assert not any(name.startswith("deploy.") for name, _ in calls.contexts)
+    record = service.store.run(rid)["result"]
+    assert record["targets"] == "onprem" and record["trigger"] == "manual"
+
+
+async def test_release_keeps_original_and_candidate_commit_separate(rig: Any) -> None:
+    service, source, _calls = rig
+    p = plan()
+    source_sha, candidate_sha = "a" * 40, "b" * 40
+    rid = service.prepare(
+        p,
+        RunContext(p.run_id, project=p.project, source_sha=source_sha, candidate_sha=candidate_sha),
+        source,
+    )
+    service.approve(rid, approver="operator")
+    service.start(rid)
+    assert (await service.wait(rid)).status is RunStatus.SUCCEEDED
+    for row in service.store.environments("demo").values():
+        assert row["current"]["source_sha"] == source_sha
+        assert row["current"]["candidate_sha"] == candidate_sha
+    assert service.deployment_baselines("demo") == {"local": source_sha, "cloud": source_sha}
+
+
+@pytest.mark.parametrize("failure", ["none", "cloud", "parity"])
+async def test_service_publishes_only_verified_environment_commits(rig: Any, failure: str) -> None:
+    from ddak.core.app_repository import AppRepository
+
+    service, source, calls = rig
+    calls.fail_cloud = failure == "cloud"
+    calls.parity_ok = failure != "parity"
+    recorded = []
+
+    class RecordingRepository(AppRepository):
+        def validate_candidate(self, *args):
+            pass  # Git 게시 오류 처리만 검사하는 fixture
+
+        def publish(self, candidate_sha, selected, succeeded):
+            recorded.append((candidate_sha, selected, succeeded))
+            return {"status": "FAILED", "error": "fixture"}
+
+    service.repositories["demo"] = RecordingRepository(source, allow_local=True)
+    p = plan()
+    rid = service.prepare(
+        p,
+        RunContext(p.run_id, project=p.project, source_sha="a" * 40, candidate_sha="b" * 40),
+        source,
+    )
+    service.approve(rid, approver="operator")
+    service.start(rid)
+    result = await service.wait(rid)
+    expected = {"local", "cloud"} if failure == "none" else {"local"}
+    assert recorded == [("b" * 40, {"local", "cloud"}, expected)]
+    assert result.status is (
+        RunStatus.SUCCEEDED
+        if failure == "none"
+        else RunStatus.FAILED_CLOUD
+        if failure == "cloud"
+        else RunStatus.PARITY_FAILED
+    )
+    assert service.store.environments("demo")["local"]["current"]["git"]["status"] == "FAILED"
+
+
+@pytest.mark.parametrize("fails", [False, True])
+async def test_repeated_cancel_waits_for_git_and_preserves_completed_deployment(
+    rig: Any, fails: bool
+) -> None:
+    from ddak.core.app_repository import AppRepository
+
+    service, source, _calls = rig
+    entered, release = threading.Event(), threading.Event()
+
+    class PausedRepository(AppRepository):
+        def validate_candidate(self, *args):
+            pass  # 게시 취소 수명만 검사하는 fixture
+
+        def publish(self, candidate_sha, selected, succeeded):
+            entered.set()
+            assert release.wait(3)
+            if fails:
+                raise OSError("private command details")
+            return {"status": "SUCCEEDED", "main_updated": True}
+
+    service.repositories["demo"] = PausedRepository(source, allow_local=True)
+    p = plan()
+    rid = service.prepare(
+        p,
+        RunContext(p.run_id, project=p.project, source_sha="a" * 40, candidate_sha="b" * 40),
+        source,
+    )
+    service.approve(rid, approver="operator")
+    task = service.start(rid)
+    try:
+        assert await asyncio.to_thread(entered.wait, 2)
+        for _ in range(2):
+            task.cancel()
+            await asyncio.sleep(0.01)
+        assert not task.done()
+        with pytest.raises(RuntimeError, match="실행 중"):
+            service.close()
+    finally:
+        release.set()
+    result = await service.wait(rid)
+    assert result.status is RunStatus.SUCCEEDED
+    assert result.tracks["local"] is TrackStatus.DONE
+    assert result.records
+    saved = service.store.run(rid)["result"]
+    assert saved["git"]["status"] == ("FAILED" if fails else "SUCCEEDED")
+    for row in service.store.environments("demo").values():
+        assert row["current"]["source_sha"] == "a" * 40
+        assert row["current"]["candidate_sha"] == "b" * 40
+    assert "private command details" not in json.dumps(saved)
+
+
+async def test_project_settings_are_snapshotted_before_approval(rig: Any) -> None:
+    service, source, calls = rig
+    settings = service.save_project_settings(
+        "demo",
+        {
+            "repo_url": "https://github.com/example/demo",
+            "auto_detect": True,
+            "default_targets": "onprem",
+            "cloud_domain": "app.example.test",
+        },
+        updated_by="operator",
+        expected_version=0,
+    )
+    p = plan()
+    rid = service.prepare(p, RunContext(p.run_id, project=p.project), source)
+    view = service.approval_view(rid)
+    assert "watch_branch" not in view["project_settings"]
+    assert view["project_settings"]["version"] == settings["version"]
+    assert view["targets"] is None
+    service.save_project_settings(
+        "demo",
+        {
+            "repo_url": "https://github.com/example/next",
+            "default_targets": "cloud",
+            "cloud_domain": "next.example.test",
+        },
+        updated_by="operator",
+        expected_version=settings["version"],
+    )
+    service.approve(rid, approver="operator")
+    service.start(rid)
+    assert (await service.wait(rid)).status is RunStatus.SUCCEEDED
+    assert all(ctx.cloud_domain == "app.example.test" for _, ctx in calls.contexts)
+    assert all(ctx.project_settings["repo_url"].endswith("/demo") for _, ctx in calls.contexts)
+    assert service.get_run(rid)["context"]["targets"] is None
+    assert service.get_release(rid)["result"]["tracks"]["cloud"] == "DONE"
+    assert service.get_approvals(rid)[0].decision == "approved"
+    assert service.list_runs()[0]["run_id"] == rid
+    assert service.get_project_settings("demo")["cloud_domain"] == "next.example.test"
+
+
+async def test_completed_run_public_reads_survive_restart(rig: Any) -> None:
+    service, source, _calls = rig
+    rid = prepare(service, source)
+    view = service.approval_view(rid)
+    service.approve(rid, approver="operator")
+    service.start(rid)
+    await service.wait(rid)
+    service.close()
+    reopened = DeploymentService(service.registry, service.root)
+    try:
+        assert reopened.get_run(rid)["status"] == "SUCCEEDED"
+        assert reopened.approval_view(rid) == view
+        assert reopened.get_release(rid)["release_id"] == rid
+        assert reopened.get_environments("demo")["local"]["current"]["release_id"] == rid
+    finally:
+        reopened.close()
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"repo_url": "https://name:private@example.test/repo"},
+        {"repo_url": "https://github.com/example/repo?token=private"},
+        {"auto_detect": True},
+        {"watch_branch": "../bad"},
+        {"cloud_domain": "127.0.0.1"},
+        {"default_targets": "everything"},
+    ],
+)
+async def test_invalid_project_settings_are_rejected_without_exposing_values(rig: Any, data: Any):
+    service, _source, _calls = rig
+    with pytest.raises(ValueError) as error:
+        service.save_project_settings("demo", data, updated_by="operator", expected_version=0)
+    assert "private" not in str(error.value)
+    assert service.get_project_settings("demo") is None
+
+
+@pytest.mark.parametrize("omitted", ["local", "cloud"])
+async def test_domain_only_settings_preserve_legacy_single_target_plan(rig: Any, omitted: str):
+    service, source, _calls = rig
+    service.save_project_settings(
+        "demo", {"cloud_domain": "app.example.test"}, updated_by="operator", expected_version=0
+    )
+    p = plan()
+    p = p.model_copy(
+        update={"deploy": p.deploy.model_copy(update={omitted: Section()}), "verify": Section()}
+    )
+    rid = service.prepare(p, RunContext(p.run_id, project=p.project), source)
+    assert service.approval_view(rid)["targets"] is None
+
+
+async def test_settings_require_version_and_preserve_unmentioned_fields(rig: Any):
+    service, _source, _calls = rig
+    row = service.save_project_settings(
+        "demo",
+        {
+            "repo_url": "https://github.com/example/demo",
+            "default_targets": "onprem",
+        },
+        updated_by="operator",
+        expected_version=0,
+    )
+    with pytest.raises(DdakToolError, match="버전"):
+        service.save_project_settings("demo", {}, updated_by="operator", expected_version=None)
+    saved = service.save_project_settings(
+        "demo",
+        {"cloud_domain": "app.example.test"},
+        updated_by="operator",
+        expected_version=row["version"],
+    )
+    assert saved["repo_url"] == row["repo_url"] and saved["default_targets"] == "onprem"
+    with pytest.raises(DdakToolError):
+        service.save_project_settings(
+            "demo", {}, updated_by="operator", expected_version=row["version"]
+        )
+
+
+async def test_legacy_approval_without_new_export_is_readable(rig: Any):
+    service, source, _calls = rig
+    rid = prepare(service, source)
+    before = service.approval_view(rid)
+    service.approve(rid, approver="operator")
+    service.start(rid)
+    await service.wait(rid)
+    (service.root / "runs" / rid / "approval-view.json").unlink()
+    with service.store.connection() as db:
+        db.execute("DELETE FROM prepared_runs WHERE run_id=?", (rid,))
+    service.close()
+    reopened = DeploymentService(service.registry, service.root)
+    try:
+        view = reopened.approval_view(rid)
+        assert view["legacy_record"] is True
+        for key in ("patch", "patch_meta", "infra_summary", "snapshot", "plan"):
+            assert view[key] == before[key]
+        assert view["unavailable_fields"] == []
+    finally:
+        reopened.close()
+
+
+@pytest.mark.parametrize("target", ["local", "cloud", "both"])
+async def test_none_targets_preserves_plan_despite_saved_default(rig, target):
+    service, source, calls = rig
+    service.save_project_settings(
+        "demo",
+        {"default_targets": "onprem" if target != "local" else "both"},
+        updated_by="operator",
+        expected_version=0,
+    )
+    p = plan()
+    if target != "both":
+        getattr(p.deploy, "cloud" if target == "local" else "local").steps.clear()
+        p.verify.steps.clear()
+    rid = service.prepare(p, RunContext(p.run_id, project=p.project), source)
+    view = service.approval_view(rid)
+    assert view["targets"] is None
+    assert set(view["project_settings"]) == {"default_targets", "version"}
+    service.approve(rid, approver="operator")
+    service.start(rid)
+    assert (await service.wait(rid)).status is RunStatus.SUCCEEDED
+    assert {name for name, _ in calls.contexts if name.startswith("deploy.")} == (
+        {"deploy.local", "deploy.cloud"} if target == "both" else {"deploy." + target}
+    )
+
+
+@pytest.mark.parametrize("migration_tier", [None, "db", "was"])
+async def test_rollback_budget_includes_prepare_db_tiers(rig, monkeypatch, migration_tier):
+    from ddak.executor.engine import Executor
+
+    service, source, _calls = rig
+    registry = Registry([*service.registry.specs, spec_for("prepare_db")])
+    for name in service.registry.registered():
+        registry.tool(name)(service.registry.get(name).fn)
+
+    @registry.tool("prepare_db")
+    async def prepare_db(inp: Input, ctx: RunContext) -> Output:
+        raise AssertionError("budget capture precedes tool execution")
+
+    service.registry = registry
+    p = plan()
+    p = p.model_copy(
+        update={
+            "deploy": p.deploy.model_copy(
+                update={
+                    "local": p.deploy.local.model_copy(
+                        update={
+                            "steps": [
+                                step(
+                                    "prepare.db.local",
+                                    "prepare_db",
+                                    target=Target.LOCAL,
+                                    tier=migration_tier,
+                                ),
+                                *p.deploy.local.steps,
+                            ]
+                        }
+                    )
+                }
+            )
+        }
+    )
+    budgets = []
+
+    def capture(self, *args, **kwargs):
+        budgets.append(kwargs["rollback_timeouts"])
+        raise RuntimeError("fixture: inspect budgets before any tool dispatch")
+
+    monkeypatch.setattr(Executor, "__init__", capture)
+    rid = service.prepare(p, RunContext(p.run_id, project=p.project), source)
+    service.approve(rid, approver="operator")
+    service.start(rid)
+    assert (await service.wait(rid)).status is RunStatus.FAILED_BEFORE_DEPLOY
+    count = 2 if migration_tier == "db" else 1
+    per_tier = service.registry.spec("rollback_tier").timeout_s + 2
+    assert budgets == [{Target.LOCAL: count * per_tier + 2, Target.CLOUD: per_tier + 2}]

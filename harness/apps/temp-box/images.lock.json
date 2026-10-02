@@ -1,0 +1,38 @@
+{
+  "mysql": {
+    "tag": "8.4",
+    "ref": "docker.io/library/mysql@sha256:6ea90827b1100f8f2ae306a539f86d2c264a26ed435a2a9f75551dd5c3aeb242",
+    "index_digest": "sha256:6ea90827b1100f8f2ae306a539f86d2c264a26ed435a2a9f75551dd5c3aeb242",
+    "platform_digests": {
+      "linux/amd64": "sha256:80f4933e3835f9dc4d35a28ec500d7986cb4414e6c6821c5461239cb7beb8995",
+      "linux/arm64": "sha256:ca3f0494c0f1fc86eb45f5e4786a1bb9f64d2f85b562cc74a9595046f6519a42"
+    }
+  },
+  "nginx": {
+    "tag": "1.28-alpine",
+    "ref": "docker.io/library/nginx@sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236",
+    "index_digest": "sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236",
+    "platform_digests": {
+      "linux/amd64": "sha256:0dcc88822d45581e65ae329f8be769762bf628d3b2bb7d2a077d4aa5c98b30e3",
+      "linux/arm64": "sha256:1be286f7dd7d6e6be04f46e8df36d0084b05aa3d7fd3c6ebda3e1eff4e5b665d"
+    }
+  },
+  "python": {
+    "tag": "3.13-slim",
+    "ref": "docker.io/library/python@sha256:7c61056e61ac89e852de05f3dc6fa51a6dd2181797bceed46aa725dd7cb2cd3b",
+    "index_digest": "sha256:7c61056e61ac89e852de05f3dc6fa51a6dd2181797bceed46aa725dd7cb2cd3b",
+    "platform_digests": {
+      "linux/amd64": "sha256:37134a49d21d2120e4c4d73bb76f8a4ab9aef31f096f7ec2ead48c2feead4332",
+      "linux/arm64": "sha256:e2a5fce94bd761967528a12f16d707c2613e1522f3f2d77fa45766f45962547f"
+    }
+  },
+  "traefik": {
+    "tag": "v3.6",
+    "ref": "docker.io/library/traefik@sha256:31267173a15b4944e797a76ffd9c419707c8d8b32fe5b610f80cd0cfa05f372d",
+    "index_digest": "sha256:31267173a15b4944e797a76ffd9c419707c8d8b32fe5b610f80cd0cfa05f372d",
+    "platform_digests": {
+      "linux/amd64": "sha256:996b026a32b1bb6c85c200e5cf25276c1caa84ddea6b1e3a33e78cdc5cbe8d0c",
+      "linux/arm64": "sha256:76bc4ee29651cd747a0b305996f52b70812fa0e04de4508848ebdb24f9fb2212"
+    }
+  }
+}

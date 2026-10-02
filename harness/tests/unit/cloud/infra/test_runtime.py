@@ -14,7 +14,7 @@ import pytest
 
 from ddak.cloud.infra.foundation import apply_foundation, foundation_template
 from ddak.cloud.infra.plan import filter_outputs, summarize_plan
-from ddak.cloud.infra.policy import PolicyViolation, static_gate
+from ddak.cloud.infra.policy import OVERRIDE_REQUIRED_BUILDSPEC, PolicyViolation, static_gate
 from ddak.cloud.infra.runtime import (
     AwsSettings,
     CommandResult,
@@ -103,7 +103,9 @@ class FakeRunner:
         self.calls = []
         self.raw = plan_json()
         self.apply_code = 0
-        self.outputs = {"secret_arn": {"value": SECRET, "sensitive": False}}
+        self.outputs = {
+            "secret_arn": {"value": SECRET.replace("??????", "ABC123"), "sensitive": False}
+        }
         self.check_result = {
             "results": {"failed_checks": [], "skipped_checks": [], "passed_checks": []}
         }
@@ -165,7 +167,7 @@ def test_approved_v2_summary_and_apply(runtime):
     assert ACCOUNT not in json.dumps(summary)
     assert encode_meta(summary, infra=True)
     result = instance.apply(session=SESSION)
-    assert result["outputs"] == {"secret_arn": SECRET}
+    assert result["outputs"] == {"secret_arn": SECRET.replace("??????", "ABC123")}
     assert not (instance.work / "approved.tfplan").exists()
     assert not (instance.work / "checkov-plan.json").exists()
     with pytest.raises(DdakToolError):
@@ -353,6 +355,7 @@ def test_foundation_reuses_only_matching_owned_resources(tmp_path):
     s3.get_bucket_tagging.return_value = {
         "TagSet": [{"Key": k, "Value": v} for k, v in template["tags"].items()]
     }
+    s3.get_bucket_policy.return_value = {"Policy": json.dumps(template["bucket_policy"])}
     iam.get_policy.return_value = {"Policy": {"DefaultVersionId": "v1"}}
     iam.get_policy_version.side_effect = [
         {"PolicyVersion": {"Document": template["boundary"]}},
@@ -383,6 +386,12 @@ def test_review_fixes_static_codebuild_and_cidr():
     type="LINUX_CONTAINER"
   }
 }"""
+    codebuild = codebuild.replace(
+        '  name = "ddak-codebuild"',
+        '  name = "ddak-codebuild"\n  source { type="GITHUB"\n buildspec='
+        + json.dumps(OVERRIDE_REQUIRED_BUILDSPEC)
+        + "\n }",
+    )
     assert static_gate({"main.tf": codebuild}, layer="platform").passed
     assert not static_gate(
         {
@@ -728,7 +737,7 @@ def test_cleanup_keeps_uncertain_apply(runtime):
 def test_refresh_has_fresh_read_budget(runtime):
     instance, *_ = runtime
     instance.deadline = time.monotonic() - 1000
-    assert instance.refresh(session=SESSION) == {"secret_arn": SECRET}
+    assert instance.refresh(session=SESSION) == {"secret_arn": SECRET.replace("??????", "ABC123")}
     assert instance.deadline > time.monotonic()
 
 

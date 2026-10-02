@@ -1,0 +1,74 @@
+[
+  {
+    "log": "ddak-g1-ci.log",
+    "sha256": "01e23f08dc966c9423c742e671f47d94b86bfdf70a19821ad4b7cdaa9632e029",
+    "elapsed_s_reported_by_ci": 65.6,
+    "summary": "1058 passed, 1 skipped, 4 deselected in 63.94s (0:01:03)",
+    "pass": true,
+    "log_modified_utc": "2026-10-02T04:39:34.928542+00:00"
+  },
+  {
+    "log": "ddak-g12-ci.log",
+    "sha256": "3ecac66ee53d1478cae82825409863a8ff0696ca37eb818971758e982494cddd",
+    "elapsed_s_reported_by_ci": 73.1,
+    "summary": "1066 passed, 1 skipped, 4 deselected in 70.66s (0:01:10)",
+    "pass": true,
+    "log_modified_utc": "2026-10-02T04:39:34.927206+00:00"
+  },
+  {
+    "log": "ddak-g129-ci.log",
+    "sha256": "e36b1a4672024ed9678bd910264e5e4ebc782b70837cd50371472af0ae586110",
+    "elapsed_s_reported_by_ci": 73.1,
+    "summary": "1077 passed, 1 skipped, 4 deselected in 71.39s (0:01:11)",
+    "pass": false,
+    "log_modified_utc": "2026-10-02T04:39:34.929644+00:00"
+  },
+  {
+    "log": "ddak-g1293-ci.log",
+    "sha256": "4c0a571182c51654371e9835993a50a7abaf6b9f94b057c8d023a5a4e86a8a97",
+    "elapsed_s_reported_by_ci": 71.5,
+    "summary": "1093 passed, 1 skipped, 4 deselected in 68.60s (0:01:08)",
+    "pass": true,
+    "log_modified_utc": "2026-10-02T04:39:34.930871+00:00"
+  },
+  {
+    "log": "ddak-g4-ci.log",
+    "sha256": "54a9ffd7b08a606a76fc95cdcd4dc8b57b992dc0a43acd1834eaf486d0c879e2",
+    "elapsed_s_reported_by_ci": 74.3,
+    "summary": "1096 passed, 1 skipped, 4 deselected in 72.07s (0:01:12)",
+    "pass": true,
+    "log_modified_utc": "2026-10-02T04:39:34.928969+00:00"
+  },
+  {
+    "log": "ddak-g8-ci.log",
+    "sha256": "6730243bf0baa2c4db665e55f140f5756058d0217a77f9af1e8a22681a9425c5",
+    "elapsed_s_reported_by_ci": 77.0,
+    "summary": "7 failed, 1094 passed, 1 skipped, 4 deselected in 74.67s (0:01:14)",
+    "pass": false,
+    "log_modified_utc": "2026-10-02T04:39:34.929366+00:00"
+  },
+  {
+    "log": "ddak-g85-ci.log",
+    "sha256": "caf0b394d76f6c284e237818cce142be1867f998282af8aac2fee3284e4dc066",
+    "elapsed_s_reported_by_ci": 72.7,
+    "summary": "1104 passed, 1 skipped, 4 deselected in 70.19s (0:01:10)",
+    "pass": true,
+    "log_modified_utc": "2026-10-02T04:39:34.930073+00:00"
+  },
+  {
+    "log": "final-ci.log",
+    "sha256": "824ebe64433de2f3c14af3310ac5dd305b98e2ec54f6b58064cbe784ff9badf2",
+    "elapsed_s_reported_by_ci": 74.5,
+    "summary": "1117 passed, 1 skipped, 4 deselected in 72.41s (0:01:12)",
+    "pass": true,
+    "log_modified_utc": "2026-10-02T04:34:02.772825+00:00"
+  },
+  {
+    "log": "pre-final-ci.log",
+    "sha256": "3603730af35f7928cd2b428d5849c47189f2423ed00f4332e63ac15ffd1c0bfa",
+    "elapsed_s_reported_by_ci": 80.0,
+    "summary": "1110 passed, 1 skipped, 4 deselected in 76.59s (0:01:16)",
+    "pass": true,
+    "log_modified_utc": "2026-10-02T04:27:25.987881+00:00"
+  }
+]

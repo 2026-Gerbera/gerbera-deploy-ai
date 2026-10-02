@@ -49,7 +49,9 @@ def test_tls_pass_and_mismatches():
     elb.describe_rules.return_value = rules
 
     def call(domain="app.example.com"):
-        return check_tls(domain=domain, platform=platform, acm=acm, elbv2=elb, now=now)
+        return check_tls(
+            domain=domain, platform=platform, acm=acm, elbv2=elb, now=now, probe=lambda *_: True
+        )
 
     assert call().passed
     rules["Rules"].append({"IsDefault": False, "Actions": [{"Type": "forward"}]})
@@ -122,15 +124,80 @@ def test_tls_deadline_stops_before_second_lookup(monkeypatch):
     monkeypatch.setattr("ddak.cloud.tls.check.time.monotonic", Mock(side_effect=[1, 3]))
     acm = Mock(describe_certificate=Mock(return_value={"Certificate": {}}))
     elb = Mock()
-    with pytest.raises(DdakToolError, match="ADAPTER_TIMEOUT"):
-        check_tls(
-            domain="app.example.com",
-            platform=dict(
-                alb_arn="a", certificate_arn="c", https_listener_arn="s", http_listener_arn="h"
-            ),
-            acm=acm,
-            elbv2=elb,
-            deadline=2,
-        )
+    result = check_tls(
+        domain="app.example.com",
+        platform=dict(
+            alb_arn="a", certificate_arn="c", https_listener_arn="s", http_listener_arn="h"
+        ),
+        acm=acm,
+        elbv2=elb,
+        deadline=2,
+    )
+    assert result.passed is False
     acm.describe_certificate.assert_called_once()
     elb.describe_listeners.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "failure", [None, OSError("fixture"), __import__("ssl").SSLError("fixture")]
+)
+def test_real_probe_uses_443_verified_tls_and_closes(monkeypatch, failure):
+    import ssl
+
+    from ddak.cloud.tls.check import _probe_https as probe_https
+
+    connection = Mock()
+    connection.connect.side_effect = failure
+    connection.getresponse.return_value.status = 503  # TLS는 준비됐고 앱은 별도 health에서 확인
+    factory = Mock(return_value=connection)
+    monkeypatch.setattr("ddak.cloud.tls.check.http.client.HTTPSConnection", factory)
+    assert probe_https("app.example.test") is (failure is None)
+    assert factory.call_args.args == ("app.example.test",)
+    assert factory.call_args.kwargs["port"] == 443
+    context = factory.call_args.kwargs["context"]
+    assert context.check_hostname and context.verify_mode == ssl.CERT_REQUIRED
+    assert context.minimum_version >= ssl.TLSVersion.TLSv1_2
+    connection.close.assert_called_once()
+
+
+def test_probe_clamps_large_deadline_and_expiry_is_false(monkeypatch):
+    import subprocess
+    import time
+
+    from ddak.cloud.tls import probe_https
+
+    runner = Mock(return_value=subprocess.CompletedProcess([], 0, b"1"))
+    monkeypatch.setattr("ddak.cloud.tls.check.subprocess.run", runner)
+    start = time.monotonic()
+    assert probe_https("app.example.test", start + 2700)
+    assert 0 < runner.call_args.kwargs["timeout"] <= 10
+    assert float(runner.call_args.args[0][-1]) <= start + 10.1
+    runner.reset_mock()
+    assert not probe_https("app.example.test", start - 1)
+    runner.assert_not_called()
+
+
+def test_dns_hang_is_bounded_and_child_reaped(monkeypatch, tmp_path):
+    import subprocess
+    import time
+
+    from ddak.cloud.tls import probe_https
+
+    real_run = subprocess.run
+    marker = tmp_path / "dns-started"
+
+    def dns_hang(argv, **kwargs):
+        # 실 DNS/네트워크를 호출하지 않는다. 자식 안 resolver만 지연시킨다.
+        code = (
+            "import socket,time,pathlib; "
+            "socket.getaddrinfo=lambda *a,**k:(pathlib.Path("
+            + repr(str(marker))
+            + ").touch(),time.sleep(5)); "
+            + argv[2]
+        )
+        return real_run([*argv[:2], code, *argv[3:]], **kwargs)
+
+    monkeypatch.setattr("ddak.cloud.tls.check.subprocess.run", dns_hang)
+    start = time.monotonic()
+    assert not probe_https("app.example.test", start + 1)
+    assert marker.exists() and time.monotonic() - start < 2

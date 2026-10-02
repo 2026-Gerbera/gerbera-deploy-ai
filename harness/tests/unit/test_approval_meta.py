@@ -66,7 +66,7 @@ async def test_default_fields_and_old_execution_still_work(rig: Any) -> None:
     service, _, _ = rig
     rid = prepare(rig)
     view = service.approval_view(rid)
-    assert set(view) == {
+    assert set(view) >= {
         "run_id",
         "project",
         "subjects",

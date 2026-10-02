@@ -11,13 +11,14 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from ddak.core.config import AdapterMode
 from ddak.core.contracts.enums import RunMode
-from ddak.core.contracts.release import ReleaseArtifacts
+from ddak.core.contracts.release import ReleaseArtifacts, SnapshotBinding
 
 
 @dataclass(frozen=True)
@@ -37,7 +38,27 @@ class RunContext:
     previous_release: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
     build_source: str | None = None  # 승인 후 생성한 빌드 사본 경로
 
+    targets: Literal["onprem", "cloud", "both"] | None = None  # None은 기존 계획 대상 유지
+    trigger: Literal["manual", "auto"] = "manual"
+
+    source_sha: str | None = None  # 이번 run의 원본 prod 커밋
+    candidate_sha: str | None = None  # 실제 빌드·배포한 ai-prod 커밋
+
+    project_settings: Mapping[str, Any] = field(default_factory=dict)  # 승인 시 설정 스냅샷
+    repo_url: str | None = None  # 요청한 앱 저장소(자격증명 없는 URL)
+    ref: str | None = None  # 요청한 감시 브랜치. 실제 소스는 source_sha로 고정한다
+    source_binding: SnapshotBinding | None = None  # 승인 뒤 실행기만 주입한다.
+
     def __post_init__(self) -> None:
+        for value in (self.source_sha, self.candidate_sha):
+            if value is not None and not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", value):
+                raise ValueError("완전한 Git 커밋 SHA가 필요하다")
+        if self.candidate_sha is not None and self.source_sha is None:
+            raise ValueError("candidate_sha에는 source_sha가 필요하다")
+        if self.targets not in (None, "onprem", "cloud", "both"):
+            raise ValueError("targets는 onprem/cloud/both만 허용한다")
+        if self.trigger not in ("manual", "auto"):
+            raise ValueError("trigger는 manual/auto만 허용한다")
         if self.release_artifacts is not None:
             for tier, artifact in self.release_artifacts.images.items():
                 if tier in self.images and self.images[tier] != artifact.ref:
@@ -49,4 +70,6 @@ class RunContext:
         data["mode"] = self.mode.value
         if self.release_artifacts is not None:
             data["release_artifacts"] = self.release_artifacts.model_dump(mode="json")
+        if self.source_binding is not None:
+            data["source_binding"] = self.source_binding.model_dump(mode="json")
         return data

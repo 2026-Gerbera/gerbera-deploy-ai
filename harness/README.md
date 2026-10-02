@@ -11,19 +11,19 @@ SoftBank Hackathon 2026 Term1 팀 저장소입니다. 저장소 이름은 `gerbe
 ## 어떻게 동작하나
 
 ```
- 파이썬 앱 1개 (src/ddak, 한 프로세스, 호스트에서 uv run, 127.0.0.1)   💭 레지스트리 트리(9/30)
+ 파이썬 앱 1개 (src/ddak, 한 프로세스, 호스트에서 uv run, 127.0.0.1)   ✅ 구조(9/30), 10/1 cloud·onprem 분리 반영
  ├── web       관리 화면·채팅·계획 카드·승인 화면·2열 진행(SSE)·설정(도메인)·LLM 연결 카드
  ├── plan      ① 플랜(AI: 분석 분류·step 선택·Dockerfile 초안) + ② 계획 검증·Dockerfile 검사(코드)
- ├── infra     AI Terraform: 탐지·생성(AI)·검사·plan·사람 승인 뒤 apply(코드) + providers/aws
  ├── executor  plan.json 순서대로 레지스트리 함수를 직접 호출(AI 없음)
  │             빌드 ∥ 로컬 트랙 ∥ 클라우드 트랙 → local_verified 대기 지점 → 교차 검증
- ├── ci        ③ 빌드·푸시 (CodeBuild, registries/dockerhub 기본·ecr 옵션, AI 없음)
- ├── cd        ④ 배포: 공통 인터페이스 + providers/aws·onprem (AI 없음)
+ ├── cd        ④ 배포 공통: interface.py(공통 인터페이스) + dispatch.py(provider 선택) + fake.py (AI 없음)
+ ├── cloud     infra(AI Terraform: 생성만 AI, 검사·plan·사람 승인 뒤 apply는 코드) · build(③ 빌드·푸시, dockerhub 기본·ecr 옵션) · deploy(AWS provider) · tls · health
+ ├── onprem    VM 기반: deploy(was VM 원격 Docker) · provision · inventory (AI 없음)
  ├── verify    ⑤ 검증 및 보고 (AI: 실패 원인 설명·보고 요약)
  ├── ops       운영(preflight, 데모 리셋, 정리)
  └── core      계약(pydantic) · 툴 레지스트리(@tool) · call_ai(cli/api/replay) · redact
                               │
-   온프렘(web·was·db tier별 서버, 자원 부족 시 tier별 컨테이너, Docker Hub 읽기 전용 pull)
+   온프렘(VM 기반 web·was·db, 파이프라인은 was VM만 조작, 컨테이너 모드는 로컬 검증용, Docker Hub 읽기 전용 pull)
    · AWS 서울(CodeBuild → Docker Hub, ECS Fargate, 공유 RDS MySQL)
 ```
 
@@ -45,9 +45,9 @@ make demo        # 승인 후 fixture 전체 흐름. AWS·AI 실호출은 없음
 make demo-local  # 실제 Docker 테스트 앱 배포/복구 (이미지 다운로드·빌드)
 ```
 
-저장소 루트의 `.github/workflows/ci.yml`이 main push와 PR 생성·수정 때 `harness/`를 검사합니다. 일반 브랜치 push만으로는 실행되지 않습니다. `make setup`은 로컬 훅 설치용입니다. 이메일 등록·커밋 형식·main push 금지·필수 PR 승인은 없습니다. CI는 코드 검사이며 실제 배포는 하지 않습니다.
+저장소 루트의 `.github/workflows/ci.yml`이 main push와 PR 생성·수정 때 `harness/`를 검사합니다. 일반 브랜치 push만으로는 실행되지 않습니다. `make setup`은 로컬 훅 설치용입니다. 이메일 등록·커밋 형식·필수 PR 승인은 없습니다. main에는 직접 push하지 않고 브랜치 + PR로 올리며 merge는 사람이 합니다(10/1). CI는 코드 검사이며 실제 배포는 하지 않습니다.
 
-현재 계약은 [O1 착수 결정](docs/decisions/2026-09-30-o1-start-contracts.md)과 [계약 인덱스](docs/contracts/README.md)에서 시작합니다. 기존 FastAPI 골격을 유지하며 실행 코어는 웹과 분리했습니다. 팀원 연결 방법은 [O1 가이드](docs/guides/O1.md)를 봅니다.
+현재 계약은 [O1 착수 결정](docs/decisions/2026-09-30-o1-start-contracts.md)과 [계약 인덱스](docs/contracts/README.md)에서 시작합니다. 관리 웹은 FastAPI로 확정했고(✅ 9/30) 실행 코어는 웹과 분리했습니다. 팀원 연결 방법은 [O1 가이드](docs/guides/O1.md)를 봅니다.
 
 전체 명령은 `make help`로 봅니다. 기여 방법은 [CONTRIBUTING.md](CONTRIBUTING.md), AI 코딩 도구 규칙은 [AGENTS.md](AGENTS.md), 사용법 요약은 [하네스 안내](docs/harness/README.md)에 있습니다.
 
@@ -63,16 +63,16 @@ O1의 승인·SQLite 잠금/상태·패치 스냅샷·실행기·온프렘 provi
 |---|---|
 | `src/ddak/core` | 계약 모델, 툴 레지스트리(카탈로그 40개 + `@tool`), 어댑터 규약, AI 관문(`call_ai`, backend cli/api/replay, Jev 자리), redact, 예시 툴 `ping` |
 | `src/ddak/plan` | ① 플랜 + ② 계획 검증(`generate_dockerfile` AI, `validate_dockerfile`·`validate_plan` 코드) |
-| `src/ddak/infra` | AI Terraform(`generate_infra` AI, `discover_existing`·`validate_infra`·`plan_infra`·`apply_infra` 코드) + `providers/aws`(코드 소유 틀) |
-| `src/ddak/ci` | ③ 빌드(`build_image`, `push_image`) + `registries/dockerhub`(기본)·`ecr`(옵션) |
-| `src/ddak/cd` | ④ 배포: `interface.py`(deploy·rollback·health_check·migrate_db·inject_config·ensure_tls) + `providers/aws`·`onprem`·`fake` |
+| `src/ddak/cloud` | AWS 쪽: `infra`(AI Terraform: `generate_infra` AI, `discover_existing`·`validate_infra`·`plan_infra`·`apply_infra` 코드, `providers/aws` 코드 소유 틀) · `build`(③ `build_image`·`push_image`, `registries/dockerhub` 기본·`ecr` 옵션) · `deploy`(AwsProvider, 위임 구조는 PR #1 merge 뒤) · `tls`(`ensure_tls`) · `health`(클라우드 헬스·`verify_tls`) |
+| `src/ddak/onprem` | 온프렘(VM 기반, was VM만 조작): `deploy`(OnPremProvider) · `provision` · `inventory` |
+| `src/ddak/cd` | ④ 배포 공통: `interface.py`(deploy·rollback·health_check·migrate_db·inject_config·ensure_tls) + `dispatch.py`(`select_provider`) + `fake.py` |
 | `src/ddak/verify` | ⑤ 검증 및 보고 |
 | `src/ddak/ops` | 운영 툴(계획 밖) |
 | `src/ddak/executor` | 실행기: 트랙 병렬, wait_for/signal 대기 지점, 트랙별 롤백, 진행 이벤트 |
 | `src/ddak/web` | 관리 웹(FastAPI, 💭 Jinja2 + HTMX, SSE) |
 | `src/ddak/app.py` | 조립 진입점(툴 모듈 자동 등록, `python -m ddak`) |
 | `apps/sample-app` | 샘플 앱(배포 대상, flaskr 기반, MySQL) |
-| `compose/local` | 온프렘 배포 대상 템플릿(MySQL 8.4 db tier) |
+| `compose/local` | 온프렘 컨테이너 모드(로컬 검증용) 템플릿(MySQL 8.4 db tier) |
 | `infra/terraform` | AI Terraform의 코드 소유 틀·정책 검사 규칙·권한 경계 템플릿(리소스 HCL은 AI가 생성, 💭 배치) |
 | `contracts/schemas` | 계약 스키마·툴 카탈로그 스냅샷(생성물) |
 | `docs/` | 하네스 규칙·계약·결정·AI 활용 기록과 이전 기획 자료 |
@@ -85,7 +85,7 @@ O1의 승인·SQLite 잠금/상태·패치 스냅샷·실행기·온프렘 provi
 
 - 사용 기록은 사람별로 [docs/ai-usage/](docs/ai-usage/README.md)에 남깁니다. PR마다 "AI 사용" 칸에 도구, 범위, 사람이 검증한 부분을 적습니다.
 - git 메타데이터(커밋 작성자, Co-authored-by 트레일러)에는 AI를 넣지 않습니다. 이것은 GitHub 컨트리뷰터 목록의 문제이며, AI 사용 사실을 숨기려는 것이 아닙니다.
-- 모든 커밋은 팀원 본인의 git 계정으로 만듭니다. main push 또는 PR을 선택하며 필수 리뷰 승인은 두지 않습니다.
+- 모든 커밋은 팀원 본인의 git 계정으로 만듭니다. main에는 직접 push하지 않고 브랜치 + PR로 올리며, merge는 사람이 합니다. 필수 리뷰 승인 수는 정하지 않았습니다.
 - 제품이 실행 중에 쓰는 AI(채팅 의도, 분석 분류, step 선택, 실패 원인 설명, 보고 요약)의 호출 비용은 이와 별개로 결과 화면에 표시합니다.
 
 ## 라이선스

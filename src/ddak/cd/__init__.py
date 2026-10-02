@@ -16,3 +16,20 @@ ensure_tls, deploy_tier, rollback_tier, health_check.
   (코드가 채움)를 코드가 합쳐 provider에 같은 모양으로 넘긴다. 템플릿 엔진은 쓰지 않는다.
 - 이미지 digest·도메인·시크릿 위치·서버 IP는 RunContext(환경 정보)에서 읽는다(파라미터로 받지 않음).
 """
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .dispatch import TlsChecker
+
+
+def configure_cloud_tls(checker: TlsChecker) -> None:
+    # provider가 cd.interface를 읽는 시점에 dispatch를 다시 import하지 않는다.
+    from .dispatch import configure_cloud_tls as configure
+
+    configure(checker)
+
+
+__all__ = ["configure_cloud_tls"]

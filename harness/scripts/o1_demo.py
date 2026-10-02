@@ -42,7 +42,7 @@ OWNER = {"project": PROJECT, "source": "fixture", "schema": "o1-demo/v1"}
 BANNER = "fixture: cloud/build/AI simulation, no real cloud"
 EXPECTED = {
     "success": ("SUCCEEDED", "v2", "v2"),
-    "local_fail": ("FAILED_LOCAL", "v1", "v1"),
+    "local_fail": ("FAILED_LOCAL", "v1", "v2"),
     "cloud_fail": ("FAILED_CLOUD", "v2", "v1"),
     "parity_fail": ("PARITY_FAILED", "v2", "v1"),
 }
@@ -170,7 +170,7 @@ def fixture_plan(run_id: str, *, bootstrap: bool) -> Plan:
 
     def track(target: Target) -> Section:
         suffix = target.value
-        gates = ["images_ready"] + (["local_verified"] if target is Target.CLOUD else [])
+        gates = ["images_ready"]
         steps = [
             step(
                 f"deploy.db.{suffix}",

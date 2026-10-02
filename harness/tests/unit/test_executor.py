@@ -49,9 +49,19 @@ class TOutput(ContractModel):
     passed: bool
 
 
-REG = Registry([_spec("t_step"), _spec("t_cloud_only", (Target.CLOUD,)), _spec("t_missing")])
+REG = Registry(
+    [
+        _spec("t_step"),
+        _spec("t_cloud_only", (Target.CLOUD,)),
+        _spec("t_missing"),
+        _spec("deploy_tier"),
+        _spec("compare_env_results"),
+    ]
+)
 
 
+@REG.tool("deploy_tier")
+@REG.tool("compare_env_results")
 @REG.tool("t_step")
 async def t_step(inp: TInput, ctx: RunContext) -> TOutput:
     LOG.append(f"start:{inp.target}:{inp.mode}")
@@ -68,6 +78,8 @@ def t_cloud_only(inp: TInput, ctx: RunContext) -> TOutput:  # 동기 툴: 워커
 
 
 def step(sid: str, tool: str = "t_step", **kw: Any) -> PlanStep:
+    if tool == "t_step" and kw.get("effect") is Effect.STATE_CHANGE:
+        tool = "deploy_tier"
     params = {k: kw.pop(k) for k in ("mode", "delay") if k in kw}
     return PlanStep(id=sid, tool=tool, layer=Layer.CONDITIONAL, params=params, **kw)
 
@@ -82,6 +94,7 @@ def plan(
     verify_steps = [
         step(
             "verify.compare",
+            tool="compare_env_results",
             wait_for=["local_verified", "cloud_verified"],
             mode=compare_mode,
         )
@@ -110,7 +123,7 @@ def plan(
                         step("deploy.tls.cloud", tool="t_cloud_only"),  # 읽기: G1 전 병렬
                         step(
                             "deploy.app.cloud",
-                            wait_for=["local_verified"],
+                            wait_for=["images_ready"],
                             mode=cloud_mode,
                             effect=Effect.STATE_CHANGE,
                         ),
@@ -141,7 +154,7 @@ def _executor(rollbacks: Rollbacks, events: list[RunEvent]) -> Executor:
     return Executor(REG, bus=bus, rollback=rollbacks)
 
 
-async def test_tracks_start_together_and_cloud_waits_for_local_verified() -> None:
+async def test_tracks_start_together_and_cloud_does_not_wait_for_local_verified() -> None:
     LOG.clear()
     events: list[RunEvent] = []
     rollbacks = Rollbacks()
@@ -151,31 +164,31 @@ async def test_tracks_start_together_and_cloud_waits_for_local_verified() -> Non
     ids = [e.step for e in events if e.type is EventType.STEP_STARTED]
     # 클라우드 읽기 step은 빌드·로컬과 동시에 시작한다(로컬 검증 전).
     assert ids.index("deploy.tls.cloud") < ids.index("verify.smoke.local")
-    # 클라우드 상태 변경 step은 local_verified가 열린 뒤에만 시작한다.
+    # 클라우드는 빌드 완료 뒤 로컬 검증을 기다리지 않고 시작한다.
     opened = next(
         e.seq for e in events if e.type is EventType.GATE_OPENED and e.detail == "local_verified"
     )
     app_cloud = next(
         e.seq for e in events if e.type is EventType.STEP_STARTED and e.step == "deploy.app.cloud"
     )
-    assert opened < app_cloud
+    assert app_cloud < opened
     assert any(e.type is EventType.GATE_WAITING for e in events)
     assert result.gates == {"images_ready": True, "local_verified": True, "cloud_verified": True}
     assert rollbacks.targets == []
 
 
-async def test_local_failure_rolls_back_local_only_and_stops_cloud_at_gate() -> None:
+async def test_local_failure_rolls_back_local_only_and_preserves_cloud_success() -> None:
     events: list[RunEvent] = []
     rollbacks = Rollbacks()
     result = await _executor(rollbacks, events).run(plan(local_mode="raise"), RunContext("run-1"))
     assert result.status is RunStatus.FAILED_LOCAL
     assert result.tracks["local"] is TrackStatus.ROLLED_BACK
-    assert result.tracks["cloud"] is TrackStatus.ABORTED_AT_GATE
-    assert result.tracks["verify"] is TrackStatus.ABORTED_AT_GATE
+    assert result.tracks["cloud"] is TrackStatus.DONE
+    assert result.tracks["verify"] is TrackStatus.SKIPPED
     assert rollbacks.targets == [Target.LOCAL]
     started = {e.step for e in events if e.type is EventType.STEP_STARTED}
     assert "deploy.tls.cloud" in started  # 대기 지점 전 읽기는 이미 돌았다
-    assert "deploy.app.cloud" not in started  # 상태 변경은 시작하지 않았다
+    assert "deploy.app.cloud" in started  # 상태 변경은 시작하지 않았다
     failed = next(r for r in result.records if r.status == "failed")
     assert failed.error is not None and failed.error.startswith("ADAPTER_FAILED")
     assert "hunter2" not in failed.error  # 오류 메시지도 redact
@@ -214,7 +227,7 @@ async def test_finally_report_runs_after_local_failure_and_keeps_status() -> Non
         plan(local_mode="raise", report_mode="ok"), RunContext("run-1")
     )
     assert result.status is RunStatus.FAILED_LOCAL
-    assert result.tracks["verify"] is TrackStatus.ABORTED_AT_GATE
+    assert result.tracks["verify"] is TrackStatus.SKIPPED
     report = [r for r in result.records if r.step_id == "verify.report"]
     assert [r.status for r in report] == ["succeeded"]
 
@@ -280,8 +293,6 @@ async def test_unregistered_tool_fails_with_plan_invalid() -> None:
 @pytest.mark.parametrize(
     ("deploy", "fragment"),
     [
-        # W1: 클라우드 상태 변경 step이 local_verified 대기 없이 온다
-        ({"cloud": {"steps": [step("deploy.app.cloud", effect=Effect.STATE_CHANGE)]}}, "W1"),
         # 아무도 열지 않는 신호를 기다린다
         ({"local": {"steps": [step("deploy.was.local", wait_for=["images_ready"])]}}, "아무도"),
         # 같은 트랙의 뒤 신호를 기다린다(교착)
@@ -342,7 +353,7 @@ def bootstrap_plan(*, infra_mode: str = "ok") -> Plan:
                         ),
                         step(
                             "deploy.app.cloud",
-                            wait_for=["local_verified"],
+                            wait_for=["images_ready"],
                             effect=Effect.STATE_CHANGE,
                         ),
                         step("verify.smoke.cloud", signal="cloud_verified"),
@@ -377,8 +388,63 @@ async def test_bootstrap_infra_failure_stops_build_and_local_at_gate() -> None:
         bootstrap_plan(infra_mode="raise"), RunContext("run-1")
     )
     assert result.tracks["cloud"] is TrackStatus.FAILED
-    assert result.tracks["build"] is TrackStatus.ABORTED_AT_GATE
-    assert result.tracks["local"] is TrackStatus.ABORTED_AT_GATE
+    assert result.tracks["build"] is TrackStatus.SKIPPED
+    assert result.tracks["local"] is TrackStatus.SKIPPED
     started = {e.step for e in events if e.type is EventType.STEP_STARTED}
     assert "build.was" not in started  # 인프라가 없으면 빌드·배포를 시작하지 않는다
     assert rollbacks.targets == []  # additive_prep만 시작했으므로 앱 롤백 대상이 아니다
+
+
+async def test_single_environment_verify_failure_is_not_parity_failure():
+    p = plan()
+    p.verify.steps[:] = [step("verify.watch.cloud", target=Target.CLOUD, mode="check_fail")]
+    rollback = Rollbacks()
+    result = await Executor(REG, rollback=rollback).run(p, RunContext("run-1"))
+    assert result.status is RunStatus.FAILED_CLOUD
+    assert rollback.targets == [Target.CLOUD]
+    assert result.tracks["local"] is TrackStatus.DONE
+
+
+async def test_compare_condition_emits_skipped_event_and_record():
+    p = plan(local_mode="raise")
+    events = []
+    result = await _executor(Rollbacks(), events).run(p, RunContext("run-1"))
+    assert any(r.step_id == "verify.compare" and r.status == "skipped" for r in result.records)
+    assert any(e.type is EventType.STEP_SKIPPED and e.step == "verify.compare" for e in events)
+
+
+async def test_local_verify_failure_still_runs_cloud_verify_and_skips_compare():
+    p = plan()
+    p.verify.steps[:0] = [
+        step("verify.watch.local", target=Target.LOCAL, mode="check_fail"),
+        step("verify.watch.cloud", target=Target.CLOUD),
+    ]
+    events = []
+    rollback = Rollbacks()
+    result = await _executor(rollback, events).run(p, RunContext("run-1"))
+    assert result.status is RunStatus.FAILED_LOCAL
+    assert rollback.targets == [Target.LOCAL]
+    assert (
+        next(r for r in result.records if r.step_id == "verify.watch.cloud").status == "succeeded"
+    )
+    assert next(r for r in result.records if r.step_id == "verify.compare").status == "skipped"
+    assert any(e.type is EventType.STEP_SKIPPED and e.step == "verify.compare" for e in events)
+
+
+@pytest.mark.parametrize("failure", ["error", "missing"])
+@pytest.mark.parametrize("target", [None, Target.CLOUD])
+async def test_unavailable_comparison_does_not_rollback_cloud(failure, target):
+    registry = REG
+    if failure == "missing":
+        registry = Registry(REG.specs)
+        for name in REG.registered() - {"compare_env_results"}:
+            registry.tool(name)(REG.get(name).fn)
+    p = plan(compare_mode="raise" if failure == "error" else "ok")
+    p.verify.steps[0] = p.verify.steps[0].model_copy(update={"target": target})
+    rollbacks = Rollbacks()
+    result = await Executor(registry, rollback=rollbacks).run(p, RunContext("run-1"))
+    assert result.status is RunStatus.FAILED_VERIFY
+    assert result.tracks["local"] is result.tracks["cloud"] is TrackStatus.DONE
+    assert rollbacks.targets == []
+    record = next(r for r in result.records if r.tool == "compare_env_results")
+    assert record.status == "failed" and "비교 불가" in record.error

@@ -79,6 +79,8 @@ def reset_demo(
         inventory_model = _Inventory.model_validate(inventory)
     except (ValidationError, TypeError):
         raise fail("onprem 인벤토리 오류", ErrorCode.CONFIG_INVALID) from None
+    if "db" in inventory_model.tiers:
+        raise fail("DB 포함 인벤토리는 demo reset 금지", ErrorCode.PRECONDITION_FAILED)
     fd = os.open(state / "controller.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "a") as lease:
         meta = os.fstat(lease.fileno())

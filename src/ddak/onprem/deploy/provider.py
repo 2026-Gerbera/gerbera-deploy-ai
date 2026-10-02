@@ -46,6 +46,7 @@ CLI 시간 초과는 daemon 작업 취소를 보장하지 않으며 ADAPTER_TIME
 
 from __future__ import annotations
 
+import ipaddress
 import re
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -123,6 +124,9 @@ class _Tier(_Config):
     replicas: int | None = Field(default=None, ge=1, le=5)
     traefik_labels: dict[str, str] = Field(default_factory=dict)
     ready: _Ready | None = None
+    kind: Literal["python_http", "nginx", "mysql"] = "python_http"
+    ssh: SSHConfig | None = None
+    migration_env_file: str | None = None
 
     @field_validator("traefik_labels")
     @classmethod
@@ -165,6 +169,10 @@ class _Tier(_Config):
             "DB_HOST",
             "DB_PORT",
             "DB_NAME",
+            "WAS_UPSTREAM",
+            "PUBLIC_HOST",
+            "PUBLIC_SCHEME",
+            "TRUSTED_PROXY_CIDR",
         }
         if values.keys() - allowed:
             raise ValueError("공개 설정 허용 목록 밖의 키")
@@ -185,6 +193,21 @@ class _Tier(_Config):
                     raise ValueError("credential 없는 공개 URL 필요")
                 if url.port is not None and not 0 < url.port <= 65535:
                     raise ValueError("URL 포트 오류")
+            elif key == "TRUSTED_PROXY_CIDR":
+                network = ipaddress.ip_network(value)
+                if network.version != 4 or network.prefixlen != 32 or not value.endswith("/32"):
+                    raise ValueError("신뢰 proxy는 단일 IPv4 /32여야 한다")
+            elif key == "WAS_UPSTREAM":
+                if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9.-]*:[0-9]{1,5}", value):
+                    raise ValueError("WAS upstream 형식 오류")
+                if not 0 < int(value.rsplit(":", 1)[1]) <= 65535:
+                    raise ValueError("WAS upstream 포트 오류")
+            elif key == "PUBLIC_HOST":
+                if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9.-]*(?::[0-9]{1,5})?", value):
+                    raise ValueError("공개 host 형식 오류")
+            elif key == "PUBLIC_SCHEME":
+                if value not in {"http", "https"}:
+                    raise ValueError("공개 scheme 형식 오류")
             elif key in {"SESSION_COOKIE_SECURE", "SESSION_COOKIE_HTTPONLY"}:
                 if value.lower() not in {"true", "false"}:
                     raise ValueError("공개 bool 설정 오류")
@@ -212,12 +235,15 @@ class _Tier(_Config):
     @classmethod
     def valid_ports(cls, values: list[str]) -> list[str]:
         for value in values:
-            match = re.fullmatch(r"127\.0\.0\.1:([0-9]+):([0-9]+)(?:/tcp)?", value)
-            if not match or not all(0 < int(port) <= 65535 for port in match.groups()):
-                raise ValueError("loopback TCP 포트만 허용")
+            match = re.fullmatch(r"([0-9.]+):([0-9]+):([0-9]+)(?:/tcp)?", value)
+            if not match or not all(0 < int(port) <= 65535 for port in match.groups()[1:]):
+                raise ValueError("명시적 IPv4 TCP 포트 필요")
+            address = ipaddress.IPv4Address(match[1])
+            if not (address.is_loopback or address.is_private) or address.is_unspecified:
+                raise ValueError("loopback 또는 사설 IP 포트만 허용")
         return values
 
-    @field_validator("env_file")
+    @field_validator("env_file", "migration_env_file")
     @classmethod
     def valid_env_file(cls, value: str | None) -> str | None:
         if value is not None and (not Path(value).is_absolute() or "\n" in value or "\0" in value):
@@ -250,13 +276,39 @@ class _Inventory(_Config):
             )
         ):
             raise ValueError("Secure 쿠키에는 HTTPS public_url이 필요하다")
-        if self.mode == "container" and self.ssh is not None:
+        if self.mode == "container" and (
+            self.ssh is not None or any(t.ssh for t in self.tiers.values())
+        ):
             raise ValueError("container 모드는 ssh를 받지 않는다")
+        if self.mode == "container" and any(
+            not p.startswith("127.0.0.1:") for t in self.tiers.values() for p in t.ports
+        ):
+            raise ValueError("container publish는 loopback만 허용")
         if self.mode == "vm":
-            if self.ssh is None or self.docker_host is not None:
+            if (
+                self.docker_host is not None
+                or not self.tiers
+                or any(not (t.ssh or self.ssh) for t in self.tiers.values())
+            ):
                 raise ValueError("vm은 ssh가 필요하고 docker_host를 받지 않는다")
-            if any(t.ports or t.network == "bridge" for t in self.tiers.values()):
-                raise ValueError("vm은 publish 없이 공유 network가 필요하다")
+            for name, tier in self.tiers.items():
+                connection = tier.ssh or self.ssh
+                if connection is None:
+                    raise ValueError("tier SSH 연결 누락")
+                if tier.network == "bridge" or (name == "was" and tier.ports):
+                    raise ValueError("vm은 공유 network 필요, was는 publish 불가")
+                if any(p.split(":")[0] != connection.host for p in tier.ports):
+                    raise ValueError("VM publish는 해당 VM의 명시적 IP에만 허용")
+        for name, tier in self.tiers.items():
+            if (name == "db") != (tier.kind == "mysql"):
+                raise ValueError("db tier는 mysql 보호 경로만 사용한다")
+            if tier.kind == "mysql" and (
+                tier.replicas is not None
+                or len(tier.volumes) != 1
+                or tier.volumes[0].target != "/var/lib/mysql"
+                or tier.volumes[0].read_only
+            ):
+                raise ValueError("MySQL은 단일 named data volume만 사용한다")
         return self
 
 
@@ -285,8 +337,10 @@ class OnPremProvider:
             raise fail("volume target 중복", ErrorCode.CONFIG_INVALID)
         if config.public_env and not config.env_file:
             raise fail("공개 설정에는 env_file이 필요하다", ErrorCode.CONFIG_INVALID)
-        if inventory.mode == "vm" and config.ready is None:
-            config = config.model_copy(update={"ready": _Ready()})
+        if config.ready is None and (inventory.mode == "vm" or config.kind != "python_http"):
+            config = config.model_copy(
+                update={"ready": _Ready(port=8080 if config.kind == "nginx" else 8000)}
+            )
         host = DockerHost(
             self.runner,
             deadline=getattr(ctx, "deadline", None),
@@ -301,8 +355,9 @@ class OnPremProvider:
         host, config = self._runtime(tier, ctx)
         inventory = _Inventory.model_validate(ctx.platform["onprem"])
         try:
-            if inventory.ssh:
-                with session(inventory.ssh, self.runner, host.deadline) as runner:
+            connection = config.ssh or inventory.ssh
+            if connection:
+                with session(connection, self.runner, host.deadline) as runner:
                     host.runner = runner
                     yield host, config
             else:
@@ -313,13 +368,20 @@ class OnPremProvider:
             raise
 
     @staticmethod
-    def _args(config: _Tier, project: str, tier: str) -> list[str]:
+    def _args(config: _Tier, project: str, tier: str, *, migration: bool = False) -> list[str]:
         args = ["--platform", config.platform, "--network", config.network]
         for key, value in {"managed": "true", "project": project, "tier": tier}.items():
             args.extend(["--label", f"ddak.{key}={value}"])
         if config.env_file:
             _private_env(Path(config.env_file))
+            if not migration and tier == "was":
+                from ddak.onprem.deploy.config import env_key_names
+
+                if "DATABASE_URL_MIGRATOR" in env_key_names(Path(config.env_file)):
+                    raise fail("앱 env에 마이그레이션 계정 키가 있다", ErrorCode.CONFIG_INVALID)
             args.extend(["--env-file", config.env_file])
+        for key, value in config.public_env.items():
+            args.extend(["-e", f"{key}={value}"])
         for volume in config.volumes:
             value = f"type=volume,src={volume.name},dst={volume.target}"
             args.extend(["--mount", value + (",readonly" if volume.read_only else "")])
@@ -365,9 +427,20 @@ class OnPremProvider:
         return replicas.replace_replicas(self, host, config, tier, ctx, ref, function)
 
     def deploy(self, tier: str, ctx: RunContext) -> ProviderResult:
+        if tier == "db":
+            from ddak.onprem.deploy.database import deploy_database
+
+            return deploy_database(self, ctx)
         return self._replace(tier, ctx, ctx.images.get(tier, ""), "deploy")
 
     def rollback(self, tier: str, ctx: RunContext) -> ProviderResult:
+        if tier == "db":
+            return ProviderResult(
+                provider=self.name,
+                function="rollback",
+                changed=False,
+                detail="DB 컨테이너·볼륨 보존; 역마이그레이션 없음",
+            )
         releases = getattr(ctx, "previous_release", {})
         previous = releases.get("local")
         if previous is not None:

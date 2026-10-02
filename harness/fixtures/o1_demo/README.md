@@ -14,9 +14,9 @@ uv run python scripts/dev.py demo --scenario parity_fail --yes
 | 시나리오 | 실행 상태 | 최종 local/cloud |
 |---|---|---|
 | success | SUCCEEDED | v2 / v2 |
-| local_fail | FAILED_LOCAL | v1 / v1 |
-| cloud_fail | FAILED_CLOUD | v2 / v1, DIVERGED |
-| parity_fail | PARITY_FAILED | v2 / v1, DIVERGED |
+| local_fail | FAILED_LOCAL | v1 / v2 (local ROLLED_BACK, cloud SUCCEEDED) |
+| cloud_fail | FAILED_CLOUD | v2 / v1 (local SUCCEEDED, cloud ROLLED_BACK) |
+| parity_fail | PARITY_FAILED | v2 / v1 (local SUCCEEDED, cloud ROLLED_BACK) |
 
 예상한 실패·롤백까지 일치하면 시나리오 CLI 종료 코드는 0이다. 실제 실행 상태는 별도 출력한다.
 `harness/var/o1-demo/summary.json`에 source_files, 승인 snapshot, run ID, 상태와 시간이 남는다.

@@ -72,9 +72,9 @@ class Layer(StrEnum):
 
 
 class Effect(StrEnum):
-    """step이 대상 환경에 주는 영향(💭). 대기 지점 규칙(W1~W3)의 근거다.
+    """step이 대상 환경에 주는 영향. 잠금·복구 범위 판정에 사용한다.
 
-    클라우드 트랙의 STATE_CHANGE step은 반드시 wait_for: local_verified 뒤에 둔다(✅ 장부 6).
+    환경별 트랙은 독립 실행하며 검증 완료 신호는 교차 검증에서 사용한다.
     """
 
     READ = "read"  # 읽기만(조회, 확인, 스모크의 테스트 데이터 쓰기 포함)

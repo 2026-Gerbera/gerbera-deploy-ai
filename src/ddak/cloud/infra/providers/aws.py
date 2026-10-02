@@ -99,3 +99,55 @@ def boundary_document(account_id: str) -> dict:
             },
         ],
     }
+
+
+def start_build_policy(
+    account_id: str, project_name: str, repo_url: str, *, source_location: str | None = None
+) -> dict:
+    """외부 deployer 역할용 코드 소유 정책 설계. AI 생성 번들·자동 역할 생성에 넣지 않는다."""
+    import re
+    from urllib.parse import urlsplit
+
+    url = urlsplit(repo_url)
+    if (
+        not re.fullmatch(r"\d{12}", account_id)
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{1,254}", project_name)
+        or url.scheme != "https"
+        or not url.hostname
+        or url.username
+        or url.password
+        or url.query
+        or url.fragment
+        or any(c.isspace() for c in repo_url)
+    ):
+        raise ValueError("CodeBuild 정책 대상 형식 오류")
+    if source_location is not None and not re.fullmatch(
+        r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]/[A-Za-z0-9_./-]+", source_location
+    ):
+        raise ValueError("승인 S3 소스 위치 형식 오류")
+    return {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Action": "codebuild:StartBuild",
+                "Resource": f"arn:aws:codebuild:{REGION}:{account_id}:project/{project_name}",
+                "Condition": {
+                    "ForAllValues:StringEquals": {
+                        "codebuild:environment.environmentVariables.name": [
+                            "BUILD_TIERS",
+                            "RELEASE_ID",
+                            "SOURCE_REVISION",
+                            "IMAGE_REPO",
+                        ],
+                    },
+                    "StringEquals": {"codebuild:source.location": source_location or repo_url},
+                    "Null": {
+                        "codebuild:environment.environmentVariables.name": "false",
+                        "codebuild:source.buildspec": "false",
+                        "codebuild:serviceRole": "true",
+                    },
+                },
+            }
+        ],
+    }

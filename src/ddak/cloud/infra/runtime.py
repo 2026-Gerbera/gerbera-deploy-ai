@@ -14,14 +14,21 @@ import signal
 import subprocess
 import tempfile
 import time
+import uuid
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import boto3
+from botocore.config import Config
+from botocore.exceptions import ClientError
+
 from ddak.core.contracts.approval import ApprovalRecord
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
+from ddak.core.contracts.infra_outputs import checked_outputs, output_kind
 
 from .plan import filter_outputs, summarize_plan
 from .policy import GateResult, PolicyViolation, static_gate
@@ -197,13 +204,35 @@ class AwsSettings:
         ):
             raise DdakToolError(ErrorCode.CONFIG_INVALID, "AWS state 설정 형식 오류")
         for name, (expression, kind) in self.outputs.items():
+            if name == "image_repository" and self.layer == "platform":
+                if kind != "string" or not re.fullmatch(
+                    r'"[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*"', expression
+                ):
+                    raise DdakToolError(ErrorCode.CONFIG_INVALID, "이미지 저장소 출력 형식 오류")
+                continue
+            try:
+                expected_kind = output_kind(self.layer, name)
+            except ValueError:
+                raise DdakToolError(
+                    ErrorCode.CONFIG_INVALID, "출력 허용 목록에 없는 이름"
+                ) from None
+            expressions = (
+                expression[1:-1].split(",")
+                if kind == "list(string)"
+                and expression.startswith("[")
+                and expression.endswith("]")
+                else [expression]
+            )
             if (
-                not re.fullmatch(r"[a-z][a-z0-9_]*", name)
-                or not re.fullmatch(
-                    r"aws_[a-z0-9_]+\.[A-Za-z][A-Za-z0-9_]*\.(arn|name|id|endpoint|address)",
-                    expression,
+                kind != expected_kind
+                or not expressions
+                or any(
+                    not re.fullmatch(
+                        r"aws_[a-z0-9_]+\.[A-Za-z][A-Za-z0-9_]*\.(arn|name|id|endpoint|address|dns_name|master_user_secret\[0\]\.secret_arn)",
+                        expr.strip(),
+                    )
+                    for expr in expressions
                 )
-                or kind != "string"
             ):
                 raise DdakToolError(ErrorCode.CONFIG_INVALID, "코드 소유 출력 선언 형식 오류")
 
@@ -236,7 +265,10 @@ class AwsSettings:
                 "build_boundary_arn": {"type": "string", "default": self.build_boundary_arn},
             },
             "output": {
-                name: {"value": "${" + expr + "}"} for name, (expr, _) in self.outputs.items()
+                name: {
+                    "value": json.loads(expr) if name == "image_repository" else "${" + expr + "}"
+                }
+                for name, (expr, _) in self.outputs.items()
             },
         }
 
@@ -277,10 +309,20 @@ class InfraRuntime:
         timeout: float = 120,
         apply_timeout: float = 1200,
         refresh_timeout: float = 30,
+        migration_timeout: float = 120,
+        foundation_clients: Callable[[SessionKeys], Mapping[str, Any]] | None = None,
     ):
-        if min(timeout, apply_timeout, refresh_timeout) <= 0:
+        if min(timeout, apply_timeout, refresh_timeout, migration_timeout) <= 0:
             raise DdakToolError(ErrorCode.CONFIG_INVALID, "양수 제한 시간이 필요하다")
         root.mkdir(parents=True, exist_ok=True)
+        bootstrap_identity = digest(canonical([settings.project, settings.layer])).split(":")[1]
+        self._bootstrap_attempt = root / f"bootstrap-recovery-{bootstrap_identity}.json"
+        if self._bootstrap_attempt.exists():
+            raise DdakToolError(
+                ErrorCode.PRECONDITION_FAILED,
+                f"이전 로컬 state 복구 확인 필요: {self._bootstrap_attempt}",
+                needs_human=True,
+            )
         self.work = Path(tempfile.mkdtemp(prefix="infra-", dir=root))
         identity = digest(canonical([settings.project, run_id, settings.layer])).split(":")[1]
         self._attempt = root / f"apply-attempt-{identity}"
@@ -297,6 +339,7 @@ class InfraRuntime:
         self.checkov = shutil.which(checkov) or checkov
         self.timeout = timeout
         self.apply_timeout, self.refresh_timeout = apply_timeout, refresh_timeout
+        self.migration_timeout = migration_timeout
         self.deadline = time.monotonic() + timeout
         self._waived: set[str] = set()
         self.checkov_checks = 0
@@ -304,6 +347,137 @@ class InfraRuntime:
         self._validated = False
         self._planned: str | None = None
         self._consumed = False
+        self.foundation_clients = foundation_clients
+        self._foundation: bytes | None = None
+        self._local_backend = False
+
+    def _clients(self, session: SessionKeys) -> Mapping[str, Any]:
+        if self.foundation_clients is not None:
+            return self.foundation_clients(session)
+        session.environment()  # 빈 세션이나 기본 credential chain 사용을 허용하지 않는다.
+        sdk = boto3.Session(
+            aws_access_key_id=session.access_key,
+            aws_secret_access_key=session.secret_key,
+            aws_session_token=session.token,
+            region_name=REGION,
+        )
+        config = Config(connect_timeout=5, read_timeout=10, retries={"max_attempts": 2})
+        return {name: sdk.client(name, config=config) for name in ("s3", "iam", "sts")}
+
+    def prepare_bootstrap(self, *, session: SessionKeys) -> None:
+        """플랫폼 첫 실행의 기반 확보도 같은 infra 승인에 묶는다. 여기서는 조회만 한다."""
+        from .foundation import foundation_template
+
+        if self._files or self.settings.layer != "platform":
+            raise DdakToolError(
+                ErrorCode.PRECONDITION_FAILED, "새 플랫폼 검증 전에 기반을 계획해야 한다"
+            )
+        clients = self._clients(session)
+        try:
+            if clients["sts"].get_caller_identity().get("Account") != self.settings.account_id:
+                raise DdakToolError(
+                    ErrorCode.PRECONDITION_FAILED, "기반 계획 세션의 대상 계정이 다르다"
+                )
+            try:
+                clients["s3"].head_bucket(
+                    Bucket=self.settings.state_bucket, ExpectedBucketOwner=self.settings.account_id
+                )
+                self._local_backend = False
+            except ClientError as exc:
+                if exc.response["Error"]["Code"] not in ("404", "NoSuchBucket"):
+                    raise
+                self._local_backend = True
+        except DdakToolError:
+            raise
+        except Exception:
+            raise DdakToolError(ErrorCode.ADAPTER_FAILED, "기반 버킷 존재 확인 실패") from None
+        self._foundation = canonical(foundation_template(self.settings))
+        framework = self.settings.framework()
+        if self._local_backend:
+            framework["terraform"]["backend"] = {"local": {}}
+        self._framework = canonical(framework)
+
+    def _approval_hash(self, plan_hash: str) -> str:
+        if self._foundation is None:
+            return plan_hash
+        from .foundation import foundation_template
+
+        if canonical(foundation_template(self.settings)) != self._foundation:
+            raise DdakToolError(ErrorCode.APPROVAL_REQUIRED, "승인할 기반 템플릿이 바뀌었다")
+        return digest(
+            canonical(
+                {
+                    "plan": plan_hash,
+                    "foundation": digest(self._foundation),
+                    "backend": self.settings.backend(),
+                    "local_backend": self._local_backend,
+                }
+            )
+        )
+
+    def _migrate_backend(self, session: SessionKeys) -> None:
+        self.deadline = time.monotonic() + self.migration_timeout
+        # 원문 state를 읽지 않는다. 새 버킷에도 대상 state가 생겼다면 덮어쓰지 않는다.
+        client = self._clients(session)["s3"]
+        lock_key = self.settings.backend()["key"] + ".tflock"
+        lock_info = {
+            "ID": str(uuid.uuid4()),
+            "Operation": "OperationTypeMigrateState",
+            "Info": self.run_id,
+            "Who": "ddak",
+            "Version": "1.11.0",
+            "Created": datetime.now(UTC).isoformat(),
+            "Path": self.settings.state_bucket + "/" + self.settings.backend()["key"],
+        }
+        # Terraform과 같은 S3 lock key를 먼저 확보한 뒤 대상 부재를 검사한다.
+        # 상태 불명 실패에서는 이 lock도 보존한다. 정상 완료에서만 자기 ETag로 해제한다.
+        lock_result = client.put_object(
+            Bucket=self.settings.state_bucket,
+            Key=lock_key,
+            ExpectedBucketOwner=self.settings.account_id,
+            IfNoneMatch="*",
+            Body=canonical(lock_info),
+            ContentType="application/json",
+        )
+        etag = lock_result.get("ETag")
+        if not isinstance(etag, str) or not etag:
+            raise DdakToolError(ErrorCode.ADAPTER_FAILED, "state 이전 잠금 소유권을 확인할 수 없다")
+        try:
+            client.head_object(
+                Bucket=self.settings.state_bucket,
+                Key=self.settings.backend()["key"],
+                ExpectedBucketOwner=self.settings.account_id,
+            )
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] not in ("404", "NoSuchKey", "NotFound"):
+                raise
+        else:
+            raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "원격 state가 이미 있다; 이전 중단")
+        self._guard()
+        self._unchanged()
+        framework = canonical(self.settings.framework())
+        (self.work / "ddak.tf.json").write_bytes(framework)
+        self._files["ddak.tf.json"] = framework
+        if self._run(
+            "init",
+            "-input=false",
+            "-lockfile=readonly",
+            "-migrate-state",
+            "-force-copy",
+            "-lock=false",  # 이 구간은 위에서 확보한 동일 S3 잠금이 보호한다.
+            "-lock-timeout=10s",
+            "-backend-config=backend.json",
+            "-no-color",
+            session=session,
+        ).code:
+            raise DdakToolError(ErrorCode.ADAPTER_FAILED, "원격 backend 이전 실패")
+        client.delete_object(
+            Bucket=self.settings.state_bucket,
+            Key=lock_key,
+            ExpectedBucketOwner=self.settings.account_id,
+            IfMatch=etag,
+        )
+        private_write(self.work / "backend-migrated", self._planned.encode())
 
     def _run(
         self, *args: str, session: SessionKeys | None = None, checkov: bool = False
@@ -386,7 +560,9 @@ class InfraRuntime:
             raise DdakToolError(
                 ErrorCode.PRECONDITION_FAILED, "새 검증은 새 인프라 실행에서 시작한다"
             )
-        result = static_gate(files, layer=self.settings.layer)
+        result = static_gate(
+            files, layer=self.settings.layer, state_bucket=self.settings.state_bucket
+        )
         if not result.passed:
             return result
         self._files = {name: source.encode() for name, source in files.items()}
@@ -436,7 +612,7 @@ class InfraRuntime:
                 "-input=false",
                 "-lockfile=readonly",
                 "-reconfigure",
-                "-backend-config=backend.json",
+                *([] if self._local_backend else ["-backend-config=backend.json"]),
                 "-no-color",
                 session=session,
             ).code
@@ -476,6 +652,7 @@ class InfraRuntime:
                 build_boundary_arn=self.settings.build_boundary_arn,
                 project=self.settings.project,
                 rds_master_secret_arn=self.settings.rds_master_secret_arn,
+                state_bucket=self.settings.state_bucket,
                 update=update,
                 analyzer=analyzer,
                 checkov=checked,
@@ -500,7 +677,29 @@ class InfraRuntime:
             raise DdakToolError(ErrorCode.ADAPTER_FAILED, "인프라 plan 검사 수행 실패") from None
         finally:
             json_plan.unlink(missing_ok=True)
-        self._planned = plan_hash
+        self._planned = self._approval_hash(plan_hash)
+        if self._foundation is not None:
+            from .plan import _policy_view
+
+            foundation = json.loads(self._foundation)
+            summary["plan_sha256"] = self._planned
+            summary["headline"] += " · 기반 버킷·권한 경계 2개 확보 및 원격 state 연결"
+            summary["iam_diff"].append(
+                {
+                    "address": "ddak.foundation",
+                    "action": "ensure",
+                    "template_sha256": digest(self._foundation),
+                    "bucket": foundation["bucket"].replace(
+                        self.settings.account_id, "************"
+                    ),
+                    "app_boundary": _policy_view(foundation["boundary"]),
+                    "build_boundary": _policy_view(foundation["build_boundary"]),
+                    "state_migration": self._local_backend,
+                }
+            )
+            if len(canonical(summary)) > 8192:
+                self._planned = None
+                raise DdakToolError(ErrorCode.CONFIG_INVALID, "기반 포함 승인 요약 크기 초과")
         return summary
 
     def apply(self, *, session: SessionKeys) -> dict[str, Any]:
@@ -510,7 +709,11 @@ class InfraRuntime:
         self._guard()
         self._unchanged()
         plan = self.work / "approved.tfplan"
-        if plan.is_symlink() or not plan.is_file() or digest(plan.read_bytes()) != self._planned:
+        if (
+            plan.is_symlink()
+            or not plan.is_file()
+            or self._approval_hash(digest(plan.read_bytes())) != self._planned
+        ):
             raise DdakToolError(ErrorCode.APPROVAL_REQUIRED, "승인할 plan 파일이 바뀌었다")
         check_approval(
             self._approval_reader(),
@@ -522,7 +725,7 @@ class InfraRuntime:
         # 승인 조회 사이에 파일이나 잠금이 바뀌었는지도 다시 검사한다.
         self._guard()
         self._unchanged()
-        if plan.is_symlink() or digest(plan.read_bytes()) != self._planned:
+        if plan.is_symlink() or self._approval_hash(digest(plan.read_bytes())) != self._planned:
             raise DdakToolError(ErrorCode.APPROVAL_REQUIRED, "승인 조회 중 plan 파일이 바뀌었다")
         # 프로세스 시작 직전에 기록한다. 중단/실패 후 같은 run을 자동 재실행할 수 없다.
         marker = self.work / "apply-started"
@@ -539,22 +742,81 @@ class InfraRuntime:
         private_write(marker, self._planned.encode())
         self._consumed = True
         started = time.monotonic()
-        result = self._run(
-            "apply",
-            "-input=false",
-            "-no-color",
-            "-lock-timeout=10s",
-            "approved.tfplan",
-            session=session,
-        )
-        if result.code != 0:
-            raise DdakToolError(
-                ErrorCode.ADAPTER_FAILED,
-                "인프라 적용 실패; 대상 상태 확인 후 새 plan·승인이 필요하다",
+        try:
+            if self._local_backend:
+                private_write(
+                    self._bootstrap_attempt,
+                    canonical(
+                        {
+                            "run_id": self.run_id,
+                            "project": self.settings.project,
+                            "layer": self.settings.layer,
+                            "plan_sha256": self._planned,
+                            "local_state_path": str(self.work / "terraform.tfstate"),
+                            "work_dir": str(self.work),
+                        }
+                    ),
+                )
+            if self._foundation is not None:
+                from .foundation import apply_foundation
+
+                clients = self._clients(session)
+                apply_foundation(
+                    settings=self.settings,
+                    run_id=self.run_id,
+                    s3=clients["s3"],
+                    iam=clients["iam"],
+                    sts=clients["sts"],
+                    approvals=self._approval_reader,
+                    guard=self._guard,
+                    marker=self._attempt.with_name(self._attempt.name + "-foundation"),
+                    infra_subject=self._planned,
+                    expected_bucket_exists=not self._local_backend,
+                )
+                self._guard()
+                self._unchanged()
+                check_approval(
+                    self._approval_reader(),
+                    run_id=self.run_id,
+                    project=self.settings.project,
+                    kind="infra",
+                    bound_to=self._planned,
+                )
+                if (
+                    plan.is_symlink()
+                    or self._approval_hash(digest(plan.read_bytes())) != self._planned
+                ):
+                    raise DdakToolError(ErrorCode.APPROVAL_REQUIRED, "기반 생성 중 plan이 바뀌었다")
+            result = self._run(
+                "apply",
+                "-input=false",
+                "-no-color",
+                "-lock-timeout=10s",
+                "approved.tfplan",
+                session=session,
             )
-        plan.unlink()
-        private_write(self.work / "apply-succeeded", self._planned.encode())
-        output = self.refresh(session=session)
+            if result.code != 0:
+                raise DdakToolError(ErrorCode.ADAPTER_FAILED, "인프라 적용 실패")
+            if self._local_backend:
+                self._migrate_backend(session)
+                self._bootstrap_attempt.unlink()
+            plan.unlink()
+            output = self.refresh(session=session)
+            private_write(self.work / "apply-succeeded", self._planned.encode())
+        except Exception as exc:
+            # Terraform은 일부 리소스만 변경하고 실패할 수 있다. 앱 컨테이너
+            # 롤백으로 복구됐다고 판단하지 않고 잠금과 증거를 보존한다.
+            code = exc.code if isinstance(exc, DdakToolError) else ErrorCode.ADAPTER_FAILED
+            raise DdakToolError(
+                code,
+                "인프라 적용 또는 출력 확인 실패; 대상 상태를 사람이 확인해야 한다"
+                + (
+                    f"; 복구 기록: {self._bootstrap_attempt}"
+                    if self._bootstrap_attempt.exists()
+                    else ""
+                ),
+                needs_human=True,
+            ) from None
         return {
             "outputs": output,
             "elapsed_seconds": time.monotonic() - started,
@@ -567,8 +829,11 @@ class InfraRuntime:
         try:
             if result.code != 0:
                 raise ValueError
-            return filter_outputs(
-                json.loads(result.stdout), {k: v[1] for k, v in self._outputs.items()}
+            return checked_outputs(
+                filter_outputs(
+                    json.loads(result.stdout), {k: v[1] for k, v in self._outputs.items()}
+                ),
+                self.settings.layer,
             )
         except (ValueError, KeyError, TypeError):
             raise DdakToolError(

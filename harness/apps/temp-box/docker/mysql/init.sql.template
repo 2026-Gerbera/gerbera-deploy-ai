@@ -1,0 +1,5 @@
+-- Installed as /opt/ddak-init.sql.template (mode 0644).
+CREATE USER 'flaskr_app'@'%' IDENTIFIED BY '@DDAK_APP_PASSWORD@';
+CREATE USER 'flaskr_migrator'@'%' IDENTIFIED BY '@DDAK_MIGRATION_PASSWORD@';
+GRANT SELECT, INSERT, UPDATE, DELETE ON `flaskr`.* TO 'flaskr_app'@'%';
+GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, INDEX, REFERENCES ON `flaskr`.* TO 'flaskr_migrator'@'%';

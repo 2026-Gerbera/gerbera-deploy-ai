@@ -21,12 +21,14 @@ from ddak.core import runtime
 from ddak.core.ai.providers.jev import JevAnswer, JevQuestion
 from ddak.core.config import Settings
 from ddak.core.contracts.base import RUN_ID_PATTERN
+from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.deploy_request import DeployRequest
 from ddak.core.contracts.enums import By, LLMBackend, RunMode
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.contracts.plan import Plan, Planner
 from ddak.core.contracts.plan_draft import PlanDraft, StepDecision
 from ddak.core.contracts.tools.generate_plan import GeneratePlanInput
+from ddak.core.registry import spec_for
 from ddak.executor.engine import check_signals
 from ddak.plan import PlanBundle, new_run_id, plan_deployment
 from ddak.plan import flow as flow_mod
@@ -324,11 +326,35 @@ def test_watch_new_commit_runs_plan_and_stops_cleanly(
 
     def fake_plan(req: DeployRequest, **kw: Any) -> Any:
         calls.append({"req": req, "prev": kw["previous_manifests"](req.project), **kw})
+        source = tmp_path / "application"
+        source.mkdir()
+        (source / "app.py").write_text("version = 1\n")
+        p = Plan.model_validate(
+            {
+                "run_id": kw["run_id"],
+                "project": req.project,
+                "mode": req.mode,
+                "deploy": {
+                    target: {
+                        "steps": [
+                            {
+                                "id": f"verify.health.{target}",
+                                "tool": "health_check",
+                                "target": target,
+                                "layer": spec_for("health_check").layer,
+                                "effect": spec_for("health_check").effect,
+                            }
+                        ]
+                    }
+                    for target in ("local", "cloud")
+                },
+            }
+        )
         return PlanBundle(
-            plan=Plan(run_id=kw["run_id"]),
-            context=None,
+            plan=p,
+            context=RunContext(p.run_id, project=p.project, mode=p.mode),
             facts=None,
-            source=tmp_path,  # type: ignore[arg-type]
+            source=source,  # type: ignore[arg-type]
         )
 
     class FakeWatcher:
@@ -345,6 +371,8 @@ def test_watch_new_commit_runs_plan_and_stops_cleanly(
 
     monkeypatch.setattr(app_mod, "plan_deployment", fake_plan)
     monkeypatch.setattr(app_mod, "Watcher", FakeWatcher)
+    # 이 시험은 watcher→계획 연결만 격리한다. checkout은 로컬 bare E2E에서 검증한다.
+    monkeypatch.setattr(app_mod, "_repository_factory", lambda root: None)
     app = app_mod.create()
 
     async def life() -> asyncio.Task[Any]:

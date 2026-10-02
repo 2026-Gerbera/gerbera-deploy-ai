@@ -24,7 +24,7 @@ class ErrorCode(StrEnum):
     INFRA_MISSING = "INFRA_MISSING"
     ADAPTER_TIMEOUT = "ADAPTER_TIMEOUT"
     ADAPTER_FAILED = "ADAPTER_FAILED"
-    PRECONDITION_FAILED = "PRECONDITION_FAILED"  # 예: 로컬 검증(local_verified) 미통과
+    PRECONDITION_FAILED = "PRECONDITION_FAILED"  # 예: 승인 해시 불일치
     APPROVAL_REQUIRED = "APPROVAL_REQUIRED"
     APPROVAL_DENIED = "APPROVAL_DENIED"
     TOGGLE_OFF = "TOGGLE_OFF"
@@ -37,10 +37,12 @@ class ErrorCode(StrEnum):
 class DdakToolError(Exception):
     """툴이 작업을 수행할 수 없을 때 던진다. 문자열 형식: "<CODE>: <메시지>"."""
 
-    def __init__(self, code: ErrorCode, message: str) -> None:
+    def __init__(self, code: ErrorCode, message: str, *, needs_human: bool = False) -> None:
         super().__init__(f"{code.value}: {message}")
         self.code = code
         self.message = message
+        # 앱 롤백으로 복구할 수 없는 부분 변경(예: Terraform)의 상태 확인이 필요하다.
+        self.needs_human = needs_human
 
 
 _CODE_IN_TEXT = re.compile(r"\b(" + "|".join(c.value for c in ErrorCode) + r"): ")

@@ -92,11 +92,35 @@ def copy_source(source: Path, dest: Path) -> dict[str, dict[str, Any]]:
 
 
 def apply_diff(root: Path, patch: bytes) -> None:
-    # git apply는 경로 탈출을 거부한다. 링크/바이너리/제외 파일 수정도 허용하지 않는다.
+    # 1 hunk마다 ---/+++ 쌍으로 경로를 확정한다. Git 확장 메타는 지원하지 않는다.
     text = patch.decode("utf-8")
+    before = file_manifest(root)
+    paths: set[str] = set()
     old_left = new_left = 0
+    old_path: str | None = None
+    pending_old = False
+    pair_ready = False
+    hunks = 0
+
+    def path_from(line: str, prefix: str) -> str | None:
+        name = line[4:].split("\t", 1)[0]
+        if name == "/dev/null":
+            return None
+        if not name.startswith(prefix):
+            raise ValueError("패치 경로는 a/ 또는 b/ 접두사가 필요하다")
+        relative = name[2:]
+        path = Path(relative)
+        if (
+            not relative
+            or path.is_absolute()
+            or ".." in path.parts
+            or any(c in relative for c in ("\\", '"', "\0"))
+            or excluded(path)
+        ):
+            raise ValueError("패치에 허용되지 않는 경로가 있다")
+        return path.as_posix()
+
     for line in text.split("\n"):
-        # hunk 본문의 SQL 주석(--- note)이나 숫자 120000은 헤더/파일 모드가 아니다.
         if old_left or new_left:
             if line.startswith("\\ No newline at end of file"):
                 continue
@@ -107,32 +131,52 @@ def apply_diff(root: Path, patch: bytes) -> None:
             if old_left < 0 or new_left < 0:
                 raise ValueError("패치 hunk 줄 수가 다르다")
             continue
+        if line.startswith(
+            (
+                "diff ",
+                "index ",
+                "old mode ",
+                "new mode ",
+                "new file mode ",
+                "deleted file mode ",
+                "similarity ",
+                "dissimilarity ",
+                "rename ",
+                "copy ",
+                "GIT binary patch",
+                "Binary files ",
+            )
+        ):
+            raise ValueError("패치는 일반 텍스트 파일 수정만 지원한다")
+        if pending_old:
+            if not line.startswith("+++ "):
+                raise ValueError("패치 hunk 앞에 ---/+++ 쌍이 필요하다")
+            new_path = path_from(line, "b/")
+            if (old_path is None and new_path is None) or (
+                old_path is not None and new_path is not None and old_path != new_path
+            ):
+                raise ValueError("패치 파일 경로가 서로 다르다")
+            paths.update(p for p in (old_path, new_path) if p is not None)
+            pending_old, pair_ready = False, True
+            continue
+        if line.startswith("--- ") and not pair_ready:
+            old_path = path_from(line, "a/")
+            pending_old = True
+            continue
         if line.startswith("@@ "):
+            if not pair_ready:
+                raise ValueError("패치 hunk 앞에 ---/+++ 쌍이 필요하다")
             hunk = re.match(r"^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@", line)
             if not hunk:
                 raise ValueError("패치 hunk 형식이 잘못됐다")
-            old_left, new_left = (int(count) if count is not None else 1 for count in hunk.groups())
+            old_left, new_left = (int(c) if c is not None else 1 for c in hunk.groups())
+            pair_ready = False
+            hunks += 1
             continue
-        if line.startswith(
-            ("GIT binary patch", "rename from ", "rename to ", "copy from ", "copy to ")
-        ) or (
-            line.startswith(
-                ("new file mode ", "deleted file mode ", "old mode ", "new mode ", "index ")
-            )
-            and re.search(r"\b120000\b", line)
-        ):
-            raise ValueError("패치는 일반 텍스트 파일 수정만 지원한다")
-        if line.startswith(("--- ", "+++ ")):
-            name = line[4:].split("\t", 1)[0]
-            if name == "/dev/null":
-                continue
-            if not name.startswith(("a/", "b/")):
-                raise ValueError("패치 경로는 a/ 또는 b/ 접두사가 필요하다")
-            parts = Path(name[2:]).parts
-            if not parts or ".." in parts or excluded(Path(name[2:])):
-                raise ValueError("패치에 허용되지 않는 경로가 있다")
-    if old_left or new_left:
-        raise ValueError("패치 hunk 줄 수가 다르다")
+        if pair_ready or (line and not line.startswith("\\ No newline at end of file")):
+            raise ValueError("지원하지 않는 패치 헤더")
+    if old_left or new_left or pending_old or pair_ready or not hunks:
+        raise ValueError("패치 hunk 줄 수 또는 헤더가 다르다")
     for check in (True, False):
         args = ["git", "apply", "--no-index", "--whitespace=nowarn"]
         if check:
@@ -153,7 +197,10 @@ def apply_diff(root: Path, patch: bytes) -> None:
         )
         if result.returncode:
             raise ValueError("패치를 빌드 사본에 정확히 적용할 수 없다")
-    file_manifest(root)  # 패치가 링크/특수 파일을 만들었다면 거부
+    after = file_manifest(root)  # 링크/특수 파일은 여기서도 거부한다.
+    changed = {name for name in before.keys() | after.keys() if before.get(name) != after.get(name)}
+    if changed != paths:
+        raise ValueError("패치 헤더와 실제 변경 파일이 다르다")
 
 
 def preview(source: Path, patch: bytes | None = None) -> SnapshotBinding:

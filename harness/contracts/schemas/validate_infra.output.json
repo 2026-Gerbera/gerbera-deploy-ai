@@ -1,0 +1,36 @@
+{
+  "$defs": {
+    "Source": {
+      "description": "AI 결과의 출처. live가 아니면 관리 페이지가 라벨을 표시한다(목업은 목업이라고 밝힘).",
+      "enum": [
+        "live",
+        "cache",
+        "fixture",
+        "replay"
+      ],
+      "title": "Source",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "detail": {
+      "default": "",
+      "title": "Detail",
+      "type": "string"
+    },
+    "passed": {
+      "title": "Passed",
+      "type": "boolean"
+    },
+    "source": {
+      "$ref": "#/$defs/Source",
+      "default": "live"
+    }
+  },
+  "required": [
+    "passed"
+  ],
+  "title": "ValidateInfraOutput",
+  "type": "object"
+}

@@ -92,8 +92,7 @@ def assemble(inp: ValidatePlanInput, ctx: RunContext) -> Plan:
     # R-couple이 다시 포함시킨 step은 강제 제외 기록이 틀리므로 지운다
     invalid = [i for i in invalid if not (i.result == "forced_skip" and chosen[i.id][0])]
 
-    # 3) 조립 (R-gate: 신호는 카탈로그 값, 로컬 트랙이 없으면 local_verified 대기 제거)
-    has_local = facts.target != "cloud"
+    # 3) 조립: 신호 의존은 카탈로그 값을 그대로 사용한다.
     sections = {k: Section() for k in ("build", "deploy.local", "deploy.cloud", "verify")}
     sections["build"] = Section(signal="images_ready")
     for s in catalog:
@@ -102,7 +101,7 @@ def assemble(inp: ValidatePlanInput, ctx: RunContext) -> Plan:
         if inc:
             params, w = R.check_params(s.id, params, s.allowed_params, strict=False)
             warns += w
-            sec.steps.append(_step(s, params, why, by, has_local))
+            sec.steps.append(_step(s, params, why, by))
         else:
             sec.skipped.append(
                 SkippedStep(
@@ -131,10 +130,10 @@ def assemble(inp: ValidatePlanInput, ctx: RunContext) -> Plan:
     )
 
 
-def _step(s: StepDef, params: dict, why: str, by: By, has_local: bool) -> PlanStep:
+def _step(s: StepDef, params: dict, why: str, by: By) -> PlanStep:
     return PlanStep(
         id=s.id, tool=s.tool, target=s.target, tier=s.tier, params=params,
         layer=s.layer, effect=s.effect, by=by, reason=R.clip(why),
-        wait_for=[w for w in s.wait_for if has_local or w != "local_verified"],
+        wait_for=list(s.wait_for),
         signal=s.signal, run=s.run,
     )  # fmt: skip

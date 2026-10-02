@@ -5,72 +5,269 @@
   "mode": "update",
   "facts_hash": "sha256:9c1f…",
   "plan_hash": "sha256:…",
-  "planner": {"by": "ai", "provider": "jev", "model": "jev-1.13.0", "source": "live", "attempts": 1, "fallback": false},
-  "toggles": {"code_patch": true},
+  "planner": {
+    "by": "ai",
+    "provider": "jev",
+    "model": "jev-1.13.0",
+    "source": "live",
+    "attempts": 1,
+    "fallback": false
+  },
+  "toggles": {
+    "code_patch": true
+  },
   "build": {
     "steps": [
-      {"id": "build.was", "tool": "build_image", "tier": "was", "layer": "conditional", "effect": "additive_prep",
-       "by": "rule", "reason": "was 빌드 입력 트리 해시 변경", "evidence": ["fact:tree_changed.was"]}
+      {
+        "id": "build.was",
+        "tool": "build_image",
+        "tier": "was",
+        "layer": "conditional",
+        "effect": "additive_prep",
+        "by": "rule",
+        "reason": "was 빌드 입력 트리 해시 변경",
+        "evidence": [
+          "fact:tree_changed.was"
+        ]
+      }
     ],
     "skipped": [
-      {"id": "build.web", "tool": "build_image", "tier": "web", "layer": "conditional", "by": "rule",
-       "reason": "web 트리 해시가 rel-v1과 같음 → rel-v1 digest 재사용", "skip_rule": "tree_unchanged"}
+      {
+        "id": "build.web",
+        "tool": "build_image",
+        "tier": "web",
+        "layer": "conditional",
+        "by": "rule",
+        "reason": "web 트리 해시가 rel-v1과 같음 → rel-v1 digest 재사용",
+        "skip_rule": "tree_unchanged"
+      }
     ],
     "signal": "images_ready"
   },
   "deploy": {
     "local": {
       "steps": [
-        {"id": "deploy.config.local", "tool": "inject_env_config", "target": "local", "layer": "conditional",
-         "effect": "state_change", "by": "rule", "reason": "새 키 SECRET_KEY(secret), SESSION_COOKIE_SECURE(plain)",
-         "wait_for": ["images_ready"]},
-        {"id": "deploy.db.local", "tool": "prepare_db", "target": "local", "params": {"migrations": ["0002"]},
-         "layer": "conditional", "effect": "state_change", "by": "rule", "reason": "migrations/0002_v2_users.sql 추가"},
-        {"id": "deploy.was.local", "tool": "deploy_tier", "target": "local", "tier": "was",
-         "layer": "conditional", "effect": "state_change", "by": "rule", "reason": "was digest 변경"},
-        {"id": "verify.health.local", "tool": "health_check", "target": "local", "layer": "mandatory"},
-        {"id": "verify.smoke.local", "tool": "smoke_test", "target": "local", "params": {"scenarios": ["base", "auth"]},
-         "layer": "mandatory", "signal": "local_verified"}
+        {
+          "id": "deploy.config.local",
+          "tool": "inject_env_config",
+          "target": "local",
+          "layer": "conditional",
+          "effect": "state_change",
+          "by": "rule",
+          "reason": "새 키 SECRET_KEY(secret), SESSION_COOKIE_SECURE(plain)",
+          "wait_for": [
+            "images_ready"
+          ]
+        },
+        {
+          "id": "deploy.db.local",
+          "tool": "prepare_db",
+          "target": "local",
+          "params": {
+            "migrations": [
+              "0002"
+            ]
+          },
+          "layer": "conditional",
+          "effect": "state_change",
+          "by": "rule",
+          "reason": "migrations/0002_v2_users.sql 추가",
+          "wait_for": [
+            "images_ready"
+          ]
+        },
+        {
+          "id": "deploy.was.local",
+          "tool": "deploy_tier",
+          "target": "local",
+          "tier": "was",
+          "layer": "conditional",
+          "effect": "state_change",
+          "by": "rule",
+          "reason": "was digest 변경",
+          "wait_for": [
+            "images_ready"
+          ]
+        },
+        {
+          "id": "verify.health.local",
+          "tool": "health_check",
+          "target": "local",
+          "layer": "mandatory"
+        },
+        {
+          "id": "verify.smoke.local",
+          "tool": "smoke_test",
+          "target": "local",
+          "params": {
+            "scenarios": [
+              "base",
+              "auth"
+            ]
+          },
+          "layer": "mandatory",
+          "signal": "local_verified"
+        }
       ],
       "skipped": [
-        {"id": "deploy.web.local", "tool": "deploy_tier", "target": "local", "tier": "web", "layer": "conditional",
-         "by": "rule", "reason": "배포된 web digest와 같고 설정 변경 없음", "skip_rule": "digest_deployed"}
+        {
+          "id": "deploy.web.local",
+          "tool": "deploy_tier",
+          "target": "local",
+          "tier": "web",
+          "layer": "conditional",
+          "by": "rule",
+          "reason": "배포된 web digest와 같고 설정 변경 없음",
+          "skip_rule": "digest_deployed"
+        }
       ]
     },
     "cloud": {
       "steps": [
-        {"id": "deploy.tls.cloud", "tool": "ensure_tls", "target": "cloud", "params": {"mode": "check"}, "layer": "mandatory"},
-        {"id": "deploy.infra.cloud", "tool": "apply_infra", "target": "cloud", "layer": "conditional",
-         "effect": "state_change", "by": "rule", "reason": "새 비밀 키 SECRET_KEY → 앱 층 시크릿 1개 추가 + 실행 역할 읽기 권한 변경(+1 ~1 -0). 승인된 plan만",
-         "evidence": ["fact:infra_inputs_changed"], "wait_for": ["local_verified"], "signal": "infra_ready"},
-        {"id": "deploy.secrets.cloud", "tool": "sync_env_to_cloud", "target": "cloud", "params": {"keys": ["SECRET_KEY"]},
-         "layer": "conditional", "effect": "additive_prep", "by": "rule", "reason": "빈 시크릿에 코드 난수를 PutSecretValue(값은 state·AI·화면에 없음)"},
-        {"id": "deploy.config.cloud", "tool": "inject_env_config", "target": "cloud", "layer": "conditional",
-         "effect": "additive_prep", "by": "rule", "reason": "V6 결합: secrets.cloud 포함. valueFrom = 인프라 출력의 시크릿 ARN", "wait_for": ["images_ready"]},
-        {"id": "deploy.db.cloud", "tool": "prepare_db", "target": "cloud", "params": {"migrations": ["0002"]},
-         "layer": "conditional", "effect": "state_change", "by": "rule", "reason": "0002 미적용", "wait_for": ["local_verified"]},
-        {"id": "deploy.app.cloud", "tool": "deploy_tier", "target": "cloud", "layer": "conditional",
-         "effect": "state_change", "by": "rule", "reason": "V6 결합: config.cloud 포함", "wait_for": ["local_verified"]},
-        {"id": "verify.health.cloud", "tool": "health_check", "target": "cloud", "layer": "mandatory"},
-        {"id": "verify.tls.cloud", "tool": "verify_tls", "target": "cloud", "layer": "mandatory"},
-        {"id": "verify.smoke.cloud", "tool": "smoke_test", "target": "cloud", "params": {"scenarios": ["base", "auth"]},
-         "layer": "mandatory", "signal": "cloud_verified"}
+        {
+          "id": "deploy.tls.cloud",
+          "tool": "ensure_tls",
+          "target": "cloud",
+          "params": {
+            "mode": "check"
+          },
+          "layer": "mandatory"
+        },
+        {
+          "id": "deploy.infra.cloud",
+          "tool": "apply_infra",
+          "target": "cloud",
+          "layer": "conditional",
+          "effect": "state_change",
+          "by": "rule",
+          "reason": "새 비밀 키 SECRET_KEY → 앱 층 시크릿 1개 추가 + 실행 역할 읽기 권한 변경(+1 ~1 -0). 승인된 plan만",
+          "evidence": [
+            "fact:infra_inputs_changed"
+          ],
+          "signal": "infra_ready"
+        },
+        {
+          "id": "deploy.secrets.cloud",
+          "tool": "sync_env_to_cloud",
+          "target": "cloud",
+          "params": {
+            "keys": [
+              "SECRET_KEY"
+            ]
+          },
+          "layer": "conditional",
+          "effect": "additive_prep",
+          "by": "rule",
+          "reason": "빈 시크릿에 코드 난수를 PutSecretValue(값은 state·AI·화면에 없음)"
+        },
+        {
+          "id": "deploy.config.cloud",
+          "tool": "inject_env_config",
+          "target": "cloud",
+          "layer": "conditional",
+          "effect": "additive_prep",
+          "by": "rule",
+          "reason": "V6 결합: secrets.cloud 포함. valueFrom = 인프라 출력의 시크릿 ARN",
+          "wait_for": [
+            "images_ready"
+          ]
+        },
+        {
+          "id": "deploy.db.cloud",
+          "tool": "prepare_db",
+          "target": "cloud",
+          "params": {
+            "migrations": [
+              "0002"
+            ]
+          },
+          "layer": "conditional",
+          "effect": "state_change",
+          "by": "rule",
+          "reason": "0002 미적용",
+          "wait_for": [
+            "images_ready"
+          ]
+        },
+        {
+          "id": "deploy.app.cloud",
+          "tool": "deploy_tier",
+          "target": "cloud",
+          "layer": "conditional",
+          "effect": "state_change",
+          "by": "rule",
+          "reason": "V6 결합: config.cloud 포함",
+          "wait_for": [
+            "images_ready"
+          ]
+        },
+        {
+          "id": "verify.health.cloud",
+          "tool": "health_check",
+          "target": "cloud",
+          "layer": "mandatory"
+        },
+        {
+          "id": "verify.tls.cloud",
+          "tool": "verify_tls",
+          "target": "cloud",
+          "layer": "mandatory"
+        },
+        {
+          "id": "verify.smoke.cloud",
+          "tool": "smoke_test",
+          "target": "cloud",
+          "params": {
+            "scenarios": [
+              "base",
+              "auth"
+            ]
+          },
+          "layer": "mandatory",
+          "signal": "cloud_verified"
+        }
       ],
       "skipped": [
-        {"id": "deploy.dbinit.cloud", "tool": "prepare_db", "target": "cloud", "layer": "conditional",
-         "by": "rule", "reason": "공유 RDS 안 앱 DB·계정이 이미 있음(부트스트랩에서 생성)", "skip_rule": "db_initialized"}
+        {
+          "id": "deploy.dbinit.cloud",
+          "tool": "prepare_db",
+          "target": "cloud",
+          "layer": "conditional",
+          "by": "rule",
+          "reason": "공유 RDS 안 앱 DB·계정이 이미 있음(부트스트랩에서 생성)",
+          "skip_rule": "db_initialized"
+        }
       ]
     }
   },
   "verify": {
     "steps": [
-      {"id": "verify.compare", "tool": "compare_env_results", "layer": "mandatory",
-       "wait_for": ["local_verified", "cloud_verified"]},
-      {"id": "verify.report", "tool": "post_report", "layer": "mandatory", "run": "finally"}
+      {
+        "id": "verify.compare",
+        "tool": "compare_env_results",
+        "layer": "mandatory",
+        "wait_for": [
+          "local_verified",
+          "cloud_verified"
+        ]
+      },
+      {
+        "id": "verify.report",
+        "tool": "post_report",
+        "layer": "mandatory",
+        "run": "finally"
+      }
     ],
     "skipped": [
-      {"id": "verify.watch.cloud", "tool": "watch_post_deploy", "target": "cloud", "layer": "optional", "by": "ai",
-       "reason": "데모 시간", "skip_rule": "optional"}
+      {
+        "id": "verify.watch.cloud",
+        "tool": "watch_post_deploy",
+        "target": "cloud",
+        "layer": "optional",
+        "by": "ai",
+        "reason": "데모 시간",
+        "skip_rule": "optional"
+      }
     ]
   },
   "invalidated": [],
