@@ -92,7 +92,7 @@ harness/fixtures/ai_replay/generate_infra/<키>.json   replay 저장 응답(sour
 
 **출력 모델 둘** (C1 §6-3 초안 + 공통 규약 1-4, 필드 💭)
 - `InfraDraft`(`call_ai`의 `output_model`, AI가 채움): `files: list[{name, content}]`, `resources: list[{address, reason≤200}]`, `iam_roles: list[{name, path, boundary}]`, `assumptions: list[str≤200]`. `files`는 dict 대신 리스트(파일 이름 `^[a-z0-9_.-]+\.tf$` 검사가 쉽고, api 구조화 출력이 dict 스키마를 받는지 미확인, `make test-llm`).
-- `GenerateInfraOutput`(툴 출력, 코드가 채움): `run_id`, `layer`, `bundle_sha256`, `generation_key`, `files: list[str]`(이름만, HCL은 디스크에만), `resources`, `iam_roles`, `assumptions`, `ai_usage: AIUsage | None`(replay·cache·fixture는 None), `source`(`live`/`cache`/`replay`/`fixture`), `attempts`.
+- 툴 입출력 계약 초안은 #8(후속 5의 6번)을 따릅니다(10/2): `GenerateInfraInput`(run_id·directory·layer) → `GenerateInfraOutput`(directory·layer, files={직접 하위 .tf 이름: sha256}, outputs={허용 출력명: [표현식, 타입]}, source). `image_repository`는 JSON 문자열 리터럴('ns/repo'), 나머지 출력은 허용 AWS 속성 참조입니다. 조립·검증·세션은 정준우입니다. 🟡 준석님 확인 필요. 위 `InfraDraft`와 resources·iam_roles·assumptions·ai_usage 같은 표시용 메타는 이 계약 밖의 내부 구조로 둘 수 있습니다.
 - 텍스트 필드는 표시용입니다. 판정은 `validate_infra`·`plan_infra`(코드)가 합니다.
 - **저장:** HCL 파일과 메타를 1절 2번에서 정한 곳에 둡니다. 팀 저장소에는 커밋하지 않습니다(N34, AGENTS.md). 단 replay fixture(`harness/fixtures/ai_replay/generate_infra/*.json`)에는 AI HCL이 들어가므로, 준석님이 직접 보고(계정 ID·ARN·도메인 없음) 본인 이름으로 커밋하고 코딩 에이전트에게 맡기지 않습니다.
 - **캐시:** "승인된" 생성물만 재사용하는데 승인 기록(C-19)은 plan sha256으로 실행기 DB에 있어 generate_infra가 모릅니다. 💭 승인 뒤 조정자(또는 apply_infra)가 `var/infra/index/<generation_key>.json`에 `{bundle_sha256, plan_sha256, approved_at}`를 쓰고 generate_infra는 이것만 읽습니다.

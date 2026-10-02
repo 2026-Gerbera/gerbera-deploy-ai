@@ -2,6 +2,8 @@
 
 마지막 갱신: 2026-09-30
 
+> 00~19는 9/30 이전 당시 기록입니다. 현행 기준은 [20](20_트리거-개편-git-브랜치-기준.md)(트리거)과 [harness/docs/decisions/2026-10-02-*.md](../harness/docs/decisions/2026-10-02-team-status-and-decisions.md)입니다(v2 미정, 대기 지점 없음, 초기 인프라는 승인 1회). 팀 공유 요약은 [10월 2일 변경 사항](../single-app/dev-docs/roles/00_10월2일-변경사항.md)에 있습니다.
+
 ## 상태 표기
 
 | 표기 | 의미 |

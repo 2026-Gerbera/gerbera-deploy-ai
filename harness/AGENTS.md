@@ -1,6 +1,6 @@
 # AGENTS.md — AI 코딩 에이전트와 사람의 공통 작업 규칙
 
-> 기준: 앱 1개 구조(✅ 9/30 최신 개발자 문서 기준) · 10/1 갱신: [팀 현황과 결정](docs/decisions/2026-10-01-team-status-and-decisions.md)
+> 기준: 앱 1개 구조(✅ 9/30 최신 개발자 문서 기준) · 10/2 갱신: [10/2 팀 현황과 결정](docs/decisions/2026-10-02-team-status-and-decisions.md) · 이전: [10/1 팀 현황과 결정](docs/decisions/2026-10-01-team-status-and-decisions.md)
 >
 > 역할 코드: O1 정준우 · O2 김준석 · O3 장민영 · C2 안승환 · C3 양서윤 · C1 = 유상준 하차(10/1), C1은 정준우·김준석 분담(분담 ✅, 세부 🟡 김준석 확인) · TL = 하네스·계약 승인자(미지정, 결정 필요).
 
@@ -13,9 +13,9 @@
 ## 1. 적용 범위와 우선순위
 
 - 모든 사람과 AI 코딩 도구(Claude Code, Codex 등)에 적용한다.
-- 최신 사용자 결정([2026-10-01 팀 현황과 결정](docs/decisions/2026-10-01-team-status-and-decisions.md), 가장 최근)과 [O1 착수 기준](docs/decisions/2026-09-30-o1-start-contracts.md)이 이전 장부의 상충 문구보다 우선한다. 두 기록이 다르면 날짜가 늦은 쪽을 따른다. 이번 하네스·공유 계약 갱신은 사용자가 명시적으로 승인했다. 팀 계약 승인자 지정은 별개다.
+- 최신 사용자 결정(지금은 [2026-10-02 팀 현황과 결정](docs/decisions/2026-10-02-team-status-and-decisions.md)과 같은 날의 야간 개발·후속 3·4·후속 5·G E2E·온프렘 3티어 기록. 그 이전 기준은 [2026-10-01 팀 현황과 결정](docs/decisions/2026-10-01-team-status-and-decisions.md))과 [O1 착수 기준](docs/decisions/2026-09-30-o1-start-contracts.md)이 이전 장부의 상충 문구보다 우선한다. 두 기록이 다르면 날짜가 늦은 쪽을 따른다. 이번 하네스·공유 계약 갱신은 사용자가 명시적으로 승인했다. 팀 계약 승인자 지정은 별개다.
 - 우선순위. 문서끼리 다르면 날짜가 늦은 쪽을 따른다:
-  1. `docs/decisions/` 최신 기록(지금은 [2026-10-01](docs/decisions/2026-10-01-team-status-and-decisions.md))
+  1. `docs/decisions/` 최신 기록(지금은 [2026-10-02 팀 현황과 결정](docs/decisions/2026-10-02-team-status-and-decisions.md)과 같은 날의 2026-10-02-* 기록들. [2026-10-01](docs/decisions/2026-10-01-team-status-and-decisions.md) 기록은 그 이전 기준)
   2. [single-app/dev-docs/](../single-app/dev-docs/README.md): 00 결정표 → 01 공통 계약 → 02 디렉토리 소유 → roles/
   3. [docs/contracts/README.md](docs/contracts/README.md)
   4. `docs/guides/<역할>.md`
@@ -40,7 +40,7 @@
 | 이미지 | CodeBuild 빌드 → 기본 저장소 Docker Hub(ECR은 옵션 어댑터). amd64·arm64 공통 index로 배포하며 index와 실제 플랫폼 digest를 구분한다. 배포는 digest 고정. Dockerfile이 없으면 AI 초안 → 정적 검사 + 빌드 확인 → 사람 승인 → 저장·재사용(✅ 9/30). |
 | TLS | 클라우드 HTTPS 필수(`ensure_tls`·`verify_tls`는 cloud만). 온프렘 외부 공개는 Cloudflare Tunnel ✅(10/1 밤 (2), EC2 frp 기각. 도메인 구매 전 quick tunnel, 구매 후 이름 있는 터널. 파이프라인은 `public_url`만 읽음)이고, 온프렘 쿠키 Secure·ProxyFix는 `public_url` 스킴을 따른다(https면 켬, http면 끔, 외부 접속은 https라 켬, ✅ 10/1, hop 수 💭). 로컬 컨테이너 직접 HTTPS는 ⏸ 보류(`http://localhost:8080`은 로컬 컨테이너 모드 포트). 도메인 `gerbera.cloud`는 구매 예정(DNS Cloudflare, 클라우드 레코드는 DNS만 → ALB)이고, 사람이 관리 페이지에 입력하는 설정값이며 AI는 바꾸지 못한다. |
 | DB·샘플 앱 | MySQL(두 환경). flaskr 기반(v1 익명 게시판 → 💭 v2 미정, 로그인은 후보). 10/2는 1차 Flask 기본 + 이미지·박스 파이프라인 E2E, 2차 실제 로직 LLM 분석·패치·인프라 생성 검증. 디렉토리 `apps/sample-app`은 가칭. |
-| 코드 수정 토글 | AI 설정 패치 P0. 일반 실행 기본 OFF 유지, 골든 데모 ON. 지원 패턴 2~3종만 승인 후 빌드 사본에 적용한다. |
+| 코드 수정 토글 | AI 설정 패치 P0. 일반 실행 기본 OFF 유지, 골든 데모 ON. 지원 패턴은 2~3종만. 승인한 패치를 prod 원본에 적용한 승인 트리를 실행기가 ai-prod merge 커밋으로 고정해 일반 push하고, 그 커밋 SHA로 빌드한다. 패치 OFF면 prod 그대로라 이전 AI 패치가 빠진다(정준우 확인 대기). |
 
 ## 디렉토리와 담당 (2026-09-30 정리, 10/1 갱신)
 
@@ -89,8 +89,8 @@ src/ddak/
 
 - 제품은 `validate_infra` → `plan_infra` → 한 화면의 infra 승인 → foundation(state bucket + app/build 권한 경계) → platform apply 순서로 실행합니다. bucket이 없으면 local backend plan을 승인한 뒤 코드가 SDK로 bucket을 만들고 platform local apply 후 remote backend로 state를 이전합니다. 사람이 미리 foundation/platform을 apply하는 전제는 폐기합니다. 사람의 사전 준비는 AWS 자격증명과 도메인 구매입니다. AI 개발 에이전트는 Terraform을 직접 실행하지 않으며, 승인 뒤 제품 코드가 실행하는 경로와 구분합니다. 실제 생성기의 O2 연결은 아직 미완이고 AWS 전체 완료를 의미하지 않습니다.
 
-- 승인 UI는 한 화면·한 번 클릭이며 patch/deploy/infra 등 대상별 해시·기록을 분리한다. 재사용 패치는 프로젝트와 원본·diff·수정본 해시를 다시 확인한다.
-- 변경 탐지는 환경별 마지막 성공 배포의 원본 파일 해시 목록과 비교한다. git 커밋은 필수가 아니다. 승인 뒤 수정본을 빌드 소스로 업로드한다.
+- 승인 UI는 한 화면·한 번 클릭이며 patch/deploy/infra 등 대상별 해시·기록을 분리한다. 패치 승인은 prod 커밋 SHA·diff 해시·후보 트리 해시에 묶는다. 이전 패치는 merge만으로 유지되지 않는다. 재사용 여부와 새 prod 적합성은 민영님 패치 단계가 판단하고, 맞지 않으면 승인 전에 다시 제안한다.
+- 배포 기준은 PR merge로 앱 저장소 prod 브랜치에 반영된 커밋이다(수동 배포는 감시 브랜치와 v* 태그만). 변경 탐지는 새 prod 커밋을 환경별 마지막 성공 배포(source_sha·원본 파일 manifest)와 비교한다. 빌드 소스는 승인 트리를 고정한 ai-prod 커밋 SHA(CodeBuild sourceVersion)이고, S3 업로드는 대체 경로다.
 - 데모는 관리 페이지·프로젝트·연결 설정·v1 배포가 준비된 상태에서 시작한다.
 
 ## 3. 금지
@@ -152,4 +152,4 @@ src/ddak/
 
 ## 8. AI 활용 기록
 
-개발 과정에서 AI를 쓴 작업은 `docs/ai-usage/<역할>.md`에 append하고 PR의 "AI 사용" 칸에 적는다. 형식: [docs/ai-usage/README.md](docs/ai-usage/README.md).
+개발 과정에서 AI를 쓴 작업은 `docs/ai-usage/<역할>.md`에 append한다. PR 본문은 `.github/pull_request_template.md` 형식(변경 내용·확인한 것)을 따른다. 템플릿에 "AI 사용" 칸이 없으므로 "변경 내용"에 AI 사용 기록 위치를 한 줄 적는다(칸이 필요하면 템플릿 자체를 고친다). 형식: [docs/ai-usage/README.md](docs/ai-usage/README.md).
