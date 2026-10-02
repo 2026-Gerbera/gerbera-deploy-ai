@@ -3,21 +3,20 @@
 Terraform이 만든 빈 시크릿에 PutSecretValue(값은 코드 난수, state·AI·화면·로그에 없음).
 AI import 금지.
 
-내부 API(fill_secret)는 시크릿 이름을 인자로 받는다. 앱 시크릿 이름(Terraform 출력)이 정해지면
-put_secret_values가 ctx에서 읽어 부른다(💭 확정 필요).
-
-- 앱 시크릿 하나에 JSON 객체({"키": "값"})로 담는다. ECS는 valueFrom `<ARN>:<키>::`로 읽는다.
+- 앱 시크릿은 키마다 하나다. Terraform 앱 출력 `app_secret_arn_<KEY>`(core/contracts/infra_outputs,
+  PR #8 기준)가 그 ARN이다. ECS는 valueFrom `<ARN>`으로 값 전체를 읽는다.
+- 내부 API(fill_secrets)는 {키: 시크릿 ARN}을 인자로 받는다. ctx 연결은 put_secret_values가 한다.
 - 온프렘 inject_config와 같은 규칙: SECRET_KEY만 코드가 만든다(token_hex(32), 있으면 재사용).
-  다른 키는 운영자가 미리 넣어 둔 값이 있어야 한다. 없으면 실패한다.
+  다른 키는 운영자가 미리 넣은 값(AWSCURRENT)이 있어야 한다. 없으면 아무것도 쓰지 않고 실패한다.
+- 운영자 키는 값을 읽지 않고 버전 존재만 본다. SECRET_KEY만 형식 확인을 위해 읽는다.
 - 값은 반환·로그·오류 메시지에 넣지 않는다. 결과는 키 이름만.
 """
 
 from __future__ import annotations
 
-import json
 import re
 import secrets
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -48,21 +47,28 @@ class SecretFilled:
     changed: bool
 
 
-def fill_secret(
+def fill_secrets(
     client: SecretsClient,
-    secret_id: str,
     keys: Sequence[str],
+    secret_ids: Mapping[str, str],
     *,
     token: Callable[[], str] = lambda: secrets.token_hex(32),
 ) -> SecretFilled:
-    """keys가 모두 값을 갖게 한다. 새로 만들 것이 있을 때만 새 버전을 쓴다."""
+    """keys마다 시크릿에 현재 값이 있게 한다. 새로 만들 것은 SECRET_KEY뿐이다."""
     if not keys:
         raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "채울 키가 없다")
     if len(set(keys)) != len(keys) or any(not _KEY.fullmatch(k) for k in keys):
         raise DdakToolError(ErrorCode.CONFIG_INVALID, "키 이름 형식 오류 또는 중복")
+    unmapped = [k for k in keys if not secret_ids.get(k)]
+    if unmapped:
+        raise DdakToolError(
+            ErrorCode.INFRA_MISSING,
+            f"시크릿 출력(app_secret_arn_<KEY>)이 없다: {', '.join(unmapped)}",
+        )
 
-    values = _current(client, secret_id)
-    missing = [k for k in keys if k != GENERATED and not values.get(k)]
+    # 먼저 전부 확인하고, 운영자 키가 하나라도 비었으면 아무것도 쓰지 않는다.
+    has_value = {k: _has_current(client, secret_ids[k]) for k in keys}
+    missing = [k for k in keys if k != GENERATED and not has_value[k]]
     if missing:
         raise DdakToolError(
             ErrorCode.PRECONDITION_FAILED,
@@ -70,41 +76,32 @@ def fill_secret(
         )
     generated: list[str] = []
     if GENERATED in keys:
-        existing = values.get(GENERATED)
-        if existing is None:
-            values[GENERATED] = token()
+        secret_id = secret_ids[GENERATED]
+        if has_value[GENERATED]:
+            existing = call(
+                "시크릿 값을 읽지 못했다", lambda: client.get_secret_value(SecretId=secret_id)
+            ).get("SecretString")
+            if not isinstance(existing, str) or not _SECRET_KEY_VALUE.fullmatch(existing):
+                raise DdakToolError(
+                    ErrorCode.CONFIG_INVALID, "기존 SECRET_KEY는 64자리 hex여야 한다"
+                )
+        else:
+            value = token()
+            call(
+                "시크릿 값을 쓰지 못했다",
+                lambda: client.put_secret_value(SecretId=secret_id, SecretString=value),
+            )
             generated.append(GENERATED)
-        elif not _SECRET_KEY_VALUE.fullmatch(existing):
-            raise DdakToolError(ErrorCode.CONFIG_INVALID, "기존 SECRET_KEY는 64자리 hex여야 한다")
-    if generated:
-        body = json.dumps(values, sort_keys=True)
-        call(
-            "시크릿 값을 쓰지 못했다",
-            lambda: client.put_secret_value(SecretId=secret_id, SecretString=body),
-        )
     return SecretFilled(keys=list(keys), generated=generated, changed=bool(generated))
 
 
-def _current(client: SecretsClient, secret_id: str) -> dict[str, str]:
-    """현재 값(JSON 객체). Terraform이 값 없이 만든 시크릿이면 빈 객체."""
+def _has_current(client: SecretsClient, secret_id: str) -> bool:
+    """AWSCURRENT 버전이 있는가. Terraform이 값 없이 만든 시크릿이면 False."""
     described = call("시크릿을 찾지 못했다", lambda: client.describe_secret(SecretId=secret_id))
     if described.get("DeletedDate"):
         raise DdakToolError(ErrorCode.INFRA_MISSING, "시크릿이 삭제 예정 상태다")
     stages = described.get("VersionIdsToStages") or {}
-    if not any("AWSCURRENT" in s for s in stages.values()):
-        return {}
-    raw = call("시크릿 값을 읽지 못했다", lambda: client.get_secret_value(SecretId=secret_id)).get(
-        "SecretString"
-    )
-    try:
-        parsed = json.loads(raw) if raw else {}
-    except ValueError:
-        parsed = None  # 원문(비밀값)을 오류에 싣지 않는다
-    if not isinstance(parsed, dict) or not all(
-        isinstance(k, str) and isinstance(v, str) for k, v in parsed.items()
-    ):
-        raise DdakToolError(ErrorCode.CONFIG_INVALID, "시크릿 값이 문자열 JSON 객체가 아니다")
-    return dict(parsed)
+    return any("AWSCURRENT" in s for s in stages.values())
 
 
 def put_secret_values(keys: Sequence[str], ctx: RunContext) -> ProviderResult:
