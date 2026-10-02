@@ -152,3 +152,16 @@ def test_tool_is_registered_in_build_module() -> None:
     registered = registry.get("build_image")
     assert registered.spec.module.value == "cloud.build"
     assert registered.input_model is BuildImageInput
+
+
+def test_fake_ignores_local_rehearsal_repo_and_sha256_commit() -> None:
+    # 리허설은 file:// bare 저장소와 SHA-256 커밋을 쓸 수 있다. FakeCodeBuild는 소스를 받지 않는다
+    sha256_commit = "c" * 64
+    got = _call(
+        "web",
+        _ctx(
+            repo_url="file:///tmp/remote.git", candidate_sha=sha256_commit, source_sha=sha256_commit
+        ),
+    )
+    assert got.source is Source.FIXTURE
+    assert len(got.candidate_sha) == 40
