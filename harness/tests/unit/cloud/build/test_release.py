@@ -7,9 +7,9 @@ import pytest
 from ddak.cloud.build.codebuild import GitSource
 from ddak.cloud.build.fake import FakeCodeBuild, fake_digest
 from ddak.cloud.build.registries import DockerHub
-from ddak.cloud.build.release import build_release
+from ddak.cloud.build.release import build_release, build_tier
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
-from ddak.core.contracts.release import ImageArtifact, SnapshotBinding
+from ddak.core.contracts.release import ImageArtifact, ReleaseArtifacts, SnapshotBinding
 
 SHA = "0123456789abcdef0123456789abcdef01234567"
 SOURCE = GitSource(repository_url="https://github.com/gerbera-demo/flaskr", commit_sha=SHA)
@@ -96,3 +96,51 @@ def test_same_commit_gives_same_digests() -> None:
     a = _build(FakeCodeBuild(), ["web"]).artifacts
     b = _build(FakeCodeBuild(), ["web"]).artifacts
     assert a == b
+
+
+def _tier(client: FakeCodeBuild, tier: str, current: object, **kwargs: object):
+    args: dict[str, object] = {
+        "tier": tier,
+        "current": current,
+        "project": "ddak-build",
+        "source": SOURCE,
+        "release_id": "r1",
+        "registry": REGISTRY,
+        "repository": "ddak",
+        "snapshot": SNAPSHOT,
+        "deadline": 100.0,
+        "clock": lambda: 0.0,
+        "sleep": lambda _s: None,
+    }
+    args.update(kwargs)
+    return build_tier(client, **args)  # type: ignore[arg-type]
+
+
+def test_build_steps_accumulate_tiers_in_one_release() -> None:
+    client = FakeCodeBuild()
+    first = _tier(client, "web", None)
+    second = _tier(client, "was", first.artifacts)
+
+    assert len(client.started) == 2  # step마다 CodeBuild 한 번
+    assert set(second.artifacts.images) == {"web", "was"}
+    assert second.artifacts.images["web"] == first.artifacts.images["web"]
+
+
+def test_rebuilding_same_tier_replaces_it() -> None:
+    client = FakeCodeBuild()
+    stale = ReleaseArtifacts(snapshot=SNAPSHOT, images={"web": OLD_WEB})
+    got = _tier(client, "web", stale)
+    assert got.artifacts.images["web"] != OLD_WEB
+    assert set(got.artifacts.images) == {"web"}
+
+
+def test_rejects_previous_result_from_other_snapshot() -> None:
+    other = SnapshotBinding(
+        source_snapshot_hash="sha256:" + "b" * 64, build_snapshot_hash="sha256:" + "b" * 64
+    )
+    current = ReleaseArtifacts(snapshot=other, images={"web": OLD_WEB})
+    client = FakeCodeBuild()
+    with pytest.raises(DdakToolError) as exc:
+        _tier(client, "was", current)
+    assert exc.value.code is ErrorCode.PRECONDITION_FAILED
+    assert client.started == []
