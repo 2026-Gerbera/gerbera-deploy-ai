@@ -17,7 +17,7 @@
 | 10 | migration 요청 버전 precheck, bucket 생성 증거/즉시 태그, 별도 state 이전 예산 |
 | 11 | C1/O1 가이드·결정·역할 문서 정정, 소유자 요청 분리 |
 
-검증 로그는 `harness/var/validation/followup5-20261002/`(Git 제외), 최우선 CI 교정은 `harness/var/validation/ci-scanner-fixture-20261002/`에 있다. 시작 UTC·총 소요·종료 코드를 JSON으로 보존한다. 수치는 fixture와 로컬 Git 비용이며 실제 배포 벤치마크로 쓰지 않는다. 최종 CI: 1195 passed / 1 skipped / 4 deselected, 81.913초. gitleaks 없는 전체 테스트: 1193 passed / 3 skipped / 4 deselected, 77.754초. lint/type/boundary/contracts 통과.
+검증 로그는 `harness/var/validation/followup5-20261002/`(Git 제외), 최우선 CI 교정은 `harness/var/validation/ci-scanner-fixture-20261002/`에 있다. 시작 UTC·총 소요·종료 코드를 JSON으로 보존한다. 수치는 fixture와 로컬 Git 비용이며 실제 배포 벤치마크로 쓰지 않는다. 최종 CI: 1196 passed / 1 skipped / 4 deselected, 89.150초. gitleaks 없는 전체 테스트: 1194 passed / 3 skipped / 4 deselected, 86.955초. lint/type/boundary/contracts 통과.
 
 ## 담당자 요청 목록
 
@@ -46,3 +46,5 @@
 중간 커밋별 CI는 이번에 별도 사본으로 재검증하지 않았다. 사용자가 diff 검토 후 커밋한다. AI attribution을 넣지 않는다.
 
 비밀값 검사: 변경 파일 사본은 통과했다. 전체 디렉터리는 기존 provenance 해시·pytest 캐시/pyc·검증 메타데이터에서 31건 검출되어 전체 통과로 표기하지 않는다. 이번 수정에 없는 파일들이며 예외 추가/규칙 비활성화는 하지 않았다. metadata만 `full-tree-secret-findings-metadata.json`에 기록.
+
+마감 시 다른 세션의 커밋 `9ff8b3f`(코드/테스트), `bd8d639`(문서)를 확인했다. 위 3개 메시지는 제안 이력이며 다시 커밋할 필요가 없다. 현재 미커밋은 최종 검증 수치를 보완한 이 문서와 O1 작업 기록 2개다. 추가 제안: `docs: record final follow-up 5 validation results`.
