@@ -1,9 +1,11 @@
 """AwsProvider가 부르는 ctx 진입점(deploy·rollback·inject_config·migrate_db). 담당 안승환(C2).
 
 ctx에서 값을 꺼내 내부 API(ecs·secrets·database)를 부르고 ProviderResult로 돌려준다. AI import 금지.
-- 이미지: ctx.images[tier](digest 고정). 관측: 새 리비전으로 실행 중인 태스크의 실제 digest.
+- 이미지: ctx.images(digest 고정). R9 (a)라 web·was가 한 태스크에 있다. 계획은 deploy.<tier> step을
+  tier마다 부르지만, 첫 step이 이번 run의 컨테이너 이미지를 모두 한 리비전으로 한 번에 전환하고
+  다음 step은 이미 반영돼 있어 바꾸지 않는다(블루그린 전환 1회). 관측은 step의 tier 컨테이너만.
 - 인프라 값: ctx.platform['cloud'](_platform.py, 💭 일부 키는 가정).
-- 롤백: 온프렘과 같이 ctx.previous_release['cloud']['images'][tier]. 이전 기록이 없으면(최초 배포)
+- 롤백: 온프렘과 같이 ctx.previous_release['cloud']['images']. 이전 기록이 없으면(최초 배포)
   서비스를 0개로 줄인다. DB 역마이그레이션은 하지 않는다.
 - detail에 ARN·계정 ID·비밀값을 넣지 않는다.
 """
@@ -16,7 +18,7 @@ from typing import cast
 from ddak.cd.interface import ProviderName, ProviderResult
 from ddak.cloud.deploy import _aws, _platform
 from ddak.cloud.deploy.database import run_migration_phases
-from ddak.cloud.deploy.ecs import Running, register_revision, replace_image, running_image
+from ddak.cloud.deploy.ecs import Running, register_revision, replace_images, running_image
 from ddak.cloud.deploy.ecs import scale_to_zero as _scale_to_zero
 from ddak.cloud.deploy.secrets import fill_secrets
 from ddak.core.contracts.context import RunContext
@@ -27,32 +29,35 @@ PROVIDER = ProviderName.AWS.value
 
 
 def deploy_service(tier: str, ctx: RunContext) -> ProviderResult:
-    """tier 서비스를 ctx.images[tier]로 바꾸고 실제 실행 digest를 관측한다."""
-    ref = ctx.images.get(tier)
-    if not ref:
+    """이번 run의 컨테이너 이미지를 한 번에 전환하고 tier 컨테이너의 실제 실행 digest를 관측한다."""
+    if not ctx.images.get(tier):
         raise DdakToolError(ErrorCode.CONFIG_INVALID, f"배포할 {tier} 이미지가 없다")
-    target = _platform.service(ctx, tier)
+    images = _container_images(ctx, ctx.images, required=tier)
+    target = _platform.service(ctx)
+    name = _platform.container(ctx, tier)
     ecs = _aws.client("ecs", ctx)
-    revision = replace_image(ecs, target, ref, _aws.deadline(ctx))
-    running = running_image(ecs, target, revision.task_definition)
+    revision = replace_images(
+        ecs, target, images, _aws.deadline(ctx), desired_count=_platform.DESIRED_COUNT
+    )
+    running = running_image(ecs, target, name, revision.task_definition)
     artifact = ctx.release_artifacts.images.get(tier) if ctx.release_artifacts else None
     return ProviderResult(
         provider=PROVIDER,
         function="deploy",
         changed=revision.changed,
-        image_ref=ref,
-        previous_image=revision.previous_image,
+        image_ref=images[name],
+        previous_image=revision.previous_images.get(name),
         observation=_observe(running, artifact),
-        detail="새 리비전 배포 완료" if revision.changed else "이미 같은 이미지가 배포돼 있다",
+        detail="새 리비전 배포 완료" if revision.changed else "이미 이번 리비전으로 배포돼 있다",
     )
 
 
 def rollback_service(tier: str, ctx: RunContext) -> ProviderResult:
     """이전 릴리스 이미지로 되돌린다. 이전 기록이 없으면 서비스를 0개로 줄인다."""
-    target = _platform.service(ctx, tier)
-    previous_ref = _previous_image(ctx, tier)
+    target = _platform.service(ctx)
+    previous = _previous_images(ctx, tier)
     ecs = _aws.client("ecs", ctx)
-    if previous_ref is None:
+    if previous is None:
         changed = _scale_to_zero(ecs, target, _aws.deadline(ctx))
         return ProviderResult(
             provider=PROVIDER,
@@ -60,13 +65,17 @@ def rollback_service(tier: str, ctx: RunContext) -> ProviderResult:
             changed=changed,
             detail="이전 릴리스가 없어 서비스를 0개로 줄였다",
         )
-    revision = replace_image(ecs, target, previous_ref, _aws.deadline(ctx))
+    images = _container_images(ctx, previous, required=tier)
+    revision = replace_images(
+        ecs, target, images, _aws.deadline(ctx), desired_count=_platform.DESIRED_COUNT
+    )
+    name = _platform.container(ctx, tier)
     return ProviderResult(
         provider=PROVIDER,
         function="rollback",
         changed=revision.changed,
-        image_ref=previous_ref,
-        previous_image=revision.previous_image,
+        image_ref=images[name],
+        previous_image=revision.previous_images.get(name),
         detail="이전 릴리스 이미지로 복구",
     )
 
@@ -89,7 +98,9 @@ def run_migrations(migrations: Sequence[str], ctx: RunContext) -> ProviderResult
     if not ref:
         raise DdakToolError(ErrorCode.CONFIG_INVALID, "마이그레이션할 was 이미지가 없다")
     ecs = _aws.client("ecs", ctx)
-    revision = register_revision(ecs, _platform.service(ctx, "was"), ref)
+    revision = register_revision(
+        ecs, _platform.service(ctx), {_platform.container(ctx, "was"): ref}
+    )
     migration = run_migration_phases(
         ecs,
         _aws.client("logs", ctx),
@@ -122,7 +133,20 @@ def _observe(running: Running, artifact: ImageArtifact | None) -> ImageObservati
     return ImageObservation(platform=platform, platform_digest=expected)
 
 
-def _previous_image(ctx: RunContext, tier: str) -> str | None:
+def _container_images(
+    ctx: RunContext, tier_images: Mapping[str, str], *, required: str
+) -> dict[str, str]:
+    """{tier: 참조} → {컨테이너: 참조}. 클라우드 태스크에 없는 tier(예: db)는 건너뛴다."""
+    images = {
+        _platform.container(ctx, t): ref
+        for t, ref in tier_images.items()
+        if t == required or _platform.has_container(ctx, t)
+    }
+    return images
+
+
+def _previous_images(ctx: RunContext, tier: str) -> dict[str, str] | None:
+    """이전 릴리스의 {tier: 참조}. 이전 기록이 없거나 이 tier가 처음 배포였으면 None."""
     previous = ctx.previous_release.get("cloud")
     if previous is None:
         return None
@@ -131,9 +155,13 @@ def _previous_image(ctx: RunContext, tier: str) -> str | None:
     images = previous.get("images")
     if not isinstance(images, Mapping) or tier not in images:
         raise DdakToolError(ErrorCode.CONFIG_INVALID, "이전 릴리스의 tier 이미지가 없다")
-    value = images[tier]
-    if value is None:
+    if images[tier] is None:
         return None
-    if not isinstance(value, str):
-        raise DdakToolError(ErrorCode.CONFIG_INVALID, "이전 릴리스 이미지 형식 오류")
-    return value
+    result: dict[str, str] = {}
+    for t, value in images.items():
+        if value is None:
+            continue
+        if not isinstance(t, str) or not isinstance(value, str):
+            raise DdakToolError(ErrorCode.CONFIG_INVALID, "이전 릴리스 이미지 형식 오류")
+        result[t] = value
+    return result

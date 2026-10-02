@@ -3,15 +3,17 @@
 태스크 정의 새 리비전(이미지 = RunContext.images의 digest 고정 참조, secrets valueFrom = 인프라
 출력의 시크릿 ARN) -> update_service. boto3는 호출마다 새 Session. AI import 금지.
 
-내부 API(replace_image)는 클러스터·서비스·컨테이너 이름을 인자로 받는다. ctx.platform['cloud']의
-Terraform 출력 이름이 정해지면 deploy_service/rollback_service가 그 값을 읽어 부른다(💭 확정 필요).
-
+- 배치(R9 (a), 10/2 C2 결정): 서비스 1개, 태스크 하나에 web·was 컨테이너. 그래서 이미지는
+  {컨테이너: 참조}로 받아 바뀐 컨테이너를 한 리비전에 모아 한 번만 전환한다.
+- 배포 방식(10/2 C2 결정): 블루그린(ECS 내장 strategy=BLUE_GREEN). 전략·대상 그룹·리스너 규칙은
+  Terraform이 서비스에 정한다. 이 모듈은 롤링과 같은 호출(새 리비전, update_service, 완료 대기)이다.
 - 새 리비전은 현재 서비스의 태스크 정의를 그대로 복사하고 지정한 컨테이너의 image만 바꾼다.
   시크릿(valueFrom)·Docker Hub repositoryCredentials·역할은 Terraform이 만든 값을 유지한다.
+- Terraform은 서비스를 태스크 0개로 만든다. 첫 배포 때 desired_count로 올린다.
 - 이미지는 digest 고정 참조만 받는다. 태그로 배포하지 않는다.
 - 롤백도 같은 경로다(이전 릴리스 이미지로 새 리비전). 이전 리비전 ARN에 기대지 않는다.
-- 안정화: 새 리비전의 PRIMARY 배포가 rolloutState COMPLETED이고 이전 배포가 모두 빠지면 성공,
-  FAILED(배포 회로 차단기)면 실패. deadline(monotonic)을 넘기면 시간 초과.
+- 완료: 새 리비전의 PRIMARY 배포가 rolloutState COMPLETED이고 이전 배포가 모두 빠지면 성공,
+  FAILED면 실패. 블루그린은 bake 시간이 끝나 블루가 정리될 때 완료된다(💭 실제 AWS 확인 필요).
 - 오류 메시지에 ARN·계정 ID·AWS 오류 원문을 넣지 않는다.
 """
 
@@ -67,23 +69,24 @@ class EcsClient(Protocol):
 class EcsService:
     cluster: str
     service: str
-    container: str  # 태스크 정의 안에서 이미지를 바꿀 컨테이너 이름
 
 
 @dataclass(frozen=True)
 class Revision:
-    task_definition: str  # image_ref를 쓰는 리비전 ARN(이미 같은 image면 현재 리비전)
+    task_definition: str  # 요청 이미지를 쓰는 리비전 ARN(이미 같으면 현재 리비전)
     previous_task_definition: str
-    previous_image: str | None  # 바꾸기 전 컨테이너 image(태그 참조일 수도 있다)
-    changed: bool  # 이미 같은 image였으면 False(새 리비전·update_service 없음)
+    previous_images: Mapping[str, str | None]  # 바꾸기 전 컨테이너별 image
+    changed: bool  # 이미 같은 image였으면 False(새 리비전 없음)
 
 
-def register_revision(client: EcsClient, target: EcsService, image_ref: str) -> Revision:
-    """서비스의 현재 태스크 정의를 복사해 컨테이너 image만 바꾼 새 리비전을 등록한다.
+def register_revision(client: EcsClient, target: EcsService, images: Mapping[str, str]) -> Revision:
+    """서비스의 현재 태스크 정의를 복사해 images({컨테이너: 참조})만 바꾼 새 리비전을 등록한다.
 
     서비스는 바꾸지 않는다. 마이그레이션(database.py)이 서비스 교체 전에 이 리비전으로 돈다.
     """
-    if not _IMAGE_REF.fullmatch(image_ref):
+    if not images:
+        raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "바꿀 컨테이너 이미지가 없다")
+    if any(not _IMAGE_REF.fullmatch(ref) for ref in images.values()):
         raise DdakToolError(ErrorCode.CONFIG_INVALID, "이미지는 digest 고정 참조여야 한다")
     current_arn = _service(client, target)["taskDefinition"]
     described = call(
@@ -92,13 +95,17 @@ def register_revision(client: EcsClient, target: EcsService, image_ref: str) -> 
     )
     definition = described["taskDefinition"]
     containers = [dict(c) for c in definition.get("containerDefinitions") or []]
-    matched = [c for c in containers if c.get("name") == target.container]
-    if len(matched) != 1:
-        raise DdakToolError(ErrorCode.CONFIG_INVALID, "태스크 정의에 대상 컨테이너가 없다")
-    previous_image = matched[0].get("image")
-    if previous_image == image_ref:
-        return Revision(current_arn, current_arn, previous_image, changed=False)
-    matched[0]["image"] = image_ref
+    by_name = {c.get("name"): c for c in containers}
+    missing = sorted(set(images) - by_name.keys())
+    if missing:
+        raise DdakToolError(
+            ErrorCode.CONFIG_INVALID, f"태스크 정의에 컨테이너가 없다: {', '.join(missing)}"
+        )
+    previous = {name: by_name[name].get("image") for name in images}
+    if all(previous[name] == ref for name, ref in images.items()):
+        return Revision(current_arn, current_arn, previous, changed=False)
+    for name, ref in images.items():
+        by_name[name]["image"] = ref
 
     register: dict[str, Any] = {k: definition[k] for k in _REGISTER_KEYS if k in definition}
     register["containerDefinitions"] = containers
@@ -108,35 +115,42 @@ def register_revision(client: EcsClient, target: EcsService, image_ref: str) -> 
         "태스크 정의 새 리비전을 등록하지 못했다",
         lambda: client.register_task_definition(**register),
     )["taskDefinition"]["taskDefinitionArn"]
-    return Revision(new_arn, current_arn, previous_image, changed=True)
+    return Revision(new_arn, current_arn, previous, changed=True)
 
 
-def replace_image(
+def replace_images(
     client: EcsClient,
     target: EcsService,
-    image_ref: str,
+    images: Mapping[str, str],
     deadline: float,
     *,
+    desired_count: int,
     poll_s: float = 10.0,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
 ) -> Revision:
-    """서비스의 컨테이너 image를 image_ref로 바꾼 새 리비전을 배포하고 안정화까지 기다린다."""
-    revision = register_revision(client, target, image_ref)
-    if not revision.changed:
+    """images로 새 리비전을 배포하고 완료까지 기다린다. 서비스가 0개면 desired_count로 올린다."""
+    revision = register_revision(client, target, images)
+    stopped = _service(client, target).get("desiredCount", 0) == 0
+    if not revision.changed and not stopped:
         return revision
-    call(
-        "ECS 서비스를 바꾸지 못했다",
-        lambda: client.update_service(
-            cluster=target.cluster,
-            service=target.service,
-            taskDefinition=revision.task_definition,
-        ),
-    )
+    update: dict[str, Any] = {
+        "cluster": target.cluster,
+        "service": target.service,
+        "taskDefinition": revision.task_definition,
+    }
+    if stopped:
+        update["desiredCount"] = desired_count
+    call("ECS 서비스를 바꾸지 못했다", lambda: client.update_service(**update))
     wait_stable(
         client, target, revision.task_definition, deadline, poll_s=poll_s, clock=clock, sleep=sleep
     )
-    return revision
+    return Revision(
+        revision.task_definition,
+        revision.previous_task_definition,
+        revision.previous_images,
+        changed=True,
+    )
 
 
 def wait_stable(
@@ -177,7 +191,9 @@ class Running:
     image_digests: frozenset[str]  # 새 리비전으로 실행 중인 대상 컨테이너의 imageDigest
 
 
-def running_image(client: EcsClient, target: EcsService, task_definition: str) -> Running:
+def running_image(
+    client: EcsClient, target: EcsService, container: str, task_definition: str
+) -> Running:
     """새 리비전으로 실행 중인 태스크의 플랫폼과 실제 이미지 digest를 읽는다(관측값 원천)."""
     definition = call(
         "태스크 정의를 읽지 못했다",
@@ -209,7 +225,7 @@ def running_image(client: EcsClient, target: EcsService, task_definition: str) -
         for t in tasks
         if t.get("taskDefinitionArn") == task_definition
         for c in t.get("containers") or []
-        if c.get("name") == target.container
+        if c.get("name") == container
     }
     if not digests or None in digests:
         raise DdakToolError(ErrorCode.ADAPTER_FAILED, "새 리비전의 실행 중 이미지 digest가 없다")
