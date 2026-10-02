@@ -1,0 +1,3 @@
+migrate: require_secure_transport=OFF
+migrate: 0001_init_v1.sql: CREATE TABLE IF NOT EXISTS post (: 기록은 있으나 DB에 없음(up이 다시 만듦)
+migrate: 0001_init_v1.sql: 기록은 있으나 DB에 없어 다시 만듦
