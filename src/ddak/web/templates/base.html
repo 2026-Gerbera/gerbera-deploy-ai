@@ -4,11 +4,38 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>{% block title %}Gerbera 배포 관리{% endblock %}</title>
-  <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/app.css?v=dark-20261002">
 </head>
 <body>
-  <header><a href="/">Gerbera</a><span>온프레미스 · 클라우드 통합 배포</span></header>
-  <main>{% block content %}{% endblock %}</main>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="/" aria-label="Gerbera 홈">
+        <span class="brand-mark"><i></i><b>G</b></span>
+        <span><strong>Gerbera</strong><small>Cloud deploy</small></span>
+      </a>
+      <div class="nav-label">Workspace</div>
+      <nav class="side-nav" aria-label="주 메뉴">
+        <a class="{% if request.url.path == '/' %}active{% endif %}" href="/"><span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 13h6V4H4v9Zm0 7h6v-4H4v4Zm10 0h6v-9h-6v9Zm0-16v4h6V4h-6Z"/></svg></span><span>대시보드</span></a>
+        <a class="{% if request.url.path.startswith('/settings') %}active{% endif %}" href="/settings"><span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.25A3.25 3.25 0 1 0 12 8.75a3.25 3.25 0 0 0 0 6.5Z"/><path d="M19.43 12.98c.04-.32.07-.65.07-.98s-.03-.66-.08-.98l2.12-1.65-2-3.46-2.5 1a7.6 7.6 0 0 0-1.7-.98L15 3.25h-4l-.4 2.68c-.6.25-1.16.58-1.68.98l-2.51-1-2 3.46 2.13 1.65c-.05.32-.08.65-.08.98s.03.66.08.98l-2.13 1.65 2 3.46 2.51-1c.52.4 1.08.73 1.69.98l.39 2.68h4l.4-2.68a7.6 7.6 0 0 0 1.68-.98l2.51 1 2-3.46-2.16-1.65Z"/></svg></span><span>프로젝트 설정</span></a>
+      </nav>
+      <div class="nav-label">Deployment</div>
+      <div class="side-summary">
+        <span class="pulse"><i></i></span>
+        <div><strong>Control plane</strong><small>Local · 127.0.0.1</small></div>
+      </div>
+      <div class="sidebar-footer">
+        <span class="avatar">G</span>
+        <div><strong>Local operator</strong><small>Human approval required</small></div>
+      </div>
+    </aside>
+    <div class="workspace">
+      <header class="topbar">
+        <div><span class="mobile-brand">Gerbera</span><span class="breadcrumb">Control plane / {% block breadcrumb %}Overview{% endblock %}</span></div>
+        <div class="topbar-actions"><span class="region-pill"><i></i>AWS · Seoul</span><a class="icon-button" href="/settings" aria-label="설정"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.25A3.25 3.25 0 1 0 12 8.75a3.25 3.25 0 0 0 0 6.5Z"/><path d="M19.43 12.98c.04-.32.07-.65.07-.98s-.03-.66-.08-.98l2.12-1.65-2-3.46-2.5 1a7.6 7.6 0 0 0-1.7-.98L15 3.25h-4l-.4 2.68c-.6.25-1.16.58-1.68.98l-2.51-1-2 3.46 2.13 1.65c-.05.32-.08.65-.08.98s.03.66.08.98l-2.13 1.65 2 3.46 2.51-1c.52.4 1.08.73 1.69.98l.39 2.68h4l.4-2.68a7.6 7.6 0 0 0 1.68-.98l2.51 1 2-3.46-2.16-1.65Z"/></svg></a></div>
+      </header>
+      <main>{% block content %}{% endblock %}</main>
+    </div>
+  </div>
   <script src="/static/app.js" defer></script>
 </body>
 </html>

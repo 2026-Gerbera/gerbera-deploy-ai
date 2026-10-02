@@ -40,9 +40,13 @@ async def save_settings(request: Request):
         )
         version_text = form.get("version", "")
         expected = int(version_text) if version_text else 0
-        deployment(request).store.save_project_settings(
+        deployment(request).save_project_settings(
             project,
             {
+                "repo_url": form.get("repo_url", "").strip() or None,
+                "watch_branch": form.get("watch_branch", "prod").strip() or "prod",
+                "auto_detect": form.get("auto_detect") == "on",
+                "default_targets": form.get("default_targets", "cloud"),
                 "cloud_domain": value.cloud_domain,
                 "dns_mode": value.dns_mode,
                 "hosted_zone_id": value.hosted_zone_id,
@@ -53,3 +57,18 @@ async def save_settings(request: Request):
     except (DdakToolError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return RedirectResponse(f"/settings?project={project}", status_code=303)
+
+
+@router.post("/deploy")
+async def request_deploy(request: Request):
+    """저장된 프로젝트 설정으로 계획을 만들고 승인 화면으로 보낸다."""
+    form = await parse_form(request)
+    require_safe_post(request, form.get("csrf_token", ""))
+    project = form.get("project", "").strip()
+    if not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", project):
+        raise HTTPException(status_code=400, detail="프로젝트 이름 형식 오류")
+    try:
+        run_id = await deployment(request).request_deployment(project)
+    except (DdakToolError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return RedirectResponse(f"/runs/{run_id}/approval", status_code=303)

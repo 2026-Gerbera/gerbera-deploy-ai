@@ -1,7 +1,15 @@
 {% extends "base.html" %}
 {% block title %}배포 진행 · Gerbera{% endblock %}
+{% block breadcrumb %}Live deployment{% endblock %}
 {% block content %}
-<section class="hero"><p class="eyebrow">LIVE DEPLOYMENT</p><h1>배포 진행</h1><p><code>{{ run_id }}</code></p></section>
-<section class="grid two progress" data-run-id="{{ run_id }}"><article class="card"><h2>온프레미스</h2><ol id="local-events"></ol></article><article class="card"><h2>클라우드</h2><ol id="cloud-events"></ol></article></section>
-<section class="card"><h2>공통 이벤트</h2><ol id="common-events"></ol><a id="result-link" class="button hidden" href="/runs/{{ run_id }}/result">최종 결과 보기</a></section>
+<section class="page-heading"><div><p class="eyebrow live"><i></i>LIVE DEPLOYMENT</p><h1>배포가 진행 중입니다</h1><p><code class="run-id">{{ run_id }}</code></p></div><a class="button secondary" href="/">대시보드로 이동</a></section>
+<section class="deployment-flow" aria-label="현재 배포 단계">
+  <div class="flow-step active" data-phase="plan"><span>1<i></i></span><div><strong>Plan</strong><small>승인 계획</small></div></div><i></i>
+  <div class="flow-step" data-phase="infra"><span>2<i></i></span><div><strong>Infra</strong><small>Terraform</small></div></div><i></i>
+  <div class="flow-step" data-phase="build"><span>3<i></i></span><div><strong>Build</strong><small>Image</small></div></div><i></i>
+  <div class="flow-step" data-phase="deploy"><span>4<i></i></span><div><strong>Deploy</strong><small>ECS update</small></div></div><i></i>
+  <div class="flow-step" data-phase="verify"><span>5<i></i></span><div><strong>Verify</strong><small>Health &amp; TLS</small></div></div>
+</section>
+<section class="grid two progress" data-run-id="{{ run_id }}"><article class="card event-card"><div class="card-header"><div><p class="section-kicker">LOCAL TRACK</p><h2>온프레미스</h2></div><span class="status running"><i></i>Running</span></div><ol id="local-events" class="event-list"><li class="event-placeholder">이벤트를 기다리는 중입니다.</li></ol></article><article class="card event-card"><div class="card-header"><div><p class="section-kicker">CLOUD TRACK</p><h2>AWS Fargate</h2></div><span class="status running"><i></i>Running</span></div><ol id="cloud-events" class="event-list"><li class="event-placeholder">이벤트를 기다리는 중입니다.</li></ol></article></section>
+<section class="card event-card"><div class="card-header"><div><p class="section-kicker">SYSTEM EVENTS</p><h2>공통 이벤트</h2></div><a id="result-link" class="button hidden" href="/runs/{{ run_id }}/result">최종 결과 보기 →</a></div><ol id="common-events" class="event-list horizontal"><li class="event-placeholder">실행 상태를 연결하고 있습니다.</li></ol></section>
 {% endblock %}
