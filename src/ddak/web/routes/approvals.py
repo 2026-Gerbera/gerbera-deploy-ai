@@ -2,7 +2,6 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
 from ddak.core.contracts.errors import DdakToolError
-from ddak.core.redact import redact
 from ddak.web.dependencies import deployment, templates
 from ddak.web.forms import parse_form
 from ddak.web.security import csrf_token, issue_csrf, require_safe_post
@@ -16,7 +15,6 @@ async def approval_page(request: Request, run_id: str):
         view = deployment(request).approval_view(run_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="실행을 찾을 수 없습니다") from exc
-    view["patch"] = redact(view["patch"]) if view.get("patch") else None
     token = csrf_token(request)
     response = templates.TemplateResponse(
         request=request,
