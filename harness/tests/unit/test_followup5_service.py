@@ -29,6 +29,7 @@ async def deploy(service, source, calls, rid, tiers, fail=False):
     )
     p = support.plan(rid)
     if "web" in tiers:
+        p.build.steps.insert(0, support.step("build.web", "build_image", tier="web"))
         for section in (p.deploy.local, p.deploy.cloud):
             section.steps.insert(
                 0,
@@ -213,6 +214,7 @@ async def test_repository_failure_is_recorded_before_execution(rig, missing):
             p.run_id,
             project=p.project,
             adapter_mode=AdapterMode.REAL,
+            platform={"onprem": {"tiers": {"was": {}}}},
             mode=RunMode.BOOTSTRAP,
             source_sha="a" * 40,
         ),

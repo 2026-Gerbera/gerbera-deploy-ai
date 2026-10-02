@@ -74,6 +74,7 @@ def release_view(value: dict[str, Any]) -> dict[str, Any]:
 
 class Store:
     def __init__(self, path: Path) -> None:
+        path = path.expanduser().resolve()
         self.path = path
         path.parent.mkdir(parents=True, exist_ok=True)
         with self.connection() as db:

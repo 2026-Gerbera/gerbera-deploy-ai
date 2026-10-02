@@ -42,6 +42,12 @@ class Settings:
     jev_model: str = "jev-1.13.0"  # 버전 고정(jev-latest 쓰지 않음)
     jev_timeout_s: float = 2.0  # SDK 기본(10초 + 재시도 2회)을 줄인다
 
+    def __post_init__(self) -> None:
+        # make 진입점은 harness를 cwd로 쓴다. 설정을 읽는 시점에 기준을 고정하여
+        # 이후 Git checkout의 cwd나 컨트롤러 재시작 위치에 영향을 받지 않게 한다.
+        for name in ("deploy_config", "run_dir", "ai_replay_dir"):
+            object.__setattr__(self, name, getattr(self, name).expanduser().resolve())
+
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> Settings:
         env = os.environ if environ is None else environ

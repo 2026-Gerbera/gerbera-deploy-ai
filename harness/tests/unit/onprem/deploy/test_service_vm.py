@@ -82,7 +82,7 @@ def test_service_partial_v2_failure_rolls_back_1_2_preserving_3_and_success_ledg
                                 "inject_env_config",
                                 keys=[] if version == 0 else ["SECRET_KEY"],
                             ),
-                            _step("deploy.db.local", "prepare_db", migrations=["001_users"]),
+                            _step("deploy.migrate.local", "prepare_db", migrations=["001_users"]),
                             _step("deploy.was.local", "deploy_tier", tier="was"),
                             _step("verify.health.local", "health_check"),
                             _step("verify.smoke.local", "smoke_test"),

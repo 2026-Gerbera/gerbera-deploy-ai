@@ -155,7 +155,9 @@ def test_catalog_order_and_single_target():
     ids = [s.id for s in catalog_steps(["web", "was"], "both")]
     assert ids.index("build.was") < ids.index("deploy.config.local") < ids.index("deploy.tls.cloud")
     assert (
-        ids.index("deploy.tls.cloud") < ids.index("deploy.db.cloud") < ids.index("verify.compare")
+        ids.index("deploy.tls.cloud")
+        < ids.index("deploy.migrate.cloud")
+        < ids.index("verify.compare")
     )
     assert ids[-3:] == ["verify.compare", "verify.report", "verify.watch.cloud"]
     local = catalog_steps(["web"], "local")

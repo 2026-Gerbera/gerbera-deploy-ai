@@ -101,11 +101,14 @@ def apply_diff(root: Path, patch: bytes) -> None:
     pending_old = False
     pair_ready = False
     hunks = 0
+    last_tag: str | None = None
 
-    def path_from(line: str, prefix: str) -> str | None:
-        name = line[4:].split("\t", 1)[0]
+    def path_from(line: str, prefix: str) -> str:
+        if "\t" in line:
+            raise ValueError("패치 경로 뒤 접미사는 지원하지 않는다")
+        name = line[4:]
         if name == "/dev/null":
-            return None
+            raise ValueError("패치는 기존 파일 수정만 지원한다")
         if not name.startswith(prefix):
             raise ValueError("패치 경로는 a/ 또는 b/ 접두사가 필요하다")
         relative = name[2:]
@@ -121,11 +124,20 @@ def apply_diff(root: Path, patch: bytes) -> None:
         return path.as_posix()
 
     for line in text.split("\n"):
+        prev_tag, last_tag = last_tag, None
+        if line == "\\ No newline at end of file":
+            # 표시는 바로 앞 본문 줄이 해당 쪽 hunk의 마지막 줄일 때만 받는다.
+            if not (
+                (prev_tag == "-" and old_left == 0)
+                or (prev_tag == "+" and new_left == 0)
+                or (prev_tag == " " and old_left == new_left == 0)
+            ):
+                raise ValueError("줄바꿈 없음 표시 위치가 잘못됐다")
+            continue
         if old_left or new_left:
-            if line.startswith("\\ No newline at end of file"):
-                continue
             if not line or line[0] not in " +-":
                 raise ValueError("패치 hunk 형식이 잘못됐다")
+            last_tag = line[0]
             old_left -= line[0] in " -"
             new_left -= line[0] in " +"
             if old_left < 0 or new_left < 0:
@@ -152,11 +164,13 @@ def apply_diff(root: Path, patch: bytes) -> None:
             if not line.startswith("+++ "):
                 raise ValueError("패치 hunk 앞에 ---/+++ 쌍이 필요하다")
             new_path = path_from(line, "b/")
-            if (old_path is None and new_path is None) or (
-                old_path is not None and new_path is not None and old_path != new_path
-            ):
+            if old_path != new_path:
                 raise ValueError("패치 파일 경로가 서로 다르다")
-            paths.update(p for p in (old_path, new_path) if p is not None)
+            if new_path in paths:
+                raise ValueError("파일마다 ---/+++ 쌍과 hunk 하나만 지원한다")
+            if new_path not in before:
+                raise ValueError("패치는 기존 파일 수정만 지원한다")
+            paths.add(new_path)
             pending_old, pair_ready = False, True
             continue
         if line.startswith("--- ") and not pair_ready:
@@ -173,7 +187,7 @@ def apply_diff(root: Path, patch: bytes) -> None:
             pair_ready = False
             hunks += 1
             continue
-        if pair_ready or (line and not line.startswith("\\ No newline at end of file")):
+        if pair_ready or line:
             raise ValueError("지원하지 않는 패치 헤더")
     if old_left or new_left or pending_old or pair_ready or not hunks:
         raise ValueError("패치 hunk 줄 수 또는 헤더가 다르다")
@@ -198,6 +212,8 @@ def apply_diff(root: Path, patch: bytes) -> None:
         if result.returncode:
             raise ValueError("패치를 빌드 사본에 정확히 적용할 수 없다")
     after = file_manifest(root)  # 링크/특수 파일은 여기서도 거부한다.
+    if after.keys() != before.keys():
+        raise ValueError("패치 헤더와 실제 변경 파일이 다르다(생성·삭제)")
     changed = {name for name in before.keys() | after.keys() if before.get(name) != after.get(name)}
     if changed != paths:
         raise ValueError("패치 헤더와 실제 변경 파일이 다르다")

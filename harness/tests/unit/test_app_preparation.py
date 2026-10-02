@@ -448,3 +448,70 @@ async def test_cancelled_copy_finishes_before_owned_source_cleanup(rig, monkeypa
     assert service.get_run(rid)["result"]["phase"] == "source"
     assert not (service.root / "sources" / rid).exists()
     assert source.exists()
+
+
+@pytest.mark.parametrize("failed", [False, True])
+async def test_facts_export_and_intake_ttl_do_not_remove_approval_source(rig, monkeypatch, failed):
+    import json
+    import os
+    import time
+
+    from ddak.core.contracts.errors import DdakToolError, ErrorCode
+    from ddak.core.contracts.plan_facts import EnvKey, Facts
+    from ddak.core.snapshots import preview
+    from ddak.plan.intake import cleanup_stale_sources
+
+    service, source, _calls = rig
+    rid = "facts-intake-run"
+    policy = FetchPolicy(root=source.parent / "intake")
+    intake = policy.root / "runs" / "demo" / rid
+    intake.mkdir(parents=True)
+    (intake / "app.py").write_text("VERSION=1\n")
+    snapshot = preview(intake)
+    monkeypatch.setattr(app, "new_run_id", lambda: rid)
+
+    def plan(request, **kwargs):
+        p = support.plan(rid).model_copy(update={"mode": request.mode})
+        return SimpleNamespace(
+            plan=p,
+            context=RunContext(rid, project="demo", mode=p.mode),
+            source=intake,
+            facts=Facts(
+                project="demo",
+                mode=p.mode,
+                target=request.target,
+                tiers=("was",),
+                changed={"local": {"was": True}},
+                env_keys=(
+                    EnvKey(name="SESSION_KEY", kind="secret", reason="fixture-value-never-persist"),
+                ),
+                source_snapshot_hash=snapshot.source_snapshot_hash,
+                facts_hash=snapshot.source_snapshot_hash,
+            ),
+        )
+
+    monkeypatch.setattr(app, "plan_deployment", plan)
+    if failed:
+
+        def reject(*args, **kwargs):
+            raise DdakToolError(ErrorCode.CONFIG_INVALID, "fixture failure")
+
+        monkeypatch.setattr(service, "prepare", reject)
+    await app._prepare_commit(
+        service,
+        Settings(),
+        WatchTarget("demo", "https://github.com/org/app", "prod", "local"),
+        "a" * 40,
+        policy=policy,
+    )
+    facts_path = service.root / "runs" / rid / "facts.json"
+    assert "fixture-value-never-persist" not in facts_path.read_text()
+    assert json.loads(facts_path.read_text())["facts_hash"] == snapshot.source_snapshot_hash
+    assert facts_path.stat().st_mode & 0o777 == 0o600
+    old = time.time() - policy.cache_ttl_s - 10
+    os.utime(intake, (old, old))
+    assert f"runs/demo/{rid}" in cleanup_stale_sources(policy.root, policy.cache_ttl_s)
+    assert not intake.exists()
+    assert (service.root / "sources" / rid).exists() is not failed
+    if not failed:
+        assert service.approval_view(rid)["run_id"] == rid

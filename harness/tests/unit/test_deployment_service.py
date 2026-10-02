@@ -407,6 +407,7 @@ async def test_service_rollback_uses_registered_tier_budget_instead_of_engine_de
     calls.fail_cloud = True
     calls.rollback_delay = 0.02
     p = plan()
+    p.build.steps.append(step("build.web", "build_image", tier="web"))
     p.deploy.cloud.steps.insert(
         1,
         step(
@@ -575,6 +576,7 @@ async def test_real_update_cannot_use_fake_or_caller_supplied_restore_baseline(r
         p.run_id,
         project=p.project,
         adapter_mode=AdapterMode.REAL,
+        platform={"onprem": {"tiers": {"was": {}}}},
         previous_release={
             target: {**release, "source_mode": AdapterMode.REAL.value}
             for target, release in previous.items()
