@@ -475,7 +475,8 @@ def test_secret_paths_are_not_hashed(
         return original(path)
 
     monkeypatch.setattr(Path, "read_bytes", guarded)
-    with pytest.raises(DdakToolError, match="비밀 파일"):
+    message = "개인키/미지원 PEM" if Path(name).suffix.lower() == ".key" else "비밀 파일"
+    with pytest.raises(DdakToolError, match=message):
         call(context(tmp_path))
 
 

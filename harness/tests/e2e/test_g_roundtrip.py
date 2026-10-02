@@ -123,9 +123,14 @@ async def test_watch_manual_approval_git_roundtrip(
     )
     (work / "was/Dockerfile").write_text("FROM python:3.13-slim\nCOPY . /app\n")
     (work / "docker").mkdir()
-    (work / "docker/was.Dockerfile").write_text("FROM scratch\nCOPY was /app\n")
+    (work / "docker/was.Dockerfile").write_text("FROM scratch\nCOPY was /app\nCOPY certs/ certs/\n")
+    certificate = (
+        Path(__file__).parents[1] / "fixtures/certificates/public-ca.pem.txt"
+    ).read_bytes()
+    (work / "certs").mkdir()
+    (work / "certs/global-bundle.pem").write_bytes(certificate * 2)
     (work / "deploy.yaml").write_text(
-        "tiers:\n  was:\n    paths: [was]\n    dockerfile: was/Dockerfile\n"
+        "tiers:\n  was:\n    paths: [was, certs]\n    dockerfile: was/Dockerfile\n"
         "env_example: .env.example\n"
     )
     (work / ".env.example").write_text("# No injected settings in this rehearsal\n")
@@ -213,6 +218,9 @@ async def test_watch_manual_approval_git_roundtrip(
     async def deploy(rid, source_sha, label, requested_at):
         prepared_at = time.monotonic()
         view = service.approval_view(rid)
+        copied_source = service._load_prepared(rid).source
+        assert (copied_source / "certs/global-bundle.pem").read_bytes() == certificate * 2
+        assert "certs/global-bundle.pem" in file_manifest(copied_source)
         assert service.root.is_absolute() and service.store.path.is_absolute()
         assert service._load_prepared(rid).source.is_absolute()
         assert service.get_run(rid)["status"] == "AWAITING_APPROVAL", service.get_run(rid)["result"]

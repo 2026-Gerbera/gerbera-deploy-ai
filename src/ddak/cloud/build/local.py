@@ -28,6 +28,7 @@ from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.contracts.infra_outputs import IMAGE_REPOSITORY_PATTERN
 from ddak.core.contracts.release import ReleaseArtifacts
+from ddak.core.pem import UnsupportedPemError
 from ddak.core.redact import redact
 from ddak.core.snapshots import digest_json, excluded, file_manifest
 
@@ -291,6 +292,8 @@ def _manifest(root: Path) -> dict:
         dirs[:] = [d for d in dirs if d != ".git"]
         for name in [*dirs, *names]:
             path = relative / name
+            if path.suffix.lower() == ".key":
+                raise DdakToolError(ErrorCode.PRECONDITION_FAILED, str(UnsupportedPemError(path)))
             if (root / path).is_symlink():
                 raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "빌드 소스에 심볼릭 링크가 있다")
             if any(
@@ -300,7 +303,6 @@ def _manifest(root: Path) -> dict:
                     p.lower().startswith(".env") and p not in {".env.example", ".env.sample"}
                     for p in path.parts
                 )
-                or path.suffix.lower() in {".pem", ".key"}
             ):
                 raise DdakToolError(
                     ErrorCode.PRECONDITION_FAILED, "빌드 소스에 비밀 파일 경로가 있다"
@@ -311,6 +313,8 @@ def _manifest(root: Path) -> dict:
                 )
     try:
         return file_manifest(root)
+    except UnsupportedPemError as exc:
+        raise DdakToolError(ErrorCode.PRECONDITION_FAILED, str(exc)) from None
     except (OSError, ValueError):
         raise DdakToolError(
             ErrorCode.PRECONDITION_FAILED, "빌드 소스 manifest를 확인할 수 없다"

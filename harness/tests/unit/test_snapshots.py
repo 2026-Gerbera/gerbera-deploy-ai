@@ -82,7 +82,7 @@ def test_source_symlink_and_patch_parent_path_are_rejected(source: Path, tmp_pat
     assert (source / "app.py").read_bytes() == b"VERSION = 1\n"
 
 
-def test_databases_pem_files_and_caches_do_not_enter_snapshot_or_build_copy(
+def test_databases_and_caches_do_not_enter_snapshot_or_build_copy(
     source: Path, tmp_path: Path
 ) -> None:
     expected_manifest = file_manifest(source)
@@ -91,8 +91,6 @@ def test_databases_pem_files_and_caches_do_not_enter_snapshot_or_build_copy(
         "instance/db.sqlite",
         "foo.sqlite",
         "nested/foo.sqlite3",
-        "certificates/server.pem",
-        "certificates/server.key",
         ".pytest_cache/state",
         ".ruff_cache/state",
         ".mypy_cache/state",

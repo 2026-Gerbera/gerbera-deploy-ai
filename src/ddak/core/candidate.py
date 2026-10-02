@@ -16,11 +16,12 @@ import yaml
 from ddak.core.app_repository import AppRepository, git_sha
 from ddak.core.contracts.deploy_config import DeployConfig
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
+from ddak.core.pem import MAX_PEM_BYTES, UnsupportedPemError, require_certificate_pem
 from ddak.core.snapshots import apply_diff, digest_bytes, excluded, file_manifest
 
 
 def _secret_name(path: Path) -> bool:
-    return path.name.lower() == ".env" or path.suffix.lower() in {".pem", ".key"}
+    return path.name.lower() == ".env" or path.suffix.lower() == ".key"
 
 
 def _dot_env(path: Path) -> bool:
@@ -33,6 +34,7 @@ def template_file(path: Path, configured: frozenset[str] = frozenset()) -> bool:
         and not excluded(path.parent)
         and not _dot_env(path.parent)
         and not _secret_name(path)
+        and path.suffix.lower() != ".pem"
     )
 
 
@@ -85,6 +87,8 @@ def tree_manifest(
         mode, kind, oid = metadata.decode().split()
         name = raw_name.decode("utf-8")
         path = PurePosixPath(name)
+        if path.suffix.lower() == ".key":
+            raise DdakToolError(ErrorCode.PRECONDITION_FAILED, str(UnsupportedPemError(name)))
         if (
             kind != "blob"
             or mode not in ("100644", "100755")
@@ -97,12 +101,23 @@ def tree_manifest(
             )
         ):
             raise DdakToolError(
-                ErrorCode.PRECONDITION_FAILED, "후보 Git 트리에 지원하지 않는 파일이 있다"
+                ErrorCode.PRECONDITION_FAILED,
+                "후보 Git 트리에 지원하지 않는 파일이 있다: " + json.dumps(name),
             )
+        data: bytes | None = None
+        if path.suffix.lower() == ".pem":
+            try:
+                if int(repository.git("cat-file", "-s", oid)) > MAX_PEM_BYTES:
+                    raise UnsupportedPemError(name)
+                data = require_certificate_pem(repository.git_bytes("cat-file", "blob", oid), name)
+            except UnsupportedPemError as exc:
+                raise DdakToolError(ErrorCode.PRECONDITION_FAILED, str(exc)) from None
         if template_file(Path(name), configured) != templates:
             continue
         result[name] = {
-            "sha256": digest_bytes(repository.git_bytes("cat-file", "blob", oid)),
+            "sha256": digest_bytes(
+                data if data is not None else repository.git_bytes("cat-file", "blob", oid)
+            ),
             "executable": mode == "100755",
         }
     return result
@@ -289,6 +304,8 @@ def _source_policy(
         if patch is not None:
             try:
                 apply_diff(root, patch)
+            except UnsupportedPemError as exc:
+                raise DdakToolError(ErrorCode.PRECONDITION_FAILED, str(exc)) from None
             except ValueError:
                 raise DdakToolError(
                     ErrorCode.PRECONDITION_FAILED, "승인 전 패치 형식/대상 검사 실패"

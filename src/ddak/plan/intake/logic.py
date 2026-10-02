@@ -21,6 +21,7 @@ from ddak.core.contracts.tools.receive_deploy_request import (
     ReceiveDeployRequestOutput,
 )
 from ddak.core.logging import get_logger
+from ddak.core.pem import UnsupportedPemError
 from ddak.core.snapshots import digest_json, file_manifest
 from ddak.plan.intake.fetch import Checkout, check_ref, check_url, fetch_repo, fetched_at
 from ddak.plan.intake.policy import FetchPolicy
@@ -134,6 +135,8 @@ def receive(
         _check_paths(root, cfg, ignored)
         try:
             manifest = file_manifest(root)
+        except UnsupportedPemError as exc:
+            raise DdakToolError(ErrorCode.PRECONDITION_FAILED, str(exc)) from None
         except ValueError:
             raise DdakToolError(
                 ErrorCode.CONFIG_INVALID, "소스에 일반 파일이 아닌 항목이 있다"
