@@ -1,11 +1,14 @@
 """빌드 한 번 → 릴리스 산출물(ReleaseArtifacts). 담당 C2. AI 없음.
 
-build_image 툴의 본체가 될 내부 API다. 툴 입출력 계약·RunContext 필드가 정해지기 전이라
-값(저장소 URL, 커밋 SHA, 스냅샷, 이전 이미지)은 모두 인자로 받는다(💭 정준우와 연결 확정 필요).
+build_image 툴의 본체가 될 내부 API다. 툴 입출력 계약이 정해지기 전이라 값은 인자로 받는다.
+PR #8(정준우) 기준 툴 연결: 소스 = GitSource(ctx.project_settings["repo_url"], ctx.candidate_sha),
+같은 run의 앞선 build step 결과 = ctx.release_artifacts. 스냅샷 전달은 미정(💭 정준우와 확정 필요).
 
-- 바뀐 tier는 CodeBuild 한 번에 같이 빌드한다(tier마다 빌드를 따로 띄우지 않음, 동시 빌드 한도).
-- 바뀌지 않은 tier는 이전 릴리스의 이미지를 그대로 넣는다. 실행기는 툴 출력의
-  release_artifacts로 컨텍스트를 통째로 바꾸므로 결과에 모든 tier가 있어야 한다.
+- 계획은 tier마다 build.<tier> step을 둔다. step 하나 = build_tier 한 번 = CodeBuild 한 번.
+- 실행기는 툴 출력의 release_artifacts로 컨텍스트를 통째로 바꾼다. 그래서 build_tier는 앞선
+  build step이 만든 이미지(current)에 이번 tier를 더해 돌려준다.
+- 이번 run에서 빌드하지 않은 tier(변경 없음)는 넣지 않는다. 그 tier는 배포 step도 없다.
+- push는 빌드 안에서 끝난다. push_image 툴은 구현·등록하지 않는다(계획이 부르지 않음).
 - 스냅샷은 승인된 것(실행기 p.snapshot)을 그대로 붙인다. 실행기가 다시 대조한다.
 """
 
@@ -83,4 +86,48 @@ def build_release(
     return ReleaseBuild(artifacts=artifacts, build_id=build_id, revision=source.revision)
 
 
-__all__ = ["ReleaseBuild", "build_release"]
+def build_tier(
+    client: CodeBuildClient,
+    *,
+    tier: str,
+    current: ReleaseArtifacts | None,
+    project: str,
+    source: BuildSource,
+    release_id: str,
+    registry: ImageRegistry,
+    repository: str,
+    snapshot: SnapshotBinding,
+    deadline: float,
+    poll_s: float = 5.0,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> ReleaseBuild:
+    """build.<tier> step 하나. tier를 빌드해 같은 run의 앞선 빌드 결과(current)와 합친다.
+
+    current의 같은 tier는 이번 결과로 바꾼다(재시도 등). 다른 스냅샷의 결과는 섞지 않는다.
+    """
+    kept: dict[str, ImageArtifact] = {}
+    if current is not None:
+        if current.snapshot != snapshot:
+            raise DdakToolError(
+                ErrorCode.PRECONDITION_FAILED, "앞선 빌드 결과의 스냅샷이 이번 승인과 다르다"
+            )
+        kept = {t: a for t, a in current.images.items() if t != tier}
+    return build_release(
+        client,
+        project=project,
+        source=source,
+        tiers=[tier],
+        release_id=release_id,
+        registry=registry,
+        repository=repository,
+        snapshot=snapshot,
+        deadline=deadline,
+        unchanged=kept,
+        poll_s=poll_s,
+        clock=clock,
+        sleep=sleep,
+    )
+
+
+__all__ = ["ReleaseBuild", "build_release", "build_tier"]
