@@ -1,0 +1,15 @@
+--- a/flaskr/__init__.py
++++ b/flaskr/__init__.py
+@@ -33,10 +33,11 @@
+ 
+     @app.get("/version")
+     def version():
+-        return jsonify(release_id=app.config["RELEASE_ID"])
++        return jsonify(release_id=app.config["RELEASE_ID"], demo_revision="v2")
+ 
+     @app.get("/health/ready")
+     def ready():
++        return jsonify(ok=False, error="injected_readiness_failure"), 503
+         try:
+             with app.extensions["database"].connect() as connection:
+                 current, signature = validate_schema(connection)

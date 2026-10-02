@@ -1,0 +1,11 @@
+--- a/flaskr/__init__.py
++++ b/flaskr/__init__.py
+@@ -33,7 +33,7 @@
+ 
+     @app.get("/version")
+     def version():
+-        return jsonify(release_id=app.config["RELEASE_ID"])
++        return jsonify(release_id=app.config["RELEASE_ID"], demo_revision="v2")
+ 
+     @app.get("/health/ready")
+     def ready():

@@ -1,0 +1,84 @@
+{
+  "scope": "로컬 fixture/bare Git/Gitleaks; VM/AWS/원격 Git 없음",
+  "measurements": [
+    {
+      "command": "make -C harness ci",
+      "started_utc": "2026-10-02T00:57:27.824163+00:00",
+      "finished_utc": "2026-10-02T00:58:26.073337+00:00",
+      "elapsed_s": 58.25258120900253,
+      "returncode": 2,
+      "name": "ci-first",
+      "log": "harness/var/validation/correction-20261002/ci-first.log",
+      "log_sha256": "2e1640d5eb367c42a305be842c9164af05cac5ef6ec17cd249cb180a791645cf"
+    },
+    {
+      "command": "make -C harness ci",
+      "started_utc": "2026-10-02T01:05:23.082249+00:00",
+      "finished_utc": "2026-10-02T01:06:19.573521+00:00",
+      "elapsed_s": 56.494602124992525,
+      "returncode": 0,
+      "name": "ci-final",
+      "log": "harness/var/validation/correction-20261002/ci-final.log",
+      "log_sha256": "36a5822fb86e9028bd866f6fe1e8720fbbc343111d4803ee315da40ab7106884"
+    }
+  ],
+  "logs": [
+    {
+      "path": "harness/var/validation/correction-20261002/ci-final.log",
+      "sha256": "36a5822fb86e9028bd866f6fe1e8720fbbc343111d4803ee315da40ab7106884",
+      "pytest_summaries": [
+        "============================== 48 passed in 0.09s ==============================",
+        "================ 1035 passed, 1 skipped, 4 deselected in 54.25s ================"
+      ]
+    },
+    {
+      "path": "harness/var/validation/correction-20261002/ci-first.log",
+      "sha256": "2e1640d5eb367c42a305be842c9164af05cac5ef6ec17cd249cb180a791645cf",
+      "pytest_summaries": [
+        "============================== 48 passed in 0.12s ==============================",
+        "================ 1033 passed, 1 skipped, 4 deselected in 56.07s ================"
+      ]
+    },
+    {
+      "path": "harness/var/validation/correction-20261002/round1-2-tests.log",
+      "sha256": "5d5e046ce2f936b097ab66300a8691c45b172af05be56f622aa2bef670d47be4",
+      "pytest_summaries": [
+        "23 passed in 14.71s"
+      ]
+    },
+    {
+      "path": "harness/var/validation/correction-20261002/round1-4-tests.log",
+      "sha256": "506949485ac8018a9c08e5059eee0b6ce1b428756f753e55f8bac266bcac0fb0",
+      "pytest_summaries": [
+        "2 failed, 135 passed in 20.47s"
+      ]
+    },
+    {
+      "path": "harness/var/validation/correction-20261002/round3-4-reviewed-tests.log",
+      "sha256": "d9fece83f13e287a5682b1222ba44200809e9ff724369eb4d7821633258f5b4c",
+      "pytest_summaries": [
+        "70 passed in 2.94s"
+      ]
+    },
+    {
+      "path": "harness/var/validation/correction-20261002/round3-4-tests.log",
+      "sha256": "c1fb18bdcec6b09a403a870648102d1739f4f467237a1f4cdf1534a9f791c787",
+      "pytest_summaries": [
+        "6 failed, 104 passed in 3.43s"
+      ]
+    },
+    {
+      "path": "harness/var/validation/correction-20261002/round3-7-tests.log",
+      "sha256": "ff460ee253d545728c6aa5e737608231521832d0679cb2d8960a515a36442983",
+      "pytest_summaries": [
+        "137 passed in 4.67s"
+      ]
+    }
+  ],
+  "limits": [
+    "pytest 시간과 전체 CI 경과 시간을 구분",
+    "초기 실패 로그 보존",
+    "단위 테스트 수치이며 실제 배포 속도 아님",
+    "원격 quality job 실제 Gitleaks 검사 2개 skip 가능; 별도 secrets job 구분"
+  ]
+}

@@ -1,0 +1,16 @@
+category,stage,elapsed_s,status,evidence
+deploy,vm-was-bootstrap,54.161,SUCCEEDED,vm-was-bootstrap.json
+deploy,vm-three-bootstrap,101.377,SUCCEEDED,vm-three-bootstrap.json
+deploy,vm-three-update-v2,75.195,SUCCEEDED,vm-three-update-v2.json
+deploy,vm-three-failure-rollback,96.274,FAILED_LOCAL,vm-three-failure-rollback.json
+deploy,vm-three-restore-v1,73.128,SUCCEEDED,vm-three-restore-v1.json
+deploy,vm-three-redeploy-v2,72.778,SUCCEEDED,vm-three-redeploy-v2.json
+build_push,v1-build-push,39.313,PASS,vm-build-push-v1.json
+build_push,v2-build-push,9.328,PASS,vm-build-push-v2.json
+build_push,broken-build-push,7.895,PASS,vm-build-push-broken.json
+ci,mac-final-ci,33.5,PASS,onprem-vm-final-ci.log
+ci,mac-ci,34.4,PASS,onprem-vm-ci.log
+ci,wsl-ci,26.8,PASS,vm-wsl-ci.log
+oci_build,was-multiarch-oci,41.967,PASS,vm-was-build-oci.log
+oci_build,web-multiarch-oci,4.065,PASS,vm-web-build-oci.log
+preflight,three-preflight,5.728,PASS,vm-three-preflight.json

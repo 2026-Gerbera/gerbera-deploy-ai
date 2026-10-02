@@ -1,0 +1,10 @@
+{
+  "baseline": "night-20261002/baseline.json",
+  "protected_changed": [
+    "src/ddak/plan/validate/assemble.py"
+  ],
+  "expected_allowed": [
+    "src/ddak/plan/validate/assemble.py"
+  ],
+  "match": true
+}

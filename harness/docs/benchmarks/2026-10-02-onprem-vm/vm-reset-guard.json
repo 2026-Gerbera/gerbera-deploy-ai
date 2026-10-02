@@ -1,0 +1,8 @@
+{
+  "stage": "three-reset-guard",
+  "status": "EXPECTED_REFUSAL",
+  "reason": "flaskr-three is outside reset_demo allowlist; DB inventory also unsupported",
+  "elapsed_s": 2.3e-05,
+  "error_code": "PRECONDITION_FAILED",
+  "state_and_runtime_unchanged": true
+}

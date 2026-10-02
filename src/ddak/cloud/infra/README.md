@@ -1,6 +1,6 @@
 # cloud/infra — 정준우 실행부 / 김준석 generate_infra
 
-현재 구현은 **내부 Python API**다. 공유 입출력 모델·카탈로그·RunContext는 수정하지 않았고, 툴 등록과 실제 AWS 리허설은 아직 하지 않았다.
+10/2 야간: 내부 API와 `validate_infra`·`plan_infra`·`apply_infra` 레지스트리 연결을 구현했다. 실제 AWS 리허설은 하지 않았다. 최신 범위는 [C1 가이드](../../../../harness/docs/guides/C1.md)를 따른다.
 
 - `InfraRuntime.validate(files)`: 리소스 전용 HCL 정적 검사 → fmt → 자격증명 없는 init/validate → Checkov. 파일·provider 틀·lock 변경을 이후 단계에서도 검사한다.
 - `plan(session, analyzer)`: 층별 S3 backend 초기화 → 저장 plan → Checkov/Access Analyzer → 8KiB 이하 C-18 요약. 개선 배포의 삭제·교체와 앱 밖 IAM 변경을 막는다.
@@ -8,7 +8,7 @@
 - `refresh(session)`: output JSON의 이름·타입·sensitive를 검사한다. RunContext 변경은 실행기 연결부의 책임이다.
 - `foundation_template`/`apply_foundation`: S3 state 버킷 설정과 앱·CodeBuild 각각의 권한 경계. 별도 foundation 해시 승인 필요. STS 대상 계정을 확인하고, 기존 버킷은 관리 태그·계정, 경계는 내용이 일치해야 한다. 자동 삭제/기존 정책 교체 없음.
 
-`AwsSettings.outputs`는 **코드 호출자가 제공하는 임시 출력 선언**이다. 생성기 출력/공유 C-03 계약으로 확정한 것이 아니다. AI 입력에 세션 키·환경 출력·plan 원문을 넣지 않는다. `SessionKeys`는 실행 순간 메모리에서만 전달하며 repr에 값을 표시하지 않는다.
+`AwsSettings.outputs`는 코드 호출자가 제공하는 출력 선언이다. 이름·타입은 `core/contracts/infra_outputs.py`의 플랫폼/앱별 허용목록으로 제한한다. 생성기가 쓸 리소스 주소와 필수 키 합의는 남아 있다. AI 입력에 세션 키·환경 출력·plan 원문을 넣지 않는다. `SessionKeys`는 실행 순간 메모리에서만 전달하며 repr에 값을 표시하지 않는다.
 
 ## 실행 환경
 
@@ -23,9 +23,9 @@
 
 1. AI 파일 전달의 bundle SHA·저장 위치와 변수/output 소유권(C-20). 내부 구현은 리소스만 AI, provider/backend/variable/output은 코드 소유로 제한했다.
 2. C-03 출력 이름/타입/필수 키: 기존 C3 PR의 ALB·ACM 이름과 C2 ECS·CodeBuild·시크릿 출력 연결. 임의 이름을 공통 스키마에 추가하지 않았다.
-3. validate/plan/apply 공유 입출력 모델·레지스트리. runtime과 임시 세션은 조립 코드가 run별로 보관·주입하고, 자격증명을 RunContext/DB에 저장하지 않는 안.
+3. 모델·레지스트리는 구현했다. `InfraBinding`의 runtime/세션 factory/Analyzer는 조립 코드가 run별로 주입해야 한다. 자격증명은 RunContext/DB에 저장하지 않는다. 미연결 시 실패한다.
 4. 플랫폼·앱은 별도 실행/승인. 기존 저장소는 한 run당 infra 승인 1개다.
-5. apply 성공 뒤 출력 반영, last-applied bundle 보관, 실패/출력 갱신 실패의 실행기 상태 연결. `apply-started`/`apply-succeeded`로 내부 구분하며 자동 재개는 없다.
+5. apply 뒤 출력 반영과 실패 상태 연결은 구현했다. 적용 시작 뒤 실패/출력 확인 실패는 NEEDS_HUMAN으로 잠금과 산출물을 보존한다. 앱 롤백으로 인프라 복구 완료를 기록하지 않는다. `apply-succeeded`는 출력 확인까지 성공해야 생긴다. last-applied bundle 운용/수동 복구 절차는 조립 시 확정한다.
 6. CodeBuild 기본 소스는 `ai-prod` 후보 커밋 SHA(`sourceVersion` 고정), S3는 대체 경로로 확정됐다(10/1 사용자 결정). 현재 경계는 Docker Hub push 시크릿·전용 로그만 허용한다. S3 대체 경로 연결 시 전용 소스 버킷 읽기 권한을 추가한다. 생성되는 플랫폼 IAM은 현재 `ddak-codebuild`와 앱 경로 역할만 지원한다. 배포 역할·도메인 변수·전체 플랫폼 출력은 실제 생성 번들과 함께 확정/검증해야 한다. 앱 v2 fixture 통과로 전체 플랫폼 부트스트랩을 완료했다고 보지 않는다.
 7. TLS 담당은 정준우다. ACM·443 리스너·HTTP→HTTPS 리다이렉트·HSTS는 플랫폼 Terraform이 만들고 `ensure_tls`는 확인만 한다(10/1 사용자 결정). 실제 생성 번들·출력 연결과 검증은 아직 남았다.
 
@@ -40,3 +40,11 @@ ALB 공개 HTTP 예외는 `AwsSettings.alb_security_group_addresses`에 코드�
 DB 초기화 정책을 계획하려면 `AwsSettings.rds_master_secret_arn`에 플랫폼 출력의 정확한 ARN을 주입해야 한다. 이름 패턴만으로 전체 RDS 마스터 시크릿을 허용하지 않는다. C2가 주입할 컨테이너 환경변수는 AI Terraform에서 받지 않는다. `region`/시크릿 복제/리소스 정책, 프로젝트 범위를 벗어나는 시크릿 이름을 거부한다.
 
 현재 HCL 파서가 내부 표현식을 펼치지 않는 heredoc은 전체 거절한다. 문자열은 일반 따옴표, IAM·컨테이너 JSON은 `jsonencode`로 생성해야 한다.
+
+## 10/2 추가 파일과 연결
+
+- `terraform/foundation/`: 사람이 적용하는 고정 틀. state 버킷 + 경계 2개, deployer 역할은 외부 준비.
+- `bindings.py`: `bind_infra`/`unbind_infra`, validate/plan/apply 호출 경계. FAKE에는 fixture runner 필수.
+- `executor/infra.py`: apply 출력의 기존 flat/nested cloud 설정 보존·병합. 온프렘 설정은 보존.
+- 새 앱 시크릿 출력은 `app_secret_arn_<KEY>`, 기존 `secret_arn`은 호환만 유지한다.
+- 생성기 C-20 계약 미합의로 실제 HCL 생산자는 연결하지 않았다. 테스트 HCL을 실제 AI 산출물로 표시하지 않는다.

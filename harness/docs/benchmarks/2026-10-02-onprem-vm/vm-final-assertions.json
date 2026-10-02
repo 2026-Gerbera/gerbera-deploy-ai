@@ -1,0 +1,12 @@
+{
+  "passed": true,
+  "db_web_preserved_across_all_stages": true,
+  "db_volume_deleted": false,
+  "all_tiers_healthy": true,
+  "locks_remaining": 0,
+  "final_release_id": "onprem-1e4ae49d671b4fd39d6a6da5a9e4d1c8",
+  "final_revision": "v2",
+  "public_url": "<quick-tunnel-url>",
+  "http_update_failure_samples": 565,
+  "http_sample_errors": 0
+}

@@ -1,0 +1,783 @@
+{
+  "schema_version": 1,
+  "generated_at_utc": "2026-10-01T17:34:51.612708+00:00",
+  "scope": "onprem; no AWS/cloud deployment or AI generation",
+  "measurement_notes": [
+    "duration is measured, not an SLA",
+    "WAS bootstrap contains first image pull; later stages use mixed/hot caches as detailed in environment metadata",
+    "builds were performed ahead of deployments; sum of build+deploy is not a measured end-to-end latency",
+    "automatic approval is user authorized; no measured human decision time",
+    "CLI elapsed excludes before/after evidence snapshots",
+    "initial stages have no recorded CLI UTC timestamps; run timestamps are separately recorded",
+    "HTTP polling is sampling, not proof of zero lost requests"
+  ],
+  "environment": {
+    "observed_at_utc": "2026-10-01T17:27:27.776461+00:00",
+    "replicas": 3,
+    "vm_architecture": "linux/amd64",
+    "image_architectures": [
+      "linux/amd64",
+      "linux/arm64"
+    ],
+    "repository_prefix": "jungjoonwoo2030/gerbera-flaskr",
+    "scope": "onprem only; no cloud deployment",
+    "approval": "user-authorized automatic y; human approval latency not benchmarked",
+    "parallel_builds": true,
+    "cache_notes": {
+      "was-bootstrap": "first WAS image pull; first SQLite volume",
+      "three-bootstrap": "WAS v1 cached from was-only test; MySQL/web first pull",
+      "update-v2": "WAS v2 first pull; DB/web reused",
+      "failure": "broken WAS first pull; DB/web reused",
+      "restore-v1/redeploy-v2": "previously pulled images cached"
+    },
+    "hosts": {
+      "web": [
+        "6.8.0-139-generic",
+        "2",
+        "3960896kB",
+        "29.8.2 29.8.2"
+      ],
+      "was": [
+        "6.8.0-139-generic",
+        "2",
+        "3960888kB",
+        "29.8.2 29.8.2"
+      ],
+      "db": [
+        "6.8.0-139-generic",
+        "2",
+        "3960888kB",
+        "29.8.2 29.8.2"
+      ]
+    },
+    "wsl": {
+      "kernel": "6.6.87.2-microsoft-standard-WSL2",
+      "cpu_count": "16",
+      "docker": "29.8.2 29.8.2",
+      "uv": "uv 0.12.20 (x86_64-unknown-linux-gnu)"
+    },
+    "sync_patch_sha256": "37affd828998a889caba2dc6272c9a2b68d03844a927c1e4b402da74229b4141",
+    "images": {
+      "v1": {
+        "artifacts": {
+          "snapshot": {
+            "source_snapshot_hash": "sha256:99cb91271f607969c8cdfdffed45345670d82240b7ade4408f4142d8739b8bd3",
+            "build_snapshot_hash": "sha256:99cb91271f607969c8cdfdffed45345670d82240b7ade4408f4142d8739b8bd3",
+            "patch_sha256": null
+          },
+          "images": {
+            "was": {
+              "ref": "jungjoonwoo2030/gerbera-flaskr-was@sha256:22464fa0daca70b1aee59bcc734a8dc0301928b487e582caaed21ee59467fd52",
+              "index_digest": "sha256:22464fa0daca70b1aee59bcc734a8dc0301928b487e582caaed21ee59467fd52",
+              "platform_digests": {
+                "linux/amd64": "sha256:e99b48c95408cbb256cfe4131cc9a72497d1780a698b7e5a8623d94c5774ab15",
+                "linux/arm64": "sha256:847dab30d62719521552ef5614af3b305310701a8e19074d2071aec90531a22f"
+              }
+            },
+            "web": {
+              "ref": "jungjoonwoo2030/gerbera-flaskr-web@sha256:21bff5e746accfaf0a9dd9bcb746248c916626c503144004d96908e66ff3daa0",
+              "index_digest": "sha256:21bff5e746accfaf0a9dd9bcb746248c916626c503144004d96908e66ff3daa0",
+              "platform_digests": {
+                "linux/amd64": "sha256:6986038dac5a7b98e37de4ea3ae9d7804e7066f3ffa1b239ecb844a2bc5a10e5",
+                "linux/arm64": "sha256:1ff75a46302d558f520259b86b38fcfc2879f665dbb391f7384c5fb19c8789c1"
+              }
+            },
+            "db": {
+              "ref": "docker.io/library/mysql@sha256:6ea90827b1100f8f2ae306a539f86d2c264a26ed435a2a9f75551dd5c3aeb242",
+              "index_digest": "sha256:6ea90827b1100f8f2ae306a539f86d2c264a26ed435a2a9f75551dd5c3aeb242",
+              "platform_digests": {
+                "linux/amd64": "sha256:80f4933e3835f9dc4d35a28ec500d7986cb4414e6c6821c5461239cb7beb8995",
+                "linux/arm64": "sha256:ca3f0494c0f1fc86eb45f5e4786a1bb9f64d2f85b562cc74a9595046f6519a42"
+              }
+            }
+          },
+          "observations": {}
+        },
+        "web_inputs": "sha256:70514812ddbe3d4435bfd7e31bd832ffdaa4e0c6016681ca0adabcdd00e62e69"
+      },
+      "v2": {
+        "artifacts": {
+          "snapshot": {
+            "source_snapshot_hash": "sha256:f5e789c2452940856a40e1afd27bfc5271979439e859a1187d992b19729aa3eb",
+            "build_snapshot_hash": "sha256:f5e789c2452940856a40e1afd27bfc5271979439e859a1187d992b19729aa3eb",
+            "patch_sha256": null
+          },
+          "images": {
+            "was": {
+              "ref": "jungjoonwoo2030/gerbera-flaskr-was@sha256:607934d35d62c1ba5b76e7254cac06870b378d74342606067ae727215e41162b",
+              "index_digest": "sha256:607934d35d62c1ba5b76e7254cac06870b378d74342606067ae727215e41162b",
+              "platform_digests": {
+                "linux/amd64": "sha256:0c46552aedf5bcbe0f3a7f8215ba381695a8325f3f2d42b700109eef3c76c3eb",
+                "linux/arm64": "sha256:c3ec4a5cbc8134990cf980719b59f9ea23c8e6f9a75b811ad004ba5e3d737a18"
+              }
+            },
+            "web": {
+              "ref": "jungjoonwoo2030/gerbera-flaskr-web@sha256:21bff5e746accfaf0a9dd9bcb746248c916626c503144004d96908e66ff3daa0",
+              "index_digest": "sha256:21bff5e746accfaf0a9dd9bcb746248c916626c503144004d96908e66ff3daa0",
+              "platform_digests": {
+                "linux/amd64": "sha256:6986038dac5a7b98e37de4ea3ae9d7804e7066f3ffa1b239ecb844a2bc5a10e5",
+                "linux/arm64": "sha256:1ff75a46302d558f520259b86b38fcfc2879f665dbb391f7384c5fb19c8789c1"
+              }
+            },
+            "db": {
+              "ref": "docker.io/library/mysql@sha256:6ea90827b1100f8f2ae306a539f86d2c264a26ed435a2a9f75551dd5c3aeb242",
+              "index_digest": "sha256:6ea90827b1100f8f2ae306a539f86d2c264a26ed435a2a9f75551dd5c3aeb242",
+              "platform_digests": {
+                "linux/amd64": "sha256:80f4933e3835f9dc4d35a28ec500d7986cb4414e6c6821c5461239cb7beb8995",
+                "linux/arm64": "sha256:ca3f0494c0f1fc86eb45f5e4786a1bb9f64d2f85b562cc74a9595046f6519a42"
+              }
+            }
+          },
+          "observations": {}
+        },
+        "web_inputs": "sha256:70514812ddbe3d4435bfd7e31bd832ffdaa4e0c6016681ca0adabcdd00e62e69"
+      },
+      "broken": {
+        "artifacts": {
+          "snapshot": {
+            "source_snapshot_hash": "sha256:fa3636e0f6cc8e1ecce9c931d8cbf0d94f3d1e25291aaa4b35b6b512928501ca",
+            "build_snapshot_hash": "sha256:fa3636e0f6cc8e1ecce9c931d8cbf0d94f3d1e25291aaa4b35b6b512928501ca",
+            "patch_sha256": null
+          },
+          "images": {
+            "was": {
+              "ref": "jungjoonwoo2030/gerbera-flaskr-was@sha256:7b87d25dccba2c5a145d21a5bdda88a4caa97a084db470421c2173ad8290cc8e",
+              "index_digest": "sha256:7b87d25dccba2c5a145d21a5bdda88a4caa97a084db470421c2173ad8290cc8e",
+              "platform_digests": {
+                "linux/amd64": "sha256:8cb89c9001b13b48c86a89e6219c1dcb207b69be9be42c4d2329d3b12ee67a18",
+                "linux/arm64": "sha256:7cb279b457794c82334105d1c3c8f5e3be4744644d415a50d7b252ba24d8e3e2"
+              }
+            },
+            "web": {
+              "ref": "jungjoonwoo2030/gerbera-flaskr-web@sha256:21bff5e746accfaf0a9dd9bcb746248c916626c503144004d96908e66ff3daa0",
+              "index_digest": "sha256:21bff5e746accfaf0a9dd9bcb746248c916626c503144004d96908e66ff3daa0",
+              "platform_digests": {
+                "linux/amd64": "sha256:6986038dac5a7b98e37de4ea3ae9d7804e7066f3ffa1b239ecb844a2bc5a10e5",
+                "linux/arm64": "sha256:1ff75a46302d558f520259b86b38fcfc2879f665dbb391f7384c5fb19c8789c1"
+              }
+            },
+            "db": {
+              "ref": "docker.io/library/mysql@sha256:6ea90827b1100f8f2ae306a539f86d2c264a26ed435a2a9f75551dd5c3aeb242",
+              "index_digest": "sha256:6ea90827b1100f8f2ae306a539f86d2c264a26ed435a2a9f75551dd5c3aeb242",
+              "platform_digests": {
+                "linux/amd64": "sha256:80f4933e3835f9dc4d35a28ec500d7986cb4414e6c6821c5461239cb7beb8995",
+                "linux/arm64": "sha256:ca3f0494c0f1fc86eb45f5e4786a1bb9f64d2f85b562cc74a9595046f6519a42"
+              }
+            }
+          },
+          "observations": {}
+        },
+        "web_inputs": "sha256:70514812ddbe3d4435bfd7e31bd832ffdaa4e0c6016681ca0adabcdd00e62e69"
+      }
+    },
+    "co_resident_workloads": {
+      "web": [
+        "flaskr-three-web Up 6 minutes (healthy)",
+        "flaskr-three-cloudflared Up 17 minutes"
+      ],
+      "was": [
+        "flaskr-three-was-3 Up 46 seconds (healthy)",
+        "flaskr-three-was-2 Up 55 seconds (healthy)",
+        "flaskr-three-was-1 Up About a minute (healthy)",
+        "flaskr-three-traefik Up 8 minutes",
+        "flaskr-was-was-3 Up 8 minutes (healthy)",
+        "flaskr-was-was-2 Up 9 minutes (healthy)",
+        "flaskr-was-was-1 Up 9 minutes (healthy)"
+      ],
+      "db": [
+        "flaskr-three-db Up 7 minutes (healthy)"
+      ]
+    },
+    "co_resident_workload_note": "After WAS-only bootstrap its three replicas stay running while its Traefik is stopped; three-tier stages therefore share the WAS VM with three idle test app replicas. No cache purge or resource isolation. Native cloudflared localhost:80 also retained on web VM.",
+    "parallel_build_notes": "v2/broken builds overlapped WAS-only bootstrap; completed before three-tier updates. Do not sum phases as measured end-to-end."
+  },
+  "stages": [
+    {
+      "stage": "vm-was-bootstrap",
+      "run_id": "onprem-3bac5c9a22e444b9bdfa99ef3edad115",
+      "status": "SUCCEEDED",
+      "cli_elapsed_s": 54.161,
+      "cli_started_at_utc": null,
+      "cli_finished_at_utc": null,
+      "run_created_at_utc": "2026-10-01T17:23:07.490275+00:00",
+      "run_finished_at_utc": "2026-10-01T17:24:01.397481+00:00",
+      "run_elapsed_including_automatic_approval_s": 53.907,
+      "human_approval_wait_s": null,
+      "approval_mode": "preauthorized_stdin_y",
+      "http_samples": 0,
+      "http_sample_errors": null,
+      "replicas": 3,
+      "platform": "linux/amd64",
+      "evidence": "vm-was-bootstrap.json",
+      "request_to_both_cloud_and_local_verified_s": null,
+      "event_intervals_s": {
+        "step:deploy.config.local": 0.001,
+        "step:deploy.migrate.local": 22.342,
+        "step:deploy.was.local": 27.465,
+        "step:verify.health.local": 4.02,
+        "step:verify.smoke.local": 0.044
+      }
+    },
+    {
+      "stage": "vm-three-bootstrap",
+      "run_id": "onprem-81efcb1cd0d9439d91ab833b8ebdf1a6",
+      "status": "SUCCEEDED",
+      "cli_elapsed_s": 101.377,
+      "cli_started_at_utc": null,
+      "cli_finished_at_utc": null,
+      "run_created_at_utc": "2026-10-01T17:24:37.285051+00:00",
+      "run_finished_at_utc": "2026-10-01T17:26:18.412485+00:00",
+      "run_elapsed_including_automatic_approval_s": 101.127,
+      "human_approval_wait_s": null,
+      "approval_mode": "preauthorized_stdin_y",
+      "http_samples": 0,
+      "http_sample_errors": null,
+      "replicas": 3,
+      "platform": "linux/amd64",
+      "evidence": "vm-three-bootstrap.json",
+      "request_to_both_cloud_and_local_verified_s": null,
+      "event_intervals_s": {
+        "step:deploy.config.local": 0.002,
+        "step:deploy.db.local": 35.705,
+        "step:deploy.migrate.local": 15.911,
+        "step:deploy.was.local": 27.395,
+        "step:deploy.web.local": 13.794,
+        "step:verify.health.local": 6.372,
+        "step:verify.smoke.local": 1.902
+      }
+    },
+    {
+      "stage": "vm-three-update-v2",
+      "run_id": "onprem-12c5c9d38cf24d0ab061c1787c3a71dd",
+      "status": "SUCCEEDED",
+      "cli_elapsed_s": 75.195,
+      "cli_started_at_utc": "2026-10-01T17:26:50.011798+00:00",
+      "cli_finished_at_utc": "2026-10-01T17:28:05.207084+00:00",
+      "run_created_at_utc": "2026-10-01T17:26:50.315292+00:00",
+      "run_finished_at_utc": "2026-10-01T17:28:05.170489+00:00",
+      "run_elapsed_including_automatic_approval_s": 74.855,
+      "human_approval_wait_s": null,
+      "approval_mode": "preauthorized_stdin_y",
+      "http_samples": 133,
+      "http_sample_errors": 0,
+      "replicas": 3,
+      "platform": "linux/amd64",
+      "evidence": "vm-three-update-v2.json",
+      "request_to_both_cloud_and_local_verified_s": null,
+      "event_intervals_s": {
+        "step:deploy.config.local": 0.004,
+        "step:deploy.db.local": 4.198,
+        "step:deploy.migrate.local": 20.091,
+        "step:deploy.was.local": 36.41,
+        "step:deploy.web.local": 7.051,
+        "step:verify.health.local": 6.015,
+        "step:verify.smoke.local": 1.037
+      }
+    },
+    {
+      "stage": "vm-three-failure-rollback",
+      "run_id": "onprem-196fa2a27bae4fe3b2d0d0e9fcf991cd",
+      "status": "FAILED_LOCAL",
+      "cli_elapsed_s": 96.274,
+      "cli_started_at_utc": "2026-10-01T17:28:37.814149+00:00",
+      "cli_finished_at_utc": "2026-10-01T17:30:14.087756+00:00",
+      "run_created_at_utc": "2026-10-01T17:28:38.112411+00:00",
+      "run_finished_at_utc": "2026-10-01T17:30:14.055417+00:00",
+      "run_elapsed_including_automatic_approval_s": 95.943,
+      "human_approval_wait_s": null,
+      "approval_mode": "preauthorized_stdin_y",
+      "http_samples": 173,
+      "http_sample_errors": 0,
+      "replicas": 3,
+      "platform": "linux/amd64",
+      "evidence": "vm-three-failure-rollback.json",
+      "request_to_both_cloud_and_local_verified_s": null,
+      "event_intervals_s": {
+        "step:deploy.config.local": 0.003,
+        "step:deploy.db.local": 4.201,
+        "step:deploy.migrate.local": 20.349,
+        "step:deploy.was.local": 44.483,
+        "rollback": 26.875
+      }
+    },
+    {
+      "stage": "vm-three-restore-v1",
+      "run_id": "onprem-b2e5c937585143d1a5ea3de4df2c4f0c",
+      "status": "SUCCEEDED",
+      "cli_elapsed_s": 73.128,
+      "cli_started_at_utc": "2026-10-01T17:31:07.863792+00:00",
+      "cli_finished_at_utc": "2026-10-01T17:32:20.992123+00:00",
+      "run_created_at_utc": "2026-10-01T17:31:08.067652+00:00",
+      "run_finished_at_utc": "2026-10-01T17:32:20.957549+00:00",
+      "run_elapsed_including_automatic_approval_s": 72.89,
+      "human_approval_wait_s": null,
+      "approval_mode": "preauthorized_stdin_y",
+      "http_samples": 130,
+      "http_sample_errors": 0,
+      "replicas": 3,
+      "platform": "linux/amd64",
+      "evidence": "vm-three-restore-v1.json",
+      "request_to_both_cloud_and_local_verified_s": null,
+      "event_intervals_s": {
+        "step:deploy.config.local": 0.003,
+        "step:deploy.db.local": 4.159,
+        "step:deploy.migrate.local": 16.866,
+        "step:deploy.was.local": 37.314,
+        "step:deploy.web.local": 7.077,
+        "step:verify.health.local": 6.304,
+        "step:verify.smoke.local": 1.126
+      }
+    },
+    {
+      "stage": "vm-three-redeploy-v2",
+      "run_id": "onprem-1e4ae49d671b4fd39d6a6da5a9e4d1c8",
+      "status": "SUCCEEDED",
+      "cli_elapsed_s": 72.778,
+      "cli_started_at_utc": "2026-10-01T17:33:01.461760+00:00",
+      "cli_finished_at_utc": "2026-10-01T17:34:14.240256+00:00",
+      "run_created_at_utc": "2026-10-01T17:33:01.658753+00:00",
+      "run_finished_at_utc": "2026-10-01T17:34:14.203997+00:00",
+      "run_elapsed_including_automatic_approval_s": 72.545,
+      "human_approval_wait_s": null,
+      "approval_mode": "preauthorized_stdin_y",
+      "http_samples": 129,
+      "http_sample_errors": 0,
+      "replicas": 3,
+      "platform": "linux/amd64",
+      "evidence": "vm-three-redeploy-v2.json",
+      "request_to_both_cloud_and_local_verified_s": null,
+      "event_intervals_s": {
+        "step:deploy.config.local": 0.004,
+        "step:deploy.db.local": 4.096,
+        "step:deploy.migrate.local": 16.745,
+        "step:deploy.was.local": 36.915,
+        "step:deploy.web.local": 7.196,
+        "step:verify.health.local": 6.523,
+        "step:verify.smoke.local": 1.026
+      }
+    }
+  ],
+  "steps": [
+    {
+      "stage": "vm-was-bootstrap",
+      "run_id": "onprem-3bac5c9a22e444b9bdfa99ef3edad115",
+      "step": "deploy.config.local",
+      "status": "succeeded",
+      "elapsed_s": 0.004,
+      "rollback": false
+    },
+    {
+      "stage": "vm-was-bootstrap",
+      "run_id": "onprem-3bac5c9a22e444b9bdfa99ef3edad115",
+      "step": "deploy.migrate.local",
+      "status": "succeeded",
+      "elapsed_s": 22.344,
+      "rollback": false
+    },
+    {
+      "stage": "vm-was-bootstrap",
+      "run_id": "onprem-3bac5c9a22e444b9bdfa99ef3edad115",
+      "step": "deploy.was.local",
+      "status": "succeeded",
+      "elapsed_s": 27.468,
+      "rollback": false
+    },
+    {
+      "stage": "vm-was-bootstrap",
+      "run_id": "onprem-3bac5c9a22e444b9bdfa99ef3edad115",
+      "step": "verify.health.local",
+      "status": "succeeded",
+      "elapsed_s": 4.022,
+      "rollback": false
+    },
+    {
+      "stage": "vm-was-bootstrap",
+      "run_id": "onprem-3bac5c9a22e444b9bdfa99ef3edad115",
+      "step": "verify.smoke.local",
+      "status": "succeeded",
+      "elapsed_s": 0.046,
+      "rollback": false
+    },
+    {
+      "stage": "vm-three-bootstrap",
+      "run_id": "onprem-81efcb1cd0d9439d91ab833b8ebdf1a6",
+      "step": "deploy.config.local",
+      "status": "succeeded",
+      "elapsed_s": 0.004,
+      "rollback": false
+    },
+    {
+      "stage": "vm-three-bootstrap",
+      "run_id": "onprem-81efcb1cd0d9439d91ab833b8ebdf1a6",
+      "step": "deploy.db.local",
+      "status": "succeeded",
+      "elapsed_s": 35.707,
+      "rollback": false
+    },
+    {
+      "stage": "vm-three-bootstrap",
+      "run_id": "onprem-81efcb1cd0d9439d91ab833b8ebdf1a6",
+      "step": "deploy.migrate.local",
+      "status": "succeeded",
+      "elapsed_s": 15.922,
+      "rollback": false
+    },
+    {
+      "stage": "vm-three-bootstrap",
+      "run_id": "onprem-81efcb1cd0d9439d91ab833b8ebdf1a6",
+      "step": "deploy.was.local",
+      "status": "succeeded",
+      "elapsed_s": 27.397,
+      "rollback": false
+    },
+    {
+      "stage": "vm-three-bootstrap",
+      "run_id": "onprem-81efcb1cd0d9439d91ab833b8ebdf1a6",
+      "step": "deploy.web.local",
+      "status": "succeeded",
+      "elapsed_s": 13.795,
+      "rollback": false
+    },
+    {
+      "stage": "vm-three-bootstrap",
+      "run_id": "onprem-81efcb1cd0d9439d91ab833b8ebdf1a6",
+      "step": "verify.health.local",
+      "status": "succeeded",
+      "elapsed_s": 6.374,
+      "rollback": false
+    },
+    {
+      "stage": "vm-three-bootstrap",
+      "run_id": "onprem-81efcb1cd0d9439d91ab833b8ebdf1a6",
+      "step": "verify.smoke.local",
+      "status": "succeeded",
+      "elapsed_s": 1.904,
+      "rollback": false
+    },
+    {
+      "stage": "vm-three-update-v2",
+      "run_id": "onprem-12c5c9d38cf24d0ab061c1787c3a71dd",
+      "step": "deploy.config.local",
+      "status": "succeeded",
+      "elapsed_s": 0.005,
+      "rollback": false
+    },
+    {
+      "stage": "vm-three-update-v2",
+      "run_id": "onprem-12c5c9d38cf24d0ab061c1787c3a71dd",
+      "step": "deploy.db.local",
+      "status": "succeeded",
+      "elapsed_s": 4.2,
+      "rollback": false
+    },
+    {
+      "stage": "vm-three-update-v2",
+      "run_id": "onprem-12c5c9d38cf24d0ab061c1787c3a71dd",
+      "step": "deploy.migrate.local",
+      "status": "succeeded",
+      "elapsed_s": 20.093,
+      "rollback": false
+    },
+    {
+      "stage": "vm-three-update-v2",
+      "run_id": "onprem-12c5c9d38cf24d0ab061c1787c3a71dd",
+      "step": "deploy.was.local",
+      "status": "succeeded",
+      "elapsed_s": 36.411,
+      "rollback": false
+    },
+    {
+      "stage": "vm-three-update-v2",
+      "run_id": "onprem-12c5c9d38cf24d0ab061c1787c3a71dd",
+      "step": "deploy.web.local",
+      "status": "succeeded",
+      "elapsed_s": 7.063,
+      "rollback": false
+    },
+    {
+      "stage": "vm-three-update-v2",
+      "run_id": "onprem-12c5c9d38cf24d0ab061c1787c3a71dd",
+      "step": "verify.health.local",
+      "status": "succeeded",
+      "elapsed_s": 6.016,
+      "rollback": false
+    },
+    {
+      "stage": "vm-three-update-v2",
+      "run_id": "onprem-12c5c9d38cf24d0ab061c1787c3a71dd",
+      "step": "verify.smoke.local",
+      "status": "succeeded",
+      "elapsed_s": 1.04,
+      "rollback": false
+    },
+    {
+      "stage": "vm-three-failure-rollback",
+      "run_id": "onprem-196fa2a27bae4fe3b2d0d0e9fcf991cd",
+      "step": "deploy.config.local",
+      "status": "succeeded",
+      "elapsed_s": 0.005,
+      "rollback": false
+    },
+    {
+      "stage": "vm-three-failure-rollback",
+      "run_id": "onprem-196fa2a27bae4fe3b2d0d0e9fcf991cd",
+      "step": "deploy.db.local",
+      "status": "succeeded",
+      "elapsed_s": 4.203,
+      "rollback": false
+    },
+    {
+      "stage": "vm-three-failure-rollback",
+      "run_id": "onprem-196fa2a27bae4fe3b2d0d0e9fcf991cd",
+      "step": "deploy.migrate.local",
+      "status": "succeeded",
+      "elapsed_s": 20.351,
+      "rollback": false
+    },
+    {
+      "stage": "vm-three-failure-rollback",
+      "run_id": "onprem-196fa2a27bae4fe3b2d0d0e9fcf991cd",
+      "step": "deploy.was.local",
+      "status": "failed",
+      "elapsed_s": 44.485,
+      "rollback": false
+    },
+    {
+      "stage": "vm-three-restore-v1",
+      "run_id": "onprem-b2e5c937585143d1a5ea3de4df2c4f0c",
+      "step": "deploy.config.local",
+      "status": "succeeded",
+      "elapsed_s": 0.005,
+      "rollback": false
+    },
+    {
+      "stage": "vm-three-restore-v1",
+      "run_id": "onprem-b2e5c937585143d1a5ea3de4df2c4f0c",
+      "step": "deploy.db.local",
+      "status": "succeeded",
+      "elapsed_s": 4.161,
+      "rollback": false
+    },
+    {
+      "stage": "vm-three-restore-v1",
+      "run_id": "onprem-b2e5c937585143d1a5ea3de4df2c4f0c",
+      "step": "deploy.migrate.local",
+      "status": "succeeded",
+      "elapsed_s": 16.869,
+      "rollback": false
+    },
+    {
+      "stage": "vm-three-restore-v1",
+      "run_id": "onprem-b2e5c937585143d1a5ea3de4df2c4f0c",
+      "step": "deploy.was.local",
+      "status": "succeeded",
+      "elapsed_s": 37.317,
+      "rollback": false
+    },
+    {
+      "stage": "vm-three-restore-v1",
+      "run_id": "onprem-b2e5c937585143d1a5ea3de4df2c4f0c",
+      "step": "deploy.web.local",
+      "status": "succeeded",
+      "elapsed_s": 7.078,
+      "rollback": false
+    },
+    {
+      "stage": "vm-three-restore-v1",
+      "run_id": "onprem-b2e5c937585143d1a5ea3de4df2c4f0c",
+      "step": "verify.health.local",
+      "status": "succeeded",
+      "elapsed_s": 6.306,
+      "rollback": false
+    },
+    {
+      "stage": "vm-three-restore-v1",
+      "run_id": "onprem-b2e5c937585143d1a5ea3de4df2c4f0c",
+      "step": "verify.smoke.local",
+      "status": "succeeded",
+      "elapsed_s": 1.129,
+      "rollback": false
+    },
+    {
+      "stage": "vm-three-redeploy-v2",
+      "run_id": "onprem-1e4ae49d671b4fd39d6a6da5a9e4d1c8",
+      "step": "deploy.config.local",
+      "status": "succeeded",
+      "elapsed_s": 0.005,
+      "rollback": false
+    },
+    {
+      "stage": "vm-three-redeploy-v2",
+      "run_id": "onprem-1e4ae49d671b4fd39d6a6da5a9e4d1c8",
+      "step": "deploy.db.local",
+      "status": "succeeded",
+      "elapsed_s": 4.098,
+      "rollback": false
+    },
+    {
+      "stage": "vm-three-redeploy-v2",
+      "run_id": "onprem-1e4ae49d671b4fd39d6a6da5a9e4d1c8",
+      "step": "deploy.migrate.local",
+      "status": "succeeded",
+      "elapsed_s": 16.747,
+      "rollback": false
+    },
+    {
+      "stage": "vm-three-redeploy-v2",
+      "run_id": "onprem-1e4ae49d671b4fd39d6a6da5a9e4d1c8",
+      "step": "deploy.was.local",
+      "status": "succeeded",
+      "elapsed_s": 36.917,
+      "rollback": false
+    },
+    {
+      "stage": "vm-three-redeploy-v2",
+      "run_id": "onprem-1e4ae49d671b4fd39d6a6da5a9e4d1c8",
+      "step": "deploy.web.local",
+      "status": "succeeded",
+      "elapsed_s": 7.198,
+      "rollback": false
+    },
+    {
+      "stage": "vm-three-redeploy-v2",
+      "run_id": "onprem-1e4ae49d671b4fd39d6a6da5a9e4d1c8",
+      "step": "verify.health.local",
+      "status": "succeeded",
+      "elapsed_s": 6.525,
+      "rollback": false
+    },
+    {
+      "stage": "vm-three-redeploy-v2",
+      "run_id": "onprem-1e4ae49d671b4fd39d6a6da5a9e4d1c8",
+      "step": "verify.smoke.local",
+      "status": "succeeded",
+      "elapsed_s": 1.028,
+      "rollback": false
+    }
+  ],
+  "measurements": [
+    {
+      "category": "deploy",
+      "stage": "vm-was-bootstrap",
+      "elapsed_s": 54.161,
+      "status": "SUCCEEDED",
+      "evidence": "vm-was-bootstrap.json"
+    },
+    {
+      "category": "deploy",
+      "stage": "vm-three-bootstrap",
+      "elapsed_s": 101.377,
+      "status": "SUCCEEDED",
+      "evidence": "vm-three-bootstrap.json"
+    },
+    {
+      "category": "deploy",
+      "stage": "vm-three-update-v2",
+      "elapsed_s": 75.195,
+      "status": "SUCCEEDED",
+      "evidence": "vm-three-update-v2.json"
+    },
+    {
+      "category": "deploy",
+      "stage": "vm-three-failure-rollback",
+      "elapsed_s": 96.274,
+      "status": "FAILED_LOCAL",
+      "evidence": "vm-three-failure-rollback.json"
+    },
+    {
+      "category": "deploy",
+      "stage": "vm-three-restore-v1",
+      "elapsed_s": 73.128,
+      "status": "SUCCEEDED",
+      "evidence": "vm-three-restore-v1.json"
+    },
+    {
+      "category": "deploy",
+      "stage": "vm-three-redeploy-v2",
+      "elapsed_s": 72.778,
+      "status": "SUCCEEDED",
+      "evidence": "vm-three-redeploy-v2.json"
+    },
+    {
+      "category": "build_push",
+      "stage": "v1-build-push",
+      "elapsed_s": 39.313,
+      "status": "PASS",
+      "evidence": "vm-build-push-v1.json"
+    },
+    {
+      "category": "build_push",
+      "stage": "v2-build-push",
+      "elapsed_s": 9.328,
+      "status": "PASS",
+      "evidence": "vm-build-push-v2.json"
+    },
+    {
+      "category": "build_push",
+      "stage": "broken-build-push",
+      "elapsed_s": 7.895,
+      "status": "PASS",
+      "evidence": "vm-build-push-broken.json"
+    },
+    {
+      "category": "ci",
+      "stage": "mac-final-ci",
+      "elapsed_s": 33.5,
+      "status": "PASS",
+      "evidence": "onprem-vm-final-ci.log"
+    },
+    {
+      "category": "ci",
+      "stage": "mac-ci",
+      "elapsed_s": 34.4,
+      "status": "PASS",
+      "evidence": "onprem-vm-ci.log"
+    },
+    {
+      "category": "ci",
+      "stage": "wsl-ci",
+      "elapsed_s": 26.8,
+      "status": "PASS",
+      "evidence": "vm-wsl-ci.log"
+    },
+    {
+      "category": "oci_build",
+      "stage": "was-multiarch-oci",
+      "elapsed_s": 41.967,
+      "status": "PASS",
+      "evidence": "vm-was-build-oci.log"
+    },
+    {
+      "category": "oci_build",
+      "stage": "web-multiarch-oci",
+      "elapsed_s": 4.065,
+      "status": "PASS",
+      "evidence": "vm-web-build-oci.log"
+    },
+    {
+      "category": "preflight",
+      "stage": "three-preflight",
+      "elapsed_s": 5.728,
+      "status": "PASS",
+      "evidence": "vm-three-preflight.json"
+    }
+  ],
+  "reset_guard": {
+    "stage": "three-reset-guard",
+    "status": "EXPECTED_REFUSAL",
+    "reason": "flaskr-three is outside reset_demo allowlist; DB inventory also unsupported",
+    "elapsed_s": 2.3e-05,
+    "error_code": "PRECONDITION_FAILED",
+    "state_and_runtime_unchanged": true
+  },
+  "rollback_assertions": {
+    "last_success_current_previous_preserved": true,
+    "prior_release_records_unchanged": true,
+    "db_web_preserved": true,
+    "was_2_3_unchanged": true,
+    "was_1_recovered": true,
+    "all_healthy": true,
+    "locks_released": true,
+    "rolled_back_to_v2": true
+  }
+}

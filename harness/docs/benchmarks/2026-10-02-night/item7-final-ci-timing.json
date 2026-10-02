@@ -1,0 +1,7 @@
+{
+  "command": "make -C harness ci",
+  "started_utc": "2026-10-01T18:58:02.655203+00:00",
+  "finished_utc": "2026-10-01T18:58:49.666221+00:00",
+  "wall_elapsed_s": 47.01156,
+  "returncode": 2
+}

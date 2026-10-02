@@ -1,0 +1,196 @@
+{
+  "source": "local-ci",
+  "scope": "lint/type/import/contracts/tests; no VM/AWS/remote push",
+  "time_basis": "CI reported total; log_mtime_utc is filesystem mtime, not measured command start/end",
+  "runs": [
+    {
+      "log": "item1-ci-complete.log",
+      "log_sha256": "ea0e0b1a9e8b14c6b18d45e2808909d186ed7ff72ee7aa05c258b1bcb0536c58",
+      "log_mtime_utc": "2026-10-01T17:51:41.109692+00:00",
+      "status": "PASS",
+      "passed": 953,
+      "elapsed_s": 33.3,
+      "final_for_item": null
+    },
+    {
+      "log": "item1-ci-final.log",
+      "log_sha256": "9a673e499d541125e3efb93311e279829a9cb10ef9195b887d346d7078ee773e",
+      "log_mtime_utc": "2026-10-01T17:49:26.808214+00:00",
+      "status": "FAIL",
+      "passed": 949,
+      "elapsed_s": 40.1,
+      "final_for_item": null
+    },
+    {
+      "log": "item1-ci-final2.log",
+      "log_sha256": "c3ebf28091af7d48bdf7c03d16c7c5568b8955d24e3be4f14d6d23dde96ef274",
+      "log_mtime_utc": "2026-10-01T17:52:23.059737+00:00",
+      "status": "PASS",
+      "passed": 953,
+      "elapsed_s": 33.4,
+      "final_for_item": 1
+    },
+    {
+      "log": "item1-ci-pass.log",
+      "log_sha256": "d805a9e4b7d71ced402feaef80d2f8394ff7b43bb79ace62bf77a03285cdba24",
+      "log_mtime_utc": "2026-10-01T17:50:57.724042+00:00",
+      "status": "FAIL",
+      "passed": 950,
+      "elapsed_s": 38.9,
+      "final_for_item": null
+    },
+    {
+      "log": "item1-ci.log",
+      "log_sha256": "90330a04bd99d2c24b99b0763b72e44e4c5a37e8e3d45a4635132e5a22beca6f",
+      "log_mtime_utc": "2026-10-01T17:48:24.163338+00:00",
+      "status": "FAIL",
+      "passed": 1871,
+      "elapsed_s": 66.2,
+      "final_for_item": null
+    },
+    {
+      "log": "item2-ci-complete.log",
+      "log_sha256": "a635f8a7b370d3acc5e6c7ba533b01f9478248b16d52e2c875a8b58e051482fa",
+      "log_mtime_utc": "2026-10-01T17:56:23.740645+00:00",
+      "status": "PASS",
+      "passed": 958,
+      "elapsed_s": 33.4,
+      "final_for_item": null
+    },
+    {
+      "log": "item2-ci-final.log",
+      "log_sha256": "317db3eed055d56f491b8e2b475c9f53579e1eba32b347134f8f9662b487b423",
+      "log_mtime_utc": "2026-10-01T17:55:16.526319+00:00",
+      "status": "FAIL",
+      "passed": 954,
+      "elapsed_s": 33.6,
+      "final_for_item": null
+    },
+    {
+      "log": "item2-ci-reviewed.log",
+      "log_sha256": "b3085bec9a4019bedf742589b1e9e07da451c7da32c900d5f987a8f7ceedb0b0",
+      "log_mtime_utc": "2026-10-01T17:58:04.790171+00:00",
+      "status": "PASS",
+      "passed": 961,
+      "elapsed_s": 33.5,
+      "final_for_item": 2
+    },
+    {
+      "log": "item2-ci.log",
+      "log_sha256": "4bda6f4eec15649e403005ad54c9483ff41bae6cb5e4f17a68d62d240f148c57",
+      "log_mtime_utc": "2026-10-01T17:54:31.566894+00:00",
+      "status": "FAIL",
+      "passed": 954,
+      "elapsed_s": 34.2,
+      "final_for_item": null
+    },
+    {
+      "log": "item3-ci-final.log",
+      "log_sha256": "40f4ac3f6d5fac6c09e57a6646dc9051de51d81ecd33cf2566e0a2d92774adcc",
+      "log_mtime_utc": "2026-10-01T18:03:45.577430+00:00",
+      "status": "PASS",
+      "passed": 973,
+      "elapsed_s": 37.6,
+      "final_for_item": null
+    },
+    {
+      "log": "item3-ci-reviewed.log",
+      "log_sha256": "2bbdcc3cd00497d27c461a174eb1baf666bbafca8e6ff281fedb7bc050fd7500",
+      "log_mtime_utc": "2026-10-01T18:05:44.926693+00:00",
+      "status": "PASS",
+      "passed": 975,
+      "elapsed_s": 36.8,
+      "final_for_item": 3
+    },
+    {
+      "log": "item3-ci.log",
+      "log_sha256": "d292838d0b850e2221674656c39882682a3bb276b498e411e48cbffcb43d0f74",
+      "log_mtime_utc": "2026-10-01T18:01:53.294694+00:00",
+      "status": "FAIL",
+      "passed": 970,
+      "elapsed_s": 37.1,
+      "final_for_item": null
+    },
+    {
+      "log": "item4-ci-reviewed.log",
+      "log_sha256": "88edb0096c2d3ecb37f4efed2775ec6246b9b5d77009c27a0eb2349883eeb67c",
+      "log_mtime_utc": "2026-10-01T18:18:55.365744+00:00",
+      "status": "PASS",
+      "passed": 988,
+      "elapsed_s": 44.9,
+      "final_for_item": 4
+    },
+    {
+      "log": "item4-ci.log",
+      "log_sha256": "6c556b6d6efb5f877c5117409ae35568a8111f626c2effe2e86295f3c98da4f2",
+      "log_mtime_utc": "2026-10-01T18:14:04.845737+00:00",
+      "status": "PASS",
+      "passed": 984,
+      "elapsed_s": 42.3,
+      "final_for_item": null
+    },
+    {
+      "log": "item5-ci-reviewed.log",
+      "log_sha256": "83a53559d2178b83b6fc8700f9de902ade84a0afb0bf7d6c9d620374dbfeba9e",
+      "log_mtime_utc": "2026-10-01T18:27:30.648263+00:00",
+      "status": "PASS",
+      "passed": 1000,
+      "elapsed_s": 46.5,
+      "final_for_item": 5
+    },
+    {
+      "log": "item5-ci.log",
+      "log_sha256": "fe1b8a6bc663c25e65ddd6234f000c609c30b0b979a70bd9df9a524f28f0cec8",
+      "log_mtime_utc": "2026-10-01T18:22:50.041248+00:00",
+      "status": "PASS",
+      "passed": 996,
+      "elapsed_s": 46.6,
+      "final_for_item": null
+    },
+    {
+      "log": "item6-ci-reviewed.log",
+      "log_sha256": "2a9e700f978c82325d3b639c6827e3381e4cbecadc29aaad8c0e95c36a64be1a",
+      "log_mtime_utc": "2026-10-01T18:47:24.356339+00:00",
+      "status": "FAIL",
+      "passed": 48,
+      "elapsed_s": 1.9,
+      "final_for_item": null
+    },
+    {
+      "log": "item6-ci-reviewed2.log",
+      "log_sha256": "be9d557925e147b56b07c79e9d5e729f1da103fa127c62555ac75af1135df65c",
+      "log_mtime_utc": "2026-10-01T18:49:09.491617+00:00",
+      "status": "PASS",
+      "passed": 1013,
+      "elapsed_s": 45.2,
+      "final_for_item": 6
+    },
+    {
+      "log": "item6-ci.log",
+      "log_sha256": "c9e57214d886e923005301604d632af60df28296d936bb50d3a6b39de7d9b314",
+      "log_mtime_utc": "2026-10-01T18:38:16.348325+00:00",
+      "status": "PASS",
+      "passed": 1007,
+      "elapsed_s": 46.4,
+      "final_for_item": null
+    },
+    {
+      "log": "item7-final-ci-reviewed.log",
+      "log_sha256": "88fb1ea28cfb18322cba09886f19fa145b961bb99a7cdd5390e356a736d156e9",
+      "log_mtime_utc": "2026-10-01T19:00:36.238233+00:00",
+      "status": "PASS",
+      "passed": 1015,
+      "elapsed_s": 45.7,
+      "final_for_item": 7
+    },
+    {
+      "log": "item7-final-ci.log",
+      "log_sha256": "0fe0f9e45e195b2f964c922e681567f9c091840d35ff2cc4fea73a5309a0e24b",
+      "log_mtime_utc": "2026-10-01T18:58:49.665831+00:00",
+      "status": "FAIL",
+      "passed": 1015,
+      "elapsed_s": 47.0,
+      "final_for_item": null
+    }
+  ]
+}

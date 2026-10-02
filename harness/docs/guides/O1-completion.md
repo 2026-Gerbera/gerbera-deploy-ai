@@ -1,5 +1,10 @@
 # O1 완료 계획 (Codex 실행용, 2026-10-01)
 
+> **10/2 야간 갱신:** WP1–10 소유 구현, 실제 VM 3티어 검증, WP11 공개 Python 조회/설정 API를 완료했다.
+> WP11 감시→prepare·웹 화면은 O2/C3 취합, WP12 O3 실제 기능/교차 검증과 클라우드 통합은 남았다.
+> 새 트랙/Git 변경의 검증은 로컬 fixture·bare Git 기준이며 VM 실측은 그 변경 전 결과다.
+> [아침 인계](O1-night-handoff-2026-10-02.md)와 [야간 결정](../decisions/2026-10-02-night-development.md)이 아래 과거 구현 현황보다 우선한다.
+
 > **10/2 추가 범위:** flaskr 최종형·tier별 이미지·DB→WAS→web 최초 배포를 추가했다. 이전 WAS 단독 범위는 [10/2 결정](../decisions/2026-10-02-onprem-three-tier-bootstrap.md)으로 정정한다. 실행은 [WSL2 가이드](O1-three-tier.md), 검증 상태는 [O1 가이드](O1.md)를 따른다.
 
 > 1. 실행기·승인·잠금·스냅샷·컨테이너 모드 OnPremProvider는 이미 동작한다(`62dfcce`, `make -C harness ci` 382 passed). 남은 일은 온프렘 VM 대응과 데모 운영 도구다.
@@ -25,8 +30,8 @@ WP10은 10/1 후속 사용자 지시로 임시 C-18 구조의 서비스 메타 �
 |---|---|---|---|
 | 0. v1 부트스트랩(데모 전 실행) | `mode=bootstrap` REAL run: `inject_env_config`(SECRET_KEY 없음) → `prepare_db`(0001) → `deploy_tier`(app-1..3 순차) → 검증 → `local_verified`. `env_release.local`에 REAL 성공 기록(rel-v1)과 원본 파일 해시 목록이 남는다. REAL update는 이 기록이 있어야 시작된다(`service.start`). | 가짜 runner 테스트, 컨테이너 모드 Docker 리허설, VM opt-in 리허설(WP9) | O3 flaskr·러너·health/smoke 등록, O2 계획, C2 산출물 |
 | 1. v2 로그인 라이브 | SECRET_KEY는 v2 계획의 `keys`에 있을 때만 코드가 `token_hex(32)`로 생성·재사용한다(AI·화면·로그에 없음). Secure·ProxyFix는 `public_env` 값으로만 주입한다. 0002 마이그레이션, app-1..3 새 digest 순차 교체, replica마다 준비 확인, V20 관측(플랫폼 digest) 기록, rel-v2 기록. | 같음 | 같음 + C1 refresh(클라우드) |
-| 2. 실패와 롤백 | replica k 준비 실패 → `deploy_tier` `ADAPTER_FAILED` → `rollback_tier`가 이전 digest와 다른 replica만 복구한다(멱등). 이전 기록이 없으면 소유 컨테이너를 제거한다. 클라우드는 `ABORTED_AT_GATE`, run은 `FAILED_LOCAL`. 복구 실패·종료 미확인(`ADAPTER_TIMEOUT`)은 `NEEDS_HUMAN`. | 가짜 runner (a)(b)(b')(c), 리허설 실패 주입(WP9) | - |
-| 3. 교차 검증 불일치 | `PARITY_FAILED` → 클라우드만 롤백, 로컬 v2 유지, `DIVERGED` 기록(9/30 기준, 팀 정책 💭). 이미 구현됨. | 기존 테스트 유지 | O3 compare |
+| 2. 실패와 롤백 | replica k 준비 실패 → `deploy_tier` `ADAPTER_FAILED` → `rollback_tier`가 이전 digest와 다른 replica만 복구한다(멱등). 이전 기록이 없으면 소유 컨테이너를 제거한다. 클라우드는 독립 진행한다. 로컬만 실패하거나 양쪽 배포가 실패하면 대표 run 상태는 `FAILED_LOCAL`이고, 각 환경 실패·복구 결과는 tracks에 따로 남는다. 빌드 실패는 `FAILED_BEFORE_DEPLOY`가 우선하며 실제 앱 배포가 시작되지 않은 환경은 SKIPPED이고 롤백하지 않는다. 복구 실패·종료 미확인(`ADAPTER_TIMEOUT`)은 `NEEDS_HUMAN`. | 가짜 runner (a)(b)(b')(c), 리허설 실패 주입(WP9) | - |
+| 3. 교차 검증 불일치 | `PARITY_FAILED` → 클라우드만 롤백, 로컬 v2와 SUCCEEDED 기록 유지(10/2). cloud는 ROLLED_BACK, 복구 실패는 NEEDS_HUMAN. | 기존 테스트 유지 | O3 compare |
 | 리허설 반복 | `reset_demo_state` 온프렘 몫으로 v1 상태 복구 → 다시 v2. 3회 연속. | WP8·WP9 | C2 클라우드 몫 |
 | 교차 검증 기록 | tier별 관측 플랫폼·digest, `ctx.platform['onprem']['public_url']`, release manifest, JSONL 이벤트(seq, elapsed_s), 결과 dict `{status, tracks, steps}` 모양 유지. | 기존 테스트 + 새 테스트 | O3·C3가 읽음 |
 
@@ -221,8 +226,8 @@ WP10은 10/1 후속 사용자 지시로 임시 C-18 구조의 서비스 메타 �
 | ops 툴 등록 방식(import 예외 / CdProvider / 스크립트)과 입출력 스키마 | WP7·WP8 | ✅ 10/1 사용자 확정: 일단 운영 스크립트로 제공. 코드 취합 때 ops 등록 여부 재검토 | 정준우(TL 대행) |
 | reset의 cloud 행 DIVERGED 해제(status만 ROLLED_BACK, current 유지) | WP8 | 기본안대로 하고 작업 보고에 적는다 | 정준우·안승환 |
 | reset의 DB 0001 복원 방식 | WP8(P1) | 건너뛰고 경고 | 정준우·장민영·김준석 |
-| `approval_view` 새 키 이름·모양 | WP10(P1) | ✅ 10/1 사용자: 코드 취합 때 진행. 현재 구현 보류. 질문 목록은 O1.md | 정준우·장민영·양서윤 |
-| `project_settings` 이력·`expected_version` 필수(D7), dns_mode 필드 | WP11 | 결정 전 미구현 | 정준우·양서윤 |
+| `approval_view` 새 키 이름·모양 | WP10(P1) | ✅ WP10 서비스 구현 완료. 표시/생산자 연결은 팀 취합 | 정준우·장민영·양서윤 |
+| `project_settings` 이력·`expected_version` 필수(D7), dns_mode 필드 | WP11 | 10/2 내부 API 구현: expected_version 필수·기존 키 보존, prepare 설정 스냅샷. 화면 연결 필요 | 정준우·양서윤 |
 | `snapshot`·`step_results`·승인 대상 필드(C-07) | WP11·팀 통합 | `NEEDS_CONTEXT` | 정준우·김준석·양서윤 |
 | 교차 검증 불일치 정책 | - | 클라우드만 롤백(현 구현) | 팀 |
 | 온프렘 pre-pull 위치(`build_image` local) | - | `deploy_tier` 안 pull | 정준우·김준석 |
