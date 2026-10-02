@@ -9,49 +9,22 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import ValidationError, field_validator
 
 from ddak.core.contracts.base import TIER_PATTERN
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
+from ddak.onprem.deploy import InventoryConfig, TierConfig
 
 __all__ = ["load_inventory"]
 
-_SECRET_KEY = re.compile(r"password|passwd|secret|token|key", re.IGNORECASE)
 _TIER = re.compile(TIER_PATTERN)
 
 
-class _M(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
-
-
-# 필드는 onprem/deploy/provider.py docstring 계약과 같다. 값 상세 검증(포트·이름·env 허용 키)은
-# O1 provider가 한다. 여기는 모양, 시크릿 키, 비로컬 docker_host만 막는다.
-class _Volume(_M):
-    name: str
-    target: str
-    read_only: bool = False
-
-
-class _Tier(_M):
-    name: str
-    platform: Literal["linux/amd64", "linux/arm64"]
-    ports: list[str] = Field(default_factory=list)
-    network: str = "bridge"
-    volumes: list[_Volume] = Field(default_factory=list)
-    env_file: str | None = None
-    public_env: dict[str, str] = Field(default_factory=dict)
-    replicas: int | None = Field(default=None, ge=1, le=5)
-    traefik_labels: dict[str, str] = Field(default_factory=dict)
-    ready: dict[str, Any] | None = None  # 내부 필드(port·path·timeout_s) 검증은 O1 provider가 한다
-
-
-class _Inventory(_M):
-    docker_host: str | None = None
-    tiers: dict[str, _Tier]
-
+class _Inventory(InventoryConfig):
+    # tier/SSH/DB 검증은 배포기와 같은 모델. 파일 로더의 unix socket 정책만 추가한다.
     @field_validator("docker_host")
     @classmethod
     def local_only(cls, value: str | None) -> str | None:
@@ -61,28 +34,15 @@ class _Inventory(_M):
 
     @field_validator("tiers")
     @classmethod
-    def tier_names(cls, value: dict[str, _Tier]) -> dict[str, _Tier]:
+    def tier_names(cls, value: dict[str, TierConfig]) -> dict[str, TierConfig]:
         for name in value:
             if not _TIER.fullmatch(name):
                 raise ValueError(f"tier 이름 형식 위반: {name!r}")
         return value
 
 
-def _reject_secret_keys(node: object) -> None:
-    if isinstance(node, dict):
-        for key, value in node.items():
-            if isinstance(key, str) and _SECRET_KEY.search(key):
-                raise DdakToolError(
-                    ErrorCode.CONFIG_INVALID, f"인벤토리에 시크릿으로 보이는 키가 있다: {key}"
-                )
-            _reject_secret_keys(value)
-    elif isinstance(node, list):
-        for item in node:
-            _reject_secret_keys(item)
-
-
 def load_inventory(path: Path) -> dict[str, Any]:
-    """platform.onprem.yaml을 읽어 {"docker_host": ..., "tiers": {...}}를 돌려준다."""
+    """배포기와 동일한 VM/tier/DB 계약으로 검증한 공개 인벤토리를 돌려준다."""
     try:
         raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
@@ -91,7 +51,6 @@ def load_inventory(path: Path) -> dict[str, Any]:
         ) from exc
     if not isinstance(raw, dict):
         raise DdakToolError(ErrorCode.CONFIG_INVALID, "인벤토리 최상위는 매핑이어야 한다")
-    _reject_secret_keys(raw)
     try:
         return _Inventory.model_validate(raw).model_dump(mode="json")
     except ValidationError as exc:
