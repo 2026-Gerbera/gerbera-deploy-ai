@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 from ddak.cd.interface import ProviderResult
 from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.errors import ErrorCode
+from ddak.core.env_keys import check_runtime_keys
 from ddak.onprem.deploy.containers import fail
 
 if TYPE_CHECKING:
@@ -119,8 +120,7 @@ def inject_config(provider: OnPremProvider, keys: Sequence[str], ctx: RunContext
     wanted = sorted(set(keys) | set(config.public_env))
     if any(not _IDENTIFIER.fullmatch(key) for key in wanted) or not config.env_file:
         raise fail("env key 또는 env_file 설정 오류", ErrorCode.CONFIG_INVALID)
-    if "DATABASE_URL_MIGRATOR" in wanted:
-        raise fail("앱 런타임에는 마이그레이션 계정을 주입할 수 없다", ErrorCode.CONFIG_INVALID)
+    check_runtime_keys(wanted)
     if "SOURCE_SHA" in wanted and ctx.candidate_sha is None:
         raise fail("SOURCE_SHA를 공급할 후보 커밋이 없다", ErrorCode.PRECONDITION_FAILED)
     # 이 두 값은 컨테이너 생성 시 실행기가 공급한다. 사용자 env 파일의 필수 키가 아니다.

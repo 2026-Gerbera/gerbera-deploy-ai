@@ -69,6 +69,9 @@ async def test_existing_bundle_validates_and_binds_plan_hash_to_approval(rig, mo
 async def test_missing_generator_bundle_is_visible_named_failure(rig, monkeypatch):
     service, source, _ = rig
     monkeypatch.setattr(app, "has_infra_binding", lambda rid: False)
+    # 이번 시험은 실행 툴은 있지만 생성 번들만 없는 경우다.
+    loaded = app.load_tools()
+    service.registry = loaded
 
     def plan(request, **kwargs):
         p = infra_plan(kwargs["run_id"]).model_copy(update={"mode": request.mode})
@@ -82,7 +85,7 @@ async def test_missing_generator_bundle_is_visible_named_failure(rig, monkeypatc
     rid = await app._prepare_commit(
         service,
         Settings(adapter_mode=AdapterMode.REAL),
-        WatchTarget("demo", "https://github.com/org/app", "prod"),
+        WatchTarget("demo", "https://github.com/org/app", "prod", "cloud"),
         "a" * 40,
         policy=FetchPolicy(root=source.parent),
     )

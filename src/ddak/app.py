@@ -39,7 +39,7 @@ from ddak.cloud.infra import (
 from ddak.cloud.tls import ensure_tls
 from ddak.core.ai.status import llm_status
 from ddak.core.app_repository import AppRepository, FakeAppRepository
-from ddak.core.config import AdapterMode, Settings
+from ddak.core.config import AdapterMode, Settings, require_local_cli
 from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.deploy_request import DeployRequest
 from ddak.core.contracts.enums import RunMode
@@ -55,6 +55,7 @@ from ddak.core.runlog import run_dir
 from ddak.core.snapshots import copy_source
 from ddak.executor.approval_meta import check_infra_summary, encode_meta
 from ddak.executor.infra import refresh_infra_context
+from ddak.executor.preparation import missing_track_tools
 from ddak.executor.service import DeploymentService
 from ddak.onprem.inventory import load_inventory
 from ddak.plan import new_run_id, plan_deployment
@@ -62,6 +63,7 @@ from ddak.plan.intake import FetchPolicy, Watcher, WatchTarget, load_watch_targe
 from ddak.web.app import create_app
 
 _log = get_logger("plan")
+ADMIN_HOST = "127.0.0.1"
 
 # 이 패키지들 바로 아래 <디렉토리>/tool.py를 자동 탐색한다(tool.py가 없는 디렉토리는 건너뜀).
 TOOL_PACKAGES = (
@@ -117,7 +119,11 @@ def _platform_bootstrap_plan(plan: Plan, ctx: RunContext, summary: dict | None) 
 
 
 async def _infra_approval(service: DeploymentService, plan: Plan, ctx: RunContext):
-    if ctx.targets == "onprem" or not any(s.tool == "apply_infra" for s in plan.deploy.cloud.steps):
+    if (
+        ctx.targets == "onprem"
+        or "cloud" in ctx.preparation_failures
+        or not any(s.tool == "apply_infra" for s in plan.deploy.cloud.steps)
+    ):
         return {}, None
     if not has_infra_binding(ctx.run_id) and ctx.adapter_mode is AdapterMode.FAKE:
         bind_infra(
@@ -192,13 +198,19 @@ def _watch_targets(service: DeploymentService) -> list[WatchTarget]:
             project,
             s["repo_url"],
             s.get("watch_branch", "prod"),
-            "local" if s.get("default_targets") == "onprem" else s.get("default_targets", "both"),
+            "local"
+            if s.get("default_targets", "onprem") == "onprem"
+            else s.get("default_targets", "onprem"),
         )
         for project, s in saved.items()
         if s.get("auto_detect") and s.get("repo_url")
     ]
     if os.environ.get("DDAK_WATCH_REPO_URL"):
-        targets += [replace(t, ref="prod") for t in load_watch_targets() if t.project not in saved]
+        targets += [
+            replace(t, project=service.resolve_project(t.project))
+            for t in load_watch_targets()
+            if service.resolve_project(t.project) not in saved
+        ]
     return targets
 
 
@@ -374,6 +386,7 @@ async def _prepare_commit(
         phase = "settings"
         if latest.get("version") != saved.get("version"):
             raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "계획 중 프로젝트 설정이 변경됐다")
+        phase = "prepare"
         context = replace(
             bundle.context,
             repo_url=context.repo_url,
@@ -384,6 +397,7 @@ async def _prepare_commit(
             platform=platform,
             project_settings=context.project_settings,
             cloud_domain=context.cloud_domain,
+            preparation_failures=missing_track_tools(plan, service.registry),
         )
         if service.repository_factory is not None:
             phase = "repository"
@@ -495,9 +509,10 @@ def _repository_factory(root: Path, *, allow_local: bool = False):
     return connect
 
 
-def create() -> FastAPI:
-    registry = load_tools()
+def create(*, cli_host: str | None = None) -> FastAPI:
     settings = Settings.from_env()
+    require_local_cli(settings, host=cli_host)
+    registry = load_tools()
     app = create_app(
         llm_status=llm_status,
         deployment_factory=lambda: DeploymentService(
@@ -519,4 +534,4 @@ def main() -> None:
     settings = Settings.from_env()
     # 외부에 열지 않는다(127.0.0.1). 온프렘 앱 기본 주소 8080과 겹치지 않게 8765.
     # 포트는 💭(설계 문서 00 N21, 하네스 I-26).
-    uvicorn.run(create(), host="127.0.0.1", port=settings.admin_port)
+    uvicorn.run(create(cli_host=ADMIN_HOST), host=ADMIN_HOST, port=settings.admin_port)

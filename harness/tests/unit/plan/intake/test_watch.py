@@ -65,7 +65,7 @@ def test_state_roundtrip_missing_corrupt_atomic(tmp_path: Path):
     assert w.read_last_commit(p, T) == A
     raw = (tmp_path / "watch" / "demo.json").read_text()
     assert str(tmp_path) not in raw and "token" not in raw.lower()
-    assert json.loads(raw)["ref"] == "main"
+    assert json.loads(raw)["ref"] == "prod"
     assert w.read_last_commit(p, WatchTarget("demo", "https://github.com/o/other")) is None
     (tmp_path / "watch" / "demo.json").write_text("{broken")
     assert w.read_last_commit(p, T) is None
@@ -184,7 +184,8 @@ def test_load_targets(monkeypatch):
     with pytest.raises(DdakToolError):
         load_watch_targets({})
     ts = load_watch_targets({"DDAK_WATCH_REPO_URL": "https://github.com/x/y"})
-    assert ts[0].repo_url == "https://github.com/x/y" and ts[0].ref == "main"
+    assert ts[0].repo_url == "https://github.com/x/y" and ts[0].ref == "prod"
+    assert (ts[0].project, ts[0].target) == ("flaskr", "local")
     assert w.interval_from_env({}) == 10.0
     assert w.interval_from_env({"DDAK_WATCH_INTERVAL_S": "2.5"}) == 2.5
     with pytest.raises(DdakToolError):
@@ -211,3 +212,17 @@ def test_resolve_head_and_warm_cache_local_repo(tmp_path: Path):
     assert warm_cache(url, "main", project="demo", policy=p) == sha
     with pytest.raises(DdakToolError):
         resolve_head("https://evil.example/o/r", "main", policy=p)
+
+
+def test_load_targets_explicit_configuration():
+    target = load_watch_targets(
+        {
+            "DDAK_WATCH_REPO_URL": "https://github.com/x/y",
+            "DDAK_WATCH_PROJECT": "custom",
+            "DDAK_WATCH_TARGETS": "onprem",
+            "DDAK_WATCH_BRANCH": "staging",
+        }
+    )[0]
+    assert (target.project, target.target, target.ref) == ("custom", "local", "staging")
+    with pytest.raises(DdakToolError):
+        load_watch_targets({"DDAK_WATCH_TARGETS": "unknown"})

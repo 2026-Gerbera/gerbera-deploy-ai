@@ -29,6 +29,8 @@ class EnvKey(ContractModel):
     is_new: bool = True
     by: By = By.RULE
     reason: str | None = Field(default=None, max_length=200)
+    provider: str | None = Field(default=None, max_length=100)
+    model: str | None = Field(default=None, max_length=200)
 
 
 class Facts(ContractModel):

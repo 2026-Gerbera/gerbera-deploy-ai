@@ -52,6 +52,7 @@ from ddak.executor.approval_meta import check_infra_summary, encode_meta
 from ddak.executor.engine import Executor, RunResult, RunStatus, TrackStatus, check_signals
 from ddak.executor.events import EventBus
 from ddak.executor.images import carried_image_source, carried_images, locked_database
+from ddak.executor.preparation import MissingToolsError, missing_track_tools
 from ddak.executor.selection import select_plan
 
 ApprovalKind = Literal["patch", "deploy", "infra", "dockerfile", "foundation"]
@@ -238,7 +239,18 @@ class DeploymentService:
                 ErrorCode.PRECONDITION_FAILED, "요청 저장소와 프로젝트 설정이 다르다"
             )
         plan = select_plan(plan, context)
-        if context.adapter_mode is AdapterMode.REAL and plan.deploy.local.steps:
+        failures = missing_track_tools(plan, self.registry)
+        context = replace(context, preparation_failures=failures)
+        selected = {t for t in ("local", "cloud") if getattr(plan.deploy, t).steps}
+        if selected and selected <= failures.keys():
+            raise MissingToolsError(
+                [n for names in failures.values() for n in names], "선택한 환경의 툴 미등록"
+            )
+        if (
+            context.adapter_mode is AdapterMode.REAL
+            and plan.deploy.local.steps
+            and "local" not in failures
+        ):
             inventory = context.platform.get("onprem")
             tiers = inventory.get("tiers") if isinstance(inventory, Mapping) else None
             if not isinstance(tiers, Mapping) or not tiers:
@@ -256,7 +268,7 @@ class DeploymentService:
         snapshot = preview(source, patch)
         if context.release_artifacts and context.release_artifacts.snapshot != snapshot:
             raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "입력 이미지의 소스 결합이 다르다")
-        database_deploy = any(
+        database_deploy = "local" not in failures and any(
             s.tool == "deploy_tier" and s.tier == "db" for s in plan.deploy.local.steps
         )
         if database_deploy and any(
@@ -304,7 +316,7 @@ class DeploymentService:
         }
         supplied = context.release_artifacts
         carried = carried_images(
-            plan, previous, context.adapter_mode, supplied.images if supplied else ()
+            plan, previous, context.adapter_mode, supplied.images if supplied else (), failures
         )
         if any(set(context.images) & set(tiers) for tiers in carried.values()):
             raise DdakToolError(
@@ -342,7 +354,12 @@ class DeploymentService:
             for s in section.steps
         ]
         for step in steps:
-            spec = self.registry.get(step.tool).spec
+            try:
+                spec = self.registry.get(step.tool).spec
+            except UnknownToolError:
+                if step in plan.build.steps:
+                    raise
+                continue  # 환경 트랙은 위에서 차단, 공통 비교 불가는 실행 결과로 기록한다.
             if spec.layer in {Layer.BUILTIN, Layer.OUTSIDE}:
                 raise DdakToolError(
                     ErrorCode.PLAN_INVALID, "내장/계획 밖 툴은 계획에서 실행할 수 없다"
@@ -366,12 +383,22 @@ class DeploymentService:
         required["deploy"] = cast(str, plan.plan_hash)
         if snapshot.patch_sha256:
             required["patch"] = snapshot.patch_sha256
-        if any(s.tool == "apply_infra" for s in steps) and "infra" not in required:
+        if (
+            "cloud" not in failures
+            and any(s.tool == "apply_infra" for s in steps)
+            and "infra" not in required
+        ):
             raise DdakToolError(ErrorCode.APPROVAL_REQUIRED, "인프라 plan 해시가 필요하다")
-        if any(s.tool == "apply_infra" for s in steps) and self.refresh is None:
+        if (
+            "cloud" not in failures
+            and any(s.tool == "apply_infra" for s in steps)
+            and self.refresh is None
+        ):
             raise DdakToolError(ErrorCode.INFRA_MISSING, "인프라 출력 갱신 연결이 필요하다")
         if context.adapter_mode is AdapterMode.REAL:
             for target, section in (("local", plan.deploy.local), ("cloud", plan.deploy.cloud)):
+                if target in failures:
+                    continue
                 expected_signal = f"{target}_verified"
                 if section.steps and not (
                     section.signal == expected_signal
@@ -560,6 +587,10 @@ class DeploymentService:
             name = str(error.args[0])
             if re.fullmatch(r"[a-z][a-z0-9_]*", name):
                 result["missing_tool"] = name
+        if isinstance(error, MissingToolsError):
+            result["missing_tools"] = error.missing_tools
+            if len(error.missing_tools) == 1:
+                result["missing_tool"] = error.missing_tools[0]
         saved = self.store.preparation_failed(run_id, project, result)
         if saved and context is not None:
             write_context(self.root / "runs", run_id, context.to_json_dict())
@@ -613,6 +644,16 @@ class DeploymentService:
     def list_project_settings(self) -> list[dict[str, Any]]:
         return self.store.list_project_settings()
 
+    def resolve_project(self, project: str) -> str:
+        # 이전 demo 장부를 다른 프로젝트로 복사하지 않는다. 명시 설정이 있으면 언제나 우선.
+        if (
+            project == "flaskr"
+            and self.store.project_settings(project) is None
+            and self.store.project_settings("demo") is not None
+        ):
+            return "demo"
+        return project
+
     def get_project_settings(self, project: str) -> dict[str, Any] | None:
         return self.store.project_settings(project)
 
@@ -638,6 +679,7 @@ class DeploymentService:
         ref: str | None = None,
     ) -> str:
         """수동 요청 → 주입된 계획 흐름 → 승인 대기 run_id. 승인·실행은 별도 동작이다."""
+        project = self.resolve_project(project)
         data = self.store.project_settings(project) or {}
         settings = ProjectSettings.model_validate(
             {k: v for k, v in data.items() if k in ProjectSettings.model_fields}
@@ -736,6 +778,7 @@ class DeploymentService:
             "repo_url": p.context.repo_url,
             "ref": p.context.ref,
             "project_settings": dict(p.context.project_settings),
+            "preparation_failures": dict(p.context.preparation_failures),
             "subjects": dict(p.requirements),
             "snapshot": p.snapshot.model_dump(mode="json"),
             "patch": p.patch.decode() if p.patch else None,
@@ -836,7 +879,11 @@ class DeploymentService:
         }
         supplied = p.context.release_artifacts
         carried_images(
-            p.plan, previous, p.context.adapter_mode, supplied.images if supplied else ()
+            p.plan,
+            previous,
+            p.context.adapter_mode,
+            supplied.images if supplied else (),
+            p.context.preparation_failures,
         )
         if any(previous.get(t) != old for t, old in p.context.previous_release.items()):
             raise DdakToolError(
@@ -845,7 +892,7 @@ class DeploymentService:
         if p.context.adapter_mode is AdapterMode.REAL and p.context.mode is RunMode.UPDATE:
             environments = self.store.environments(p.plan.project)
             for target, section in (("local", p.plan.deploy.local), ("cloud", p.plan.deploy.cloud)):
-                if not section.steps:
+                if not section.steps or target in p.context.preparation_failures:
                     continue
                 previous = environments.get(target, {}).get("current")
                 if not previous or previous.get("source_mode") != AdapterMode.REAL.value:
@@ -882,6 +929,7 @@ class DeploymentService:
             p.context.previous_release,
             p.context.adapter_mode,
             supplied.images if supplied else (),
+            p.context.preparation_failures,
         )
         carried_observations: dict[str, dict[str, Any]] = {}
         # 이전 형식의 장부도 provider에는 동일한 검증된 경로로 전달한다.
@@ -1076,6 +1124,7 @@ class DeploymentService:
                     or updated.candidate_sha != current.candidate_sha
                     or updated.build_source != current.build_source
                     or updated.source_binding != current.source_binding
+                    or updated.preparation_failures != current.preparation_failures
                 ):
                     raise DdakToolError(
                         ErrorCode.PRECONDITION_FAILED, "환경 갱신이 실행 식별자를 바꿨다"

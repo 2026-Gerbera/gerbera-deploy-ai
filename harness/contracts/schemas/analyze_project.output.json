@@ -68,10 +68,36 @@
           "title": "Kind",
           "type": "string"
         },
+        "model": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model"
+        },
         "name": {
           "pattern": "^[A-Z][A-Z0-9_]{0,63}$",
           "title": "Name",
           "type": "string"
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "maxLength": 100,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider"
         },
         "reason": {
           "anyOf": [

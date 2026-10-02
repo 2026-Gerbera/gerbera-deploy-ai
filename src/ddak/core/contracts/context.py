@@ -48,8 +48,14 @@ class RunContext:
     repo_url: str | None = None  # 요청한 앱 저장소(자격증명 없는 URL)
     ref: str | None = None  # 요청한 감시 브랜치. 실제 소스는 source_sha로 고정한다
     source_binding: SnapshotBinding | None = None  # 승인 뒤 실행기만 주입한다.
+    preparation_failures: Mapping[str, list[str]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        if any(
+            t not in ("local", "cloud") or not tools or not all(isinstance(n, str) for n in tools)
+            for t, tools in self.preparation_failures.items()
+        ):
+            raise ValueError("트랙 준비 실패 형식 오류")
         for value in (self.source_sha, self.candidate_sha):
             if value is not None and not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", value):
                 raise ValueError("완전한 Git 커밋 SHA가 필요하다")
