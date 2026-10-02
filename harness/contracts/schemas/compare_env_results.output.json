@@ -1,0 +1,121 @@
+{
+  "$defs": {
+    "CompareCheck": {
+      "additionalProperties": false,
+      "properties": {
+        "cloud": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cloud"
+        },
+        "id": {
+          "maxLength": 96,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "local": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Local"
+        },
+        "reason": {
+          "default": "",
+          "maxLength": 200,
+          "title": "Reason",
+          "type": "string"
+        },
+        "verdict": {
+          "enum": [
+            "match",
+            "mismatch",
+            "expected_diff",
+            "skipped"
+          ],
+          "title": "Verdict",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "verdict"
+      ],
+      "title": "CompareCheck",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "checks": {
+      "items": {
+        "$ref": "#/$defs/CompareCheck"
+      },
+      "title": "Checks",
+      "type": "array"
+    },
+    "elapsed_s": {
+      "minimum": 0,
+      "title": "Elapsed S",
+      "type": "number"
+    },
+    "passed": {
+      "title": "Passed",
+      "type": "boolean"
+    },
+    "run_id": {
+      "description": "실행 ID. 모든 툴의 필수 입력",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+      "title": "Run Id",
+      "type": "string"
+    },
+    "source": {
+      "default": "live",
+      "enum": [
+        "live",
+        "fixture"
+      ],
+      "title": "Source",
+      "type": "string"
+    },
+    "unexpected_diffs": {
+      "minimum": 0,
+      "title": "Unexpected Diffs",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "run_id",
+    "passed",
+    "unexpected_diffs",
+    "checks",
+    "elapsed_s"
+  ],
+  "title": "CompareEnvResultsOutput",
+  "type": "object"
+}
