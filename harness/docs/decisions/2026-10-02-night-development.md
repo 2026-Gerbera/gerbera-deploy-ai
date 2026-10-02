@@ -42,7 +42,7 @@
 - 운영자가 연결한 앱 전용 checkout에서 원격 prod를 fetch하고 승인 source_sha의 계보·원본 manifest를 확인한다.
 - 격리 worktree에서 기존 ai-prod 이력에 prod SHA를 merge한다. merge/패치 커밋 전 검사, staged·작업 사본·커밋 트리 대조 후 고정 후보 SHA를 일반 push한다. 사용자 Git 신원을 그대로 사용한다.
 - supplied candidate_sha도 원격 prod/ai-prod 계보·manifest·비밀검사를 빌드 전에 거친다.
-- 최초 구현은 충돌 시 재패치 제안으로 중단했으나 **수정 라운드 1에서 폐지**했다. 아래 §8의 승인 트리 확정 방식이 현재 기준이다. 기존 conflict 조회 API는 호환용으로 유지한다.
+- 최초 구현은 충돌 시 재패치 제안으로 중단했으나 **수정 라운드 1에서 폐지**했다. 아래 §8의 승인 트리 확정 방식이 현재 기준이다. 기존 conflict 조회 API는 후속 수정 2에서 제거했으며 get_release의 merge_conflicts를 사용한다.
 - 취소는 다음 커밋/push 전 guard에서 차단한다. 이미 실행 중인 Git 명령은 종료를 확인하고 `candidate-attempt.json`, 완료 후보는 `candidate.json`에 남긴다. 빌드는 시작하지 않는다.
 - 독립 검토 1회에서 supplied 후보 검사 누락, HEAD push 경쟁, 생성 중 취소를 지적받아 교정했다.
 - 기본 비밀검사는 Gitleaks의 전체 작업 트리 검사다. 코드 소유 설정·빈 ignore 목록·allow 주석 무시를 사용한다. 미설치·오류·의심 항목 모두 차단한다. 이 Mac에는 gitleaks가 없어 실제 탐지율은 검증하지 않았고 로컬 Git 테스트는 명시적 검사 fixture를 썼다.
@@ -50,7 +50,7 @@
 
 ## 5. WP11 내부 API와 설정 (야간 추가, 아침 검토 필요)
 
-- 공개 Python API: `get_run`, `list_runs`, `get_release`, `get_environments`, `get_approvals`, `get_conflict_proposal`, `get_project_settings`, `save_project_settings`. 기존 `events`, `subscribe`, `approval_view`는 유지한다.
+- 공개 Python API: `get_run`, `list_runs`, `get_release`, `get_environments`, `get_approvals`, `get_project_settings`, `save_project_settings`. 기존 `events`, `subscribe`, `approval_view`는 유지한다.
 - repo_url, watch_branch(기본 prod), auto_detect, default_targets, cloud_domain/dns_mode/hosted_zone_id를 검증한다. 설정 저장은 읽은 버전이 필요하며 생략한 기존 필드를 보존한다.
 - prepare에서 RunContext.project_settings 선택 필드에 설정과 버전을 복사한다. 이미 준비한 run은 이후 설정 변경의 영향을 받지 않는다. C-18/패치 메타는 approval_view로 전달한다.
 - 과거 실행은 신규 export가 없어도 기존 승인·plan·패치·릴리스에서 조회한다. 복원 불가능한 필드는 unavailable_fields로 표시한다. 재실행/재승인은 자동 복원하지 않는다.
@@ -113,3 +113,27 @@ Git branch는 o1/onprem-three-tier, stage/commit/push/PR 없음. 아침 후속�
   실행기 FAILED_VERIFY 결과가 추가되어 C3에 인계한다. 야간 스키마 추가는 코드와 같은 2번 커밋에 포함한다.
 - 사용자 지정 나머지 P3(worktree 정리, prod 이력 재작성, list(string) 원소 검사, Terraform 경계 일치 테스트)는
   구현하지 않았다. 요청·검증·커밋 계획의 최신 기준은 [수정 인계](../guides/O1-night-handoff-2026-10-02.md)다.
+
+## 9. 후속 수정 2 — 야간 추가, 아침 검토 필요
+
+- 교차 검증 실패 시 cloud가 DONE이면 실제 앱 변경 여부와 무관하게 성공으로 남기지 않는다.
+  앱 변경이 있으면 rollback, 없으면 FAILED다. 따라서 실패한 cloud 태그와 main은 이동하지 않고
+  성공한 onprem 태그만 이동한다. 실제 원격 호출 없이 로컬 bare Git으로 검증한다.
+- 롤백 시간 예산은 deploy_tier와 prepare_db의 tier를 합쳐 중복 제거한다. prepare_db의 생략 tier는
+  실제 실행 추적과 같은 was다. 적용한 DB 변경의 역마이그레이션을 뜻하지 않는다.
+- prod SHA의 deploy.yaml env_example 경로도 템플릿으로 취급한다. 제외 부모와 정확히 .env인 이름은
+  허용하지 않는다. .ENV·*.KEY·*.PEM도 후보 tree_manifest에서 대소문자를 무시해 차단한다.
+  snapshots.py는 변경하지 않았다. 템플릿은 prod 내용 보존·비밀검사 포함 원칙을 유지한다.
+  공용 스냅샷에 포함되는 일반 경로 템플릿이 승인 원본/수정본에서 prod와 다르거나 삭제되거나 prod에 없는 파일을 추가하면
+  후보 생성과 supplied 후보 검사를 거부한다. 승인 build-source와 candidate_sha의 내용이 다른 채 통과하지 않도록 했다.
+- 쓰이지 않는 CandidateConflict, get_conflict_proposal, reused 응답 필드를 제거했다.
+  새 릴리스/실행 결과에 선택 데이터 merge_conflicts를 추가하고 get_release로 읽는다.
+  후보 생성 완료 시 관측한 충돌 파일 목록이며, 기존 기록에 없으면 소비자는 빈 목록으로 취급한다.
+  C3·O3는 삭제한 재패치 API 대신 이 목록을 사용한다. 스키마/RunContext/카탈로그 변경 없음.
+- 앱 저장소의 prod는 PR merge로 코드 반영하며 직접 push·force push·삭제를 막는다.
+  main·ai-prod는 파이프라인이 직접 push하므로 보호하지 않고, deployed/*는 lease 이동을 위해 태그 보호를 걸지 않는다.
+  이번 작업은 문서 정정만이며 실제 GitHub 설정은 바꾸지 않았다. 데모: v2 PR을 prod에 merge.
+- 준석님 기존 watch.py가 감시(main → prod 변경 요청). git 충돌은 승인 트리로 해결해 멈추지 않으며
+  재사용 패치가 새 prod에 맞지 않으면 승인 전 패치 단계에서 민영님이 재제안한다.
+- 기존 3개 커밋은 사용자 반영 완료. 이번 제안은 코드·회귀 테스트 1개와 문서·벤치마크 1개 커밋이다.
+  에이전트는 stage·commit·push·PR 및 외부 VM/AWS/GitHub 접속을 하지 않는다.

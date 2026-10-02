@@ -1,6 +1,9 @@
 # 10/2 인계 — 정준우 O1·C1 (수정 라운드 반영)
 
-현재 `o1/onprem-three-tier` 미커밋 작업 트리가 결과다. stage·commit·push·PR 없음.
+> **후속 수정 2:** 아래 3개 커밋은 정준우가 이미 반영했다. 이 문서는 그 시점의 인계 기록이며,
+> 새 후속 수정은 [O1 작업 기록](../ai-usage/O1.md)의 후속 수정 2와 최신 결정 §9를 따른다.
+
+당시 `o1/onprem-three-tier` 미커밋 작업 트리가 결과였다. stage·commit·push·PR 없음.
 VM 시험 완료 후 VM/SSH 재접속, 실제 AWS·Terraform apply/destroy·원격 Git·Docker Hub push 없음.
 로컬 bare Git 시험 저장소에만 후보 commit/push를 실행했다. TDD 없이 구현 후 회귀 테스트와 독립 검토를 했다.
 

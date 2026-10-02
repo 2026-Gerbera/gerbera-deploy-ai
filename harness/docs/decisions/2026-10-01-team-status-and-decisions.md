@@ -171,7 +171,7 @@ C1 일의 구현 순서(💭)는 아래 "C1 일" 절에 있다.
 
 5~7은 PR #1이 merge된 뒤에 할 수 있다. main에는 `project_settings`가 아직 없다.
 
-10/1 저녁(G): `project_settings`에 `repo_url`·`watch_branch`·`auto_detect`·`default_targets`(💭 이름, 01 15절 계약 변경)가 더해진다. 화면은 양서윤, 저장·사용은 정준우(감시·실행기)·김준석(접수)이며([docs/20](../../../docs/20_트리거-개편-git-브랜치-기준.md)), D5~D7 때 함께 보되 구현은 정준우 지시 뒤다.
+10/1 저녁(G): `project_settings`에 `repo_url`·`watch_branch`·`auto_detect`·`default_targets`(💭 이름, 01 15절 계약 변경)가 더해진다. 화면은 양서윤, 저장·사용은 정준우(실행기)·김준석(접수·감시)이며, 준석님 기존 watch.py가 감시(main → prod 변경 요청)([docs/20](../../../docs/20_트리거-개편-git-브랜치-기준.md)), D5~D7 때 함께 보되 구현은 정준우 지시 뒤다.
 
 **권장 순서 (💭 정준우 확인)**: WP 단위로 끝내고 각 WP 끝에 `make -C harness ci`를 돌린 뒤 보고한다. 커밋·PR은 정준우가 한다.
 
@@ -217,10 +217,10 @@ Codex는 `terraform apply`와 `destroy`를 하지 않는다. `make tf-plan`까�
 
 결정 원문: [docs/20](../../../docs/20_트리거-개편-git-브랜치-기준.md). 문서 수정 목록: [docs/21](../../../docs/21_트리거-개편-문서-수정-목록.md). 결정자 정준우.
 
-- **10/1 밤 회의 수정(✅):** (1) 브랜치 이름 `dev` → `prod`('dev'가 개발 서버처럼 들려서). 흐름은 `prod`(개발자 push) → `ai-prod`(후보, 파이프라인 전용, merge + 패치 커밋으로 이력 보존) → `main`(실제 배포된 코드, 파이프라인 전용). 환경별 롤백 기록은 태그 `deployed/onprem`·`deployed/cloud`이고 이전 `prod/onprem`·`prod/cloud` 브랜치 안을 대체한다. 릴리스 기록은 `source_sha`(쓴 `prod` 커밋, 변경 탐지 기준)와 `candidate_sha`(빌드·배포한 `ai-prod` 커밋, 이미지 라벨·롤백)를 둔다. (2) 온프렘과 클라우드를 분리한다(✅ 10/1 밤 분리): 클라우드가 온프렘 검증을 기다리는 대기 지점(`local_verified` 게이트, `ABORTED_AT_GATE`)을 없앴다. 둘 다 고르면 독립 진행·환경별 롤백이고 교차 검증은 둘 다 성공했을 때만 돈다. 아래 bullet은 이 기준으로 고쳤다.
+- **10/1 밤 회의 수정(✅):** (1) 브랜치 이름 `dev` → `prod`('dev'가 개발 서버처럼 들려서). 흐름은 `prod`(PR merge로 코드 반영, 브랜치 보호로 직접 push 금지) → `ai-prod`(후보, 파이프라인 전용, merge + 패치 커밋으로 이력 보존) → `main`(실제 배포된 코드, 파이프라인 전용). 환경별 롤백 기록은 태그 `deployed/onprem`·`deployed/cloud`이고 이전 `prod/onprem`·`prod/cloud` 브랜치 안을 대체한다. 릴리스 기록은 `source_sha`(쓴 `prod` 커밋, 변경 탐지 기준)와 `candidate_sha`(빌드·배포한 `ai-prod` 커밋, 이미지 라벨·롤백)를 둔다. (2) 온프렘과 클라우드를 분리한다(✅ 10/1 밤 분리): 클라우드가 온프렘 검증을 기다리는 대기 지점(`local_verified` 게이트, `ABORTED_AT_GATE`)을 없앴다. 둘 다 고르면 독립 진행·환경별 롤백이고 교차 검증은 둘 다 성공했을 때만 돈다. 아래 bullet은 이 기준으로 고쳤다.
 - 입력: GitHub 저장소 + 브랜치(기본 `prod`). 데모 저장소는 공개. 실행 위치는 지금 정준우 PC, 나중에 서버.
-- 시작: ① 수동 채팅 지시(자동 감지 끔) 또는 ② `prod` 새 커밋 자동 감지(10~30초 폴링, webhook 없음). 승인 관문은 그대로다.
-- 후보: run마다 `prod`를 ai-prod에 merge하고 새로 승인된 AI 패치만 커밋해 일반 push한다(덮어쓰기 없음, 충돌 시 멈춤). 이 커밋이 배포 후보다. ai-prod 갱신은 정준우(실행기 패치 적용 단계 확장), 패치 내용·비밀값 검사는 장민영이다.
+- 시작 기준은 PR merge로 `prod`에 코드가 반영되는 것이다(데모: v2 PR을 prod에 merge). 준석님 기존 watch.py가 감시(main → prod 변경 요청). ① 수동 채팅 지시(자동 감지 끔) 또는 ② `prod` 새 커밋 자동 감지(10~30초 폴링, webhook 없음). 승인 관문은 그대로다.
+- 후보: run마다 `prod`를 ai-prod에 merge하고 관리 파일을 승인 build_files 트리로 확정한 merge 커밋을 일반 push한다. git 충돌은 승인 트리로 해결해서 멈추지 않고 기록만 남긴다. 재사용 패치가 새 prod에 맞지 않으면 승인 전 패치 단계에서 재제안한다. 이 커밋이 배포 후보다. ai-prod 갱신은 정준우(실행기 패치 적용 단계 확장), 패치 내용·비밀값 검사는 장민영이다.
 - 빌드: `ai-prod` 후보 커밋 SHA를 CodeBuild `sourceVersion`에 고정해 멀티 아키텍처 이미지를 빌드하고 라벨에 커밋 SHA를 남긴다. S3는 대체 경로다(✅ 사용자 후속 확정).
 - 대상: run마다 온프렘만 / 클라우드만 / 둘 다. 둘 다면 독립 진행(대기 지점 없음, 환경별 롤백, ✅ 10/1 밤 분리)이고 교차 검증은 둘 다 성공했을 때만.
 - 기록: 성공한 환경의 릴리스 기록에 `source_sha`(쓴 `prod` 커밋)와 `candidate_sha`(배포한 ai-prod 커밋)를 남기고, 환경별 태그 `deployed/onprem`·`deployed/cloud`를 `candidate_sha`에 붙이고 `main`을 갱신한다(롤백 기준, 트리거 아님. 한쪽만 성공했을 때 `main` 규칙은 구현 때 확정). 변경 탐지는 `source_sha`와 비교한다. 채팅은 읽기 전용 질문에도 답한다.

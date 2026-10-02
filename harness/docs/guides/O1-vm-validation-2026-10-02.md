@@ -22,7 +22,7 @@ watch/intake/트리거 개편, AI 생성, AWS 배포는 제외했다. Git 커밋
 
 ## 최종 관측
 
-- 공개 서비스: <<quick-tunnel-url>>. 임시 터널 재기동 시 주소가 바뀔 수 있다.
+- 공개 서비스: `<quick-tunnel-url>`. 임시 터널 재기동 시 주소가 바뀔 수 있다.
 - 최종 v2 release: `onprem-1e4ae49d671b4fd39d6a6da5a9e4d1c8`.
 - health/version/메인/static 모두 HTTP 200, health schema `0001`, WAS 3개+web+DB 모두 healthy, 잠금 0.
 - 모든 후속 단계에서 DB/web 컨테이너 ID와 마운트는 첫 성공 배포와 동일했다. DB 볼륨을 삭제하지 않았다.

@@ -1,0 +1,88 @@
+{
+  "scope": "후속 수정 2, 오프라인 fixture 및 로컬 bare Git",
+  "measurements": [
+    {
+      "command": [
+        "make",
+        "-C",
+        "harness",
+        "test",
+        "ARGS=tests/unit/core/test_candidate.py tests/unit/test_candidate_service.py tests/unit/test_deployment_service.py -q"
+      ],
+      "started_utc": "2026-10-02T02:46:25.401975+00:00",
+      "elapsed_s": 32.38939145900076,
+      "returncode": 2,
+      "name": "focused",
+      "log": "harness/var/validation/followup2-20261002/focused.log",
+      "log_sha256": "d843456c5b332d3336aae379d5fa9641c235b140c06bcd80f4d314c4a5ff55cd"
+    },
+    {
+      "command": [
+        "make",
+        "-C",
+        "harness",
+        "ci"
+      ],
+      "started_utc": "2026-10-02T02:49:23.740082+00:00",
+      "finished_utc": "2026-10-02T02:50:41.108869+00:00",
+      "elapsed_s": 77.37105487499502,
+      "returncode": 0,
+      "name": "ci-first",
+      "log": "harness/var/validation/followup2-20261002/ci-first.log",
+      "log_sha256": "0c0ead3dfed69de7cf8d59be6df4a64ba2ea139317924b17e895bbd56c5a12ee"
+    },
+    {
+      "command": [
+        "make",
+        "-C",
+        "harness",
+        "ci"
+      ],
+      "started_utc": "2026-10-02T02:51:57.936496+00:00",
+      "finished_utc": "2026-10-02T02:53:15.603632+00:00",
+      "elapsed_s": 77.66939675000322,
+      "returncode": 0,
+      "name": "ci-final",
+      "log": "harness/var/validation/followup2-20261002/ci-final.log",
+      "log_sha256": "d0bc049f1f26c3534c31887296d82e4c78e8a4f535fb1ef190c53cacc7def481"
+    },
+    {
+      "command": [
+        "make",
+        "-C",
+        "harness",
+        "ci"
+      ],
+      "started_utc": "2026-10-02T02:56:57.338041+00:00",
+      "finished_utc": "2026-10-02T02:58:25.879326+00:00",
+      "elapsed_s": 88.54376358300215,
+      "returncode": 0,
+      "name": "ci-reviewed",
+      "log": "harness/var/validation/followup2-20261002/ci-reviewed.log",
+      "log_sha256": "eef1ff580c0927d3215716a2efc9721b6bcaa53ac3b7e0ad842287f0362c065b"
+    }
+  ],
+  "final_results": {
+    "passed": 1055,
+    "skipped": 1,
+    "deselected": 4,
+    "pytest_seconds": 85.78,
+    "ci_seconds": 88.54376358300215,
+    "independent_review": "PASS"
+  },
+  "code_files": [
+    "src/ddak/core/candidate.py",
+    "src/ddak/executor/engine.py",
+    "src/ddak/executor/service.py",
+    "harness/tests/unit/core/test_candidate.py",
+    "harness/tests/unit/test_candidate_service.py",
+    "harness/tests/unit/test_deployment_service.py"
+  ],
+  "not_run": [
+    "실제 AWS",
+    "실제 GitHub",
+    "VM/SSH",
+    "Docker Hub"
+  ],
+  "contracts_update": "성공, 생성 스키마 변경 없음"
+}
