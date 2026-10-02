@@ -20,6 +20,7 @@ from ddak.cloud.deploy.entry import (
     run_migrations,
 )
 from ddak.cloud.deploy.providers import AwsProvider, AzureProvider, GcpProvider, cloud_provider
+from ddak.cloud.deploy.registry_secrets import seed_registry_secrets
 
 __all__ = [
     "AwsProvider",
@@ -30,4 +31,5 @@ __all__ = [
     "put_secret_values",
     "rollback_service",
     "run_migrations",
+    "seed_registry_secrets",
 ]

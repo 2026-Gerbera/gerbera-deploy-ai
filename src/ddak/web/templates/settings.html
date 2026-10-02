@@ -1,15 +1,25 @@
 {% extends "base.html" %}
-{% block title %}클라우드 설정 · Gerbera{% endblock %}
+{% block title %}프로젝트 설정 · Gerbera{% endblock %}
+{% block breadcrumb %}Project settings{% endblock %}
 {% block content %}
-<section class="hero"><p class="eyebrow">PROJECT SETTINGS</p><h1>클라우드 도메인</h1><p>도메인은 run 시작 시 스냅샷되며 AI 입력이나 plan.json에 포함되지 않습니다.</p></section>
-<form class="card form" method="post" action="/settings">
+{% if watch_warnings %}<section class="card"><div class="notice amber"><span>!</span><div><h2>자동 감시 경고</h2><ul>{% for warning in watch_warnings %}<li>{{ warning }}</li>{% endfor %}</ul></div></div></section>{% endif %}
+<section class="page-heading"><div><p class="eyebrow">PROJECT SETTINGS</p><h1>실배포 연결 설정</h1><p>소스 저장소, 배포 대상과 공개 도메인을 구성합니다.</p></div><a class="button secondary" href="/?project={{ project|urlencode }}">← 대시보드</a></section>
+<form class="settings-layout" method="post" action="/settings">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   <input type="hidden" name="project" value="{{ project }}">
   <input type="hidden" name="version" value="{{ settings.version or 0 }}">
-  <label>Cloud domain<input name="cloud_domain" required placeholder="app.example.com" value="{{ settings.cloud_domain or '' }}"></label>
-  <label>DNS mode<select name="dns_mode"><option value="route53" {% if settings.dns_mode == 'route53' %}selected{% endif %}>Route 53</option><option value="external" {% if settings.dns_mode == 'external' %}selected{% endif %}>External DNS</option></select></label>
-  <label>Hosted zone ID<input name="hosted_zone_id" placeholder="Z..." value="{{ settings.hosted_zone_id or '' }}"></label>
-  <div class="warning">도메인을 바꾸면 인증서 재발급과 DNS 검증이 필요할 수 있습니다.</div>
-  <button class="button" type="submit">설정 저장</button>
+  <div class="settings-main">
+    <section class="card form-section"><div class="form-section-head"><span class="setting-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3v12M18 9v12M6 7h8a4 4 0 0 1 4 4v1"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="6" r="3"/></svg></span><div><h2>Source repository</h2><p>운영 배포의 기준이 되는 GitHub 저장소와 브랜치입니다.</p></div></div><div class="form-body">
+      <label><span>GitHub repository URL</span><input name="repo_url" type="url" required placeholder="https://github.com/owner/repository.git" value="{{ settings.repo_url or '' }}"><small>자격증명이 포함되지 않은 HTTPS 주소만 사용할 수 있습니다.</small></label>
+      <div class="field-grid"><label><span>Production branch</span><input name="watch_branch" required value="{{ settings.watch_branch or 'prod' }}"></label><label><span>Default target</span><select name="default_targets" onchange="this.form.elements.namedItem('cloud_domain').required = this.value !== 'onprem'"><option value="cloud" {% if settings.default_targets == 'cloud' %}selected{% endif %}>AWS Cloud</option><option value="both" {% if settings.default_targets == 'both' %}selected{% endif %}>On-prem + AWS</option><option value="onprem" {% if settings.default_targets == 'onprem' or not settings.default_targets %}selected{% endif %}>On-prem only</option></select></label></div>
+      <label class="toggle-row"><span><strong>자동 변경 감지</strong><small>브랜치에 새 커밋이 반영되면 승인 계획을 자동 생성합니다.</small></span><input name="auto_detect" type="checkbox" {% if settings.auto_detect %}checked{% endif %}><i></i></label>
+    </div></section>
+    <section class="card form-section"><div class="form-section-head"><span class="setting-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.4 2.5 3.6 5.5 3.6 9s-1.2 6.5-3.6 9c-2.4-2.5-3.6-5.5-3.6-9S9.6 5.5 12 3Z"/></svg></span><div><h2>Domain &amp; TLS</h2><p>ALB와 ACM 인증서에 연결할 사용자 소유 도메인입니다.</p></div></div><div class="form-body">
+      <label><span>Public domain</span><div class="input-prefix"><b>https://</b><input name="cloud_domain" {% if settings.default_targets in ('cloud', 'both') %}required{% endif %} placeholder="app.example.com" value="{{ settings.cloud_domain or '' }}"></div></label>
+      <div class="field-grid"><label><span>DNS provider</span><select name="dns_mode"><option value="route53" {% if settings.dns_mode == 'route53' %}selected{% endif %}>Amazon Route 53</option><option value="external" {% if settings.dns_mode == 'external' %}selected{% endif %}>External DNS</option></select></label><label><span>Hosted zone ID</span><input name="hosted_zone_id" placeholder="Z0123456789ABC" value="{{ settings.hosted_zone_id or '' }}"></label></div>
+      <div class="notice"><span>i</span><div><strong>TLS 인증서 안내</strong><p>도메인을 변경하면 ACM 인증서 재발급과 DNS 검증이 다시 필요할 수 있습니다.</p></div></div>
+    </div></section>
+  </div>
+  <aside class="settings-aside"><section class="card security-card"><span class="shield">✓</span><h3>Secrets stay local</h3><p>AWS 자격증명, LLM API 키와 Docker Hub 토큰은 이 화면이나 데이터베이스에 저장하지 않습니다.</p><ul><li>환경 변수 또는 로컬 프로필 사용</li><li>승인 전 AWS 변경 없음</li><li>비밀값 AI 전송 금지</li></ul></section><div class="save-panel"><p>변경 내용은 다음 배포부터 적용됩니다.</p><button class="button full" type="submit">변경사항 저장</button></div></aside>
 </form>
 {% endblock %}

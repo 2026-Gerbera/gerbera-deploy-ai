@@ -61,12 +61,15 @@ def service(ctx: RunContext) -> EcsService:
 def container(ctx: RunContext, tier: str) -> str:
     if not _TIER_KEY.fullmatch(tier):
         raise DdakToolError(ErrorCode.CONFIG_INVALID, "tier 이름 형식이 아니다")
-    return _text(cloud(ctx), KEY_CONTAINER.format(tier=tier))
+    value = cloud(ctx).get(KEY_CONTAINER.format(tier=tier), tier)
+    if not isinstance(value, str) or not value:
+        raise DdakToolError(ErrorCode.INFRA_MISSING, f"{tier} 컨테이너 이름이 없다")
+    return value
 
 
 def has_container(ctx: RunContext, tier: str) -> bool:
     """이 tier가 클라우드 태스크에 컨테이너로 있는가(예: db는 RDS라 없다)."""
-    return bool(_TIER_KEY.fullmatch(tier)) and bool(cloud(ctx).get(KEY_CONTAINER.format(tier=tier)))
+    return bool(_TIER_KEY.fullmatch(tier)) and tier in {"web", "was"}
 
 
 def migration_task(ctx: RunContext, task_definition: str) -> MigrationTask:

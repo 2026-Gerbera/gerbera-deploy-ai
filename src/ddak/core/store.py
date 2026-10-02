@@ -15,6 +15,7 @@ from typing import Any
 from ddak.core.contracts.approval import ApprovalRecord
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.contracts.infra_outputs import checked_cloud_outputs
+from ddak.core.project_settings import watch_source
 from ddak.core.redact import redact_obj
 
 _DDL = """
@@ -289,7 +290,31 @@ class Store:
                 raise DdakToolError(
                     ErrorCode.PRECONDITION_FAILED, "설정이 다른 화면에서 변경됐다. 새로고침하세요"
                 )
-            safe_data = _json({**(json.loads(row["data"]) if row else {}), **json.loads(safe_data)})
+            merged = {**(json.loads(row["data"]) if row else {}), **json.loads(safe_data)}
+            if merged.get("auto_detect") and merged.get("repo_url"):
+                identity = watch_source(merged["repo_url"], merged.get("watch_branch", "prod"))
+                others = db.execute(
+                    "SELECT project, data FROM project_settings "
+                    "WHERE project != ? ORDER BY project",
+                    (project,),
+                ).fetchall()
+                for other in others:
+                    settings = json.loads(other["data"])
+                    if not settings.get("auto_detect") or not settings.get("repo_url"):
+                        continue
+                    try:
+                        other_source = watch_source(
+                            settings["repo_url"], settings.get("watch_branch", "prod")
+                        )
+                    except ValueError:
+                        continue  # 기존 잘못된 URL은 감시 조립에서 제외하고 경고한다.
+                    if other_source == identity:
+                        raise DdakToolError(
+                            ErrorCode.CONFIG_INVALID,
+                            f"자동 감시 중복: {other['project']} 프로젝트가 같은 저장소·브랜치를 "
+                            "이미 감시합니다. 기존 프로젝트의 자동 감지를 먼저 끄세요",
+                        )
+            safe_data = _json(merged)
             version = current + 1
             db.execute(
                 "INSERT OR REPLACE INTO project_settings VALUES (?, ?, ?, ?, ?)",

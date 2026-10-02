@@ -1,5 +1,8 @@
-{# C3 통합 지점: dashboard/result의 content 블록, hero 다음에 include #}
-<section class="card">
-  <a href="/ops?project={{ project|default('flaskr')|urlencode }}">설정 · 현재 HEAD 계획 요청 · 잠금 해제</a>
-  {% if run is defined and run.status == 'SUPERSEDED' %}<p>대체됨: 새 prod 커밋의 승인 요청을 확인하세요.</p>{% endif %}
+{# C3 통합: dashboard content의 heading 다음. 폼은 동일 공개 서비스 API를 호출한다. #}
+<section class="card"><div class="card-header"><div><p class="section-kicker">OPERATIONS</p><h2>계획 요청 · 잠금 해제</h2></div><a class="text-link" href="/ops?project={{ project|urlencode }}">운영 상세 →</a></div>
+{% if preparations is defined %}<ul>{% for item in preparations %}<li>{% if item.status == 'PREPARING' %}준비 중{% else %}{{ item.status }}{% endif %} · {{ item.request_id }}{% if item.run_id %} · <a href="/runs/{{ item.run_id }}/approval">실행 확인</a>{% endif %}</li>{% endfor %}</ul>{% endif %}
+<div class="heading-actions"><form method="post" action="/ops/plan"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="project" value="{{ project }}"><button class="button" type="submit">지금 계획 요청</button></form>
+<form method="post" action="/ops/unlock"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="project" value="{{ project }}"><input name="reason" required placeholder="실제 상태 확인 및 해제 사유"><button class="button secondary" type="submit">제품 잠금·차단 해제</button></form></div>
+<p class="card-description">실제 인프라와 NEEDS_HUMAN 기록은 유지합니다. 실행 중인 run은 해제할 수 없습니다.</p>
+{% if state is defined %}<p>차단 환경: {{ state.blocked_targets|join(', ') or '없음' }}</p>{% endif %}
 </section>

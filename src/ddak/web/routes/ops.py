@@ -5,8 +5,9 @@ from fastapi.responses import JSONResponse, RedirectResponse
 
 from ddak.core.contracts.errors import DdakToolError
 from ddak.core.redact import redact
-from ddak.web.dependencies import deployment, templates
+from ddak.web.dependencies import deployment, selected_project, templates, watch_warnings
 from ddak.web.forms import parse_form
+from ddak.web.routes.approvals import approval_page as canonical_approval_page
 from ddak.web.security import csrf_token, issue_csrf, require_safe_post
 
 router = APIRouter(prefix="/ops")
@@ -22,9 +23,9 @@ def _render(request: Request, name: str, context: dict):
 
 
 @router.get("")
-async def page(request: Request, project: str = "flaskr"):
+async def page(request: Request, project: str | None = None):
     service = deployment(request)
-    project = service.resolve_project(project)
+    project = selected_project(request, project)
     return _render(
         request,
         "ops.html",
@@ -33,6 +34,7 @@ async def page(request: Request, project: str = "flaskr"):
             "settings": service.get_project_settings(project) or {},
             "state": service.project_state(project),
             "preparations": service.list_preparations(project),
+            "watch_warnings": watch_warnings(request),
             "runs": [r for r in service.list_runs() if r["project"] == project],
         },
     )
@@ -40,20 +42,12 @@ async def page(request: Request, project: str = "flaskr"):
 
 @router.get("/runs/{run_id}/approval")
 async def approval_page(request: Request, run_id: str):
-    try:
-        view = deployment(request).approval_view(run_id)
-    except KeyError:
-        raise HTTPException(404, "실행을 찾을 수 없습니다") from None
-    except DdakToolError as exc:
-        raise HTTPException(409, redact(exc.message)) from exc
-    if view.get("patch"):
-        view["patch"] = redact(view["patch"])
-    return _render(request, "ops_approval.html", {"approval": view})
+    return await canonical_approval_page(request, run_id)
 
 
 @router.get("/state")
-async def state(request: Request, project: str = "flaskr"):
-    return deployment(request).project_state(project)
+async def state(request: Request, project: str | None = None):
+    return deployment(request).project_state(selected_project(request, project))
 
 
 @router.get("/preparations/{request_id}")
@@ -69,7 +63,7 @@ async def operate(request: Request, action: str):
     form = await parse_form(request)
     require_safe_post(request, form.get("csrf_token", ""))
     service = deployment(request)
-    project = service.resolve_project(form.get("project") or "flaskr")
+    project = selected_project(request, form.get("project"))
     try:
         if action == "plan":
             result = service.enqueue_deployment(project, ref=form.get("ref") or None)
@@ -78,11 +72,14 @@ async def operate(request: Request, action: str):
             result["status_url"] = f"/ops/preparations/{result['request_id']}"
             return JSONResponse(result, status_code=202)
         if action == "unlock":
-            return service.unlock_project(
+            result = service.unlock_project(
                 project,
                 actor="local-operator",
                 reason=form.get("reason") or "운영자가 상태 확인 후 해제",
             )
+            if "text/html" in request.headers.get("accept", ""):
+                return RedirectResponse(f"/?project={project}", status_code=303)
+            return result
         if action == "settings":
             service.save_project_settings(
                 project,

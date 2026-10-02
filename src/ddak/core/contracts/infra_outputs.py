@@ -32,6 +32,10 @@ PLATFORM_OUTPUTS = MappingProxyType(
         "dockerhub_pull_secret_arn": "string",
         "private_subnet_ids": "list(string)",
         "public_subnet_ids": "list(string)",
+        "task_execution_role_arn": "string",
+        "task_role_arn": "string",
+        "dbinit_execution_role_arn": "string",
+        "app_secret_arn_SECRET_KEY": "string",
     }
 )
 APP_OUTPUTS = MappingProxyType(

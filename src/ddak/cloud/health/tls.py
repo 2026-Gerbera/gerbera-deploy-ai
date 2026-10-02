@@ -8,6 +8,7 @@ import ssl
 import time
 from datetime import UTC, datetime
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 from ddak.cloud.health.aws import client, cloud_platform, remaining, required
 from ddak.core.contracts.context import RunContext
@@ -70,7 +71,21 @@ def _http_redirect(domain: str, timeout: float) -> tuple[bool, str]:
         response = connection.getresponse()
         location = response.getheader("Location") or ""
         response.read(1024)
-        ok = response.status == 301 and location.startswith(f"https://{domain}/")
+        try:
+            target = urlsplit(location)
+            port = target.port
+        except ValueError:
+            target = urlsplit("")
+            port = None
+        ok = (
+            response.status == 301
+            and target.scheme.lower() == "https"
+            and target.hostname is not None
+            and target.hostname.rstrip(".").lower() == domain.rstrip(".").lower()
+            and port in (None, 443)
+            and target.username is None
+            and target.password is None
+        )
         return ok, f"status={response.status}, location={'https' if location else 'none'}"
     finally:
         connection.close()

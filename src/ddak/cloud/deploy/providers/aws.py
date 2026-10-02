@@ -13,6 +13,7 @@ from ddak.cloud.deploy.entry import (
     run_migrations,
 )
 from ddak.cloud.health import health_check as check_cloud_health
+from ddak.cloud.tls import ensure_tls as ensure_cloud_tls
 from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.enums import Target
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
@@ -44,7 +45,7 @@ class AwsProvider:
         return put_secret_values(keys, ctx)
 
     def ensure_tls(self, mode: Literal["check", "apply"], ctx: RunContext) -> ProviderResult:
-        raise _todo("C1")
+        return ensure_cloud_tls(mode, ctx)
 
 
 __all__ = ["AwsProvider"]
