@@ -4,6 +4,8 @@
 - 입력은 run_id뿐이다. 비교할 값은 이번 run의 smoke 결과와 RunContext.release_artifacts에서 읽는다.
 - 판정: match / mismatch / expected_diff / skipped. mismatch가 있거나 match가 없으면 passed=False.
 - 예상된 차이(expected_diff)는 값을 싣지 않는다(주소 등 노출 방지).
+- source: 비교한 smoke 결과 중 하나라도 fixture(fake 어댑터)면 fixture.
+  관리 페이지가 목업 라벨을 붙인다.
 """
 
 from __future__ import annotations
@@ -34,3 +36,4 @@ class CompareEnvResultsOutput(ContractModel):
     unexpected_diffs: int = Field(ge=0)
     checks: list[CompareCheck]
     elapsed_s: float = Field(ge=0)
+    source: Literal["live", "fixture"] = "live"

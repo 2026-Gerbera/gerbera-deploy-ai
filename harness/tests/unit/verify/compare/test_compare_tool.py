@@ -54,6 +54,7 @@ def test_compare_passes_when_both_fake_envs_agree() -> None:
     _replace_cloud_value("app_env", "cloud")  # 환경이 달라서 다른 것이 정상인 값
     out = compare_env_results(CompareEnvResultsInput(run_id=RUN), RunContext(RUN))
     assert out.passed is True and out.unexpected_diffs == 0
+    assert out.source == "fixture"  # fake 어댑터 결과를 비교했으면 목업 라벨
     by_id = {c.id: c for c in out.checks}
     assert by_id["image"].verdict == "skipped"  # 빌드 산출물 없음
     expected = by_id["S0.version.app_env"]
@@ -69,6 +70,15 @@ def test_compare_reports_mismatch() -> None:
     assert out.passed is False and out.unexpected_diffs == 1
     bad = next(c for c in out.checks if c.verdict == "mismatch")
     assert bad.id == "S0.version.schema_expected" and bad.cloud == "0002"
+
+
+def test_compare_is_live_only_when_both_results_are_live() -> None:
+    _smoke(Target.LOCAL)
+    _smoke(Target.CLOUD)
+    for target in (Target.LOCAL, Target.CLOUD):
+        record(results_for(RUN)[target].model_copy(update={"source": "live"}))
+    out = compare_env_results(CompareEnvResultsInput(run_id=RUN), RunContext(RUN))
+    assert out.source == "live"
 
 
 @pytest.mark.parametrize("ran", [[], [Target.LOCAL], [Target.CLOUD]])

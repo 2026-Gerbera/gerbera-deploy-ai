@@ -27,11 +27,13 @@ def compare_env_results(inp: CompareEnvResultsInput, ctx: RunContext) -> Compare
         raise DdakToolError(
             ErrorCode.PRECONDITION_FAILED, f"이번 run의 smoke 결과가 없다: {', '.join(missing)}"
         )
-    result = compare_env(smoke[Target.LOCAL], smoke[Target.CLOUD], artifacts=ctx.release_artifacts)
+    local, cloud = smoke[Target.LOCAL], smoke[Target.CLOUD]
+    result = compare_env(local, cloud, artifacts=ctx.release_artifacts)
     return CompareEnvResultsOutput(
         run_id=inp.run_id,
         passed=result.passed,
         unexpected_diffs=result.unexpected_diffs,
         checks=[CompareCheck.model_validate(c.to_dict()) for c in result.checks],
         elapsed_s=round(time.monotonic() - started, 3),
+        source="live" if local.source == cloud.source == "live" else "fixture",
     )

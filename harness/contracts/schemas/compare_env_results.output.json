@@ -94,6 +94,15 @@
       "title": "Run Id",
       "type": "string"
     },
+    "source": {
+      "default": "live",
+      "enum": [
+        "live",
+        "fixture"
+      ],
+      "title": "Source",
+      "type": "string"
+    },
     "unexpected_diffs": {
       "minimum": 0,
       "title": "Unexpected Diffs",
