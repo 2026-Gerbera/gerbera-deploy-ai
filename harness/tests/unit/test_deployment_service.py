@@ -932,7 +932,6 @@ async def test_completed_run_public_reads_survive_restart(rig: Any) -> None:
         assert reopened.get_run(rid)["status"] == "SUCCEEDED"
         assert reopened.approval_view(rid) == view
         assert reopened.get_release(rid)["release_id"] == rid
-        assert reopened.get_conflict_proposal(rid) is None
         assert reopened.get_environments("demo")["local"]["current"]["release_id"] == rid
     finally:
         reopened.close()
@@ -1040,3 +1039,55 @@ async def test_none_targets_preserves_plan_despite_saved_default(rig, target):
     assert {name for name, _ in calls.contexts if name.startswith("deploy.")} == (
         {"deploy.local", "deploy.cloud"} if target == "both" else {"deploy." + target}
     )
+
+
+@pytest.mark.parametrize("migration_tier", [None, "db", "was"])
+async def test_rollback_budget_includes_prepare_db_tiers(rig, monkeypatch, migration_tier):
+    from ddak.executor.engine import Executor
+
+    service, source, _calls = rig
+    registry = Registry([*service.registry.specs, spec_for("prepare_db")])
+    for name in service.registry.registered():
+        registry.tool(name)(service.registry.get(name).fn)
+
+    @registry.tool("prepare_db")
+    async def prepare_db(inp: Input, ctx: RunContext) -> Output:
+        raise AssertionError("budget capture precedes tool execution")
+
+    service.registry = registry
+    p = plan()
+    p = p.model_copy(
+        update={
+            "deploy": p.deploy.model_copy(
+                update={
+                    "local": p.deploy.local.model_copy(
+                        update={
+                            "steps": [
+                                step(
+                                    "prepare.db.local",
+                                    "prepare_db",
+                                    target=Target.LOCAL,
+                                    tier=migration_tier,
+                                ),
+                                *p.deploy.local.steps,
+                            ]
+                        }
+                    )
+                }
+            )
+        }
+    )
+    budgets = []
+
+    def capture(self, *args, **kwargs):
+        budgets.append(kwargs["rollback_timeouts"])
+        raise RuntimeError("fixture: inspect budgets before any tool dispatch")
+
+    monkeypatch.setattr(Executor, "__init__", capture)
+    rid = service.prepare(p, RunContext(p.run_id, project=p.project), source)
+    service.approve(rid, approver="operator")
+    service.start(rid)
+    assert (await service.wait(rid)).status is RunStatus.FAILED_BEFORE_DEPLOY
+    count = 2 if migration_tier == "db" else 1
+    per_tier = service.registry.spec("rollback_tier").timeout_s + 2
+    assert budgets == [{Target.LOCAL: count * per_tier + 2, Target.CLOUD: per_tier + 2}]

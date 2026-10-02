@@ -458,10 +458,13 @@ class Executor:
             not cancelled
             and not internal_failure
             and parity_failed
-            and Target.CLOUD in state.app_touched
             and state.tracks[TRACK_CLOUD] is TrackStatus.DONE
         ):
-            state.tracks[TRACK_CLOUD] = await self._rollback_track(Target.CLOUD, state)
+            state.tracks[TRACK_CLOUD] = (
+                await self._rollback_track(Target.CLOUD, state)
+                if Target.CLOUD in state.app_touched
+                else TrackStatus.FAILED
+            )
         for target in state.unquiesced:
             if target is not None:
                 state.tracks[target.value] = TrackStatus.ROLLBACK_FAILED

@@ -134,3 +134,86 @@ async def test_cancel_during_completed_push_keeps_candidate_sha(
     assert calls.contexts == []
     candidate = json.loads((service.root / "runs" / rid / "candidate.json").read_text())
     assert candidate["candidate_sha"] == git_tests.git(bare, "rev-parse", "ai-prod") != v2
+
+
+@pytest.mark.anyio
+async def test_parity_without_cloud_app_changes_preserves_cloud_and_main_refs(
+    rig, repository, operator_identity
+):
+    from ddak.executor.engine import TrackStatus
+
+    service, source, calls = rig
+    repo, bare, v1, _v2 = repository
+    repo.secret_scan = lambda path: None
+    service.repositories["demo"] = repo
+    calls.parity_ok = False
+    (source / "app.py").write_text("version = 1\n")
+    p = service_tests.plan(patch=True)
+    p = p.model_copy(
+        update={
+            "deploy": p.deploy.model_copy(
+                update={
+                    "cloud": p.deploy.cloud.model_copy(
+                        update={
+                            "steps": [s for s in p.deploy.cloud.steps if s.tool != "deploy_tier"]
+                        }
+                    )
+                }
+            )
+        }
+    )
+    rid = service.prepare(
+        p,
+        RunContext(p.run_id, project=p.project, source_sha=v1, toggles={"code_patch": True}),
+        source,
+        patch=candidate_tests.PATCH,
+    )
+    service.approve(rid, approver="operator")
+    service.start(rid)
+    result = await service.wait(rid)
+    candidate = result.context.candidate_sha
+    assert result.status is RunStatus.PARITY_FAILED
+    assert result.tracks["cloud"] is TrackStatus.FAILED
+    assert result.tracks["local"] is TrackStatus.DONE
+    assert git_tests.git(bare, "rev-parse", "main") == v1
+    assert git_tests.git(bare, "rev-parse", "refs/tags/deployed/cloud") == v1
+    assert git_tests.git(bare, "rev-parse", "refs/tags/deployed/onprem") == candidate
+    assert "cloud" not in service.get_environments("demo")
+    assert not any(name == "rollback.cloud" for name, _ in calls.contexts)
+
+
+@pytest.mark.anyio
+async def test_merge_conflicts_are_available_in_sealed_release(rig, repository, operator_identity):
+    service, source, _calls = rig
+    repo, _bare, _v1, _v2 = repository
+    git_tests.git(repo.path, "switch", "-c", "prod", "origin/prod")
+    (repo.path / "app.py").write_text("version = 3\n")
+    git_tests.git(repo.path, "add", "app.py")
+    git_tests.git(repo.path, "commit", "-m", "New product value")
+    git_tests.git(repo.path, "push", "origin", "prod")
+    source_sha = git_tests.git(repo.path, "rev-parse", "HEAD")
+    repo.secret_scan = lambda path: None
+    service.repositories["demo"] = repo
+    (source / "app.py").write_text("version = 3\n")
+    p = service_tests.plan(patch=True)
+    patch = b"--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-version = 3\n+version = 4\n"
+    rid = service.prepare(
+        p,
+        RunContext(
+            p.run_id, project=p.project, source_sha=source_sha, toggles={"code_patch": True}
+        ),
+        source,
+        patch=patch,
+    )
+    service.approve(rid, approver="operator")
+    service.start(rid)
+    assert (await service.wait(rid)).status is RunStatus.SUCCEEDED
+    release = service.get_release(rid)
+    assert release["merge_conflicts"] == ["app.py"]
+    assert release["result"]["merge_conflicts"] == ["app.py"]
+    service.close()
+    reopened = service_tests.DeploymentService(service.registry, service.root)
+    try:
+        assert reopened.get_release(rid)["merge_conflicts"] == ["app.py"]
+    finally:
+        reopened.close()

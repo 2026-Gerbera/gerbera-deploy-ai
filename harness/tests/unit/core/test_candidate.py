@@ -57,7 +57,7 @@ def test_reuse_existing_approved_candidate(repository, tmp_path):
     result = repo.prepare_candidate(
         v1, original, patched, PATCH, tmp_path / "candidate", lambda: guards.append(True)
     )
-    assert result["candidate_sha"] != v2 and result["reused"] is False
+    assert result["candidate_sha"] != v2
     assert git(repo.path, "show", "-s", "--format=%P", result["candidate_sha"]).split() == [v2, v1]
     assert scans and len(guards) >= 2
     assert git(bare, "rev-parse", "ai-prod") == result["candidate_sha"]
@@ -197,7 +197,9 @@ def test_templates_follow_prod_and_are_scanned(repository, tmp_path, name):
     assert git(bare, "rev-parse", "main") == v1
 
 
-@pytest.mark.parametrize("name", [".env", "private.pem", "private.key"])
+@pytest.mark.parametrize(
+    "name", [".env", "private.pem", "private.key", ".ENV", "secret.KEY", "cert.PEM"]
+)
 def test_sensitive_tracked_files_still_fail_closed(repository, tmp_path, name):
     repo, _bare, _v1, _v2 = repository
     (repo.path / name).write_text("fixture-only\n")
@@ -290,3 +292,71 @@ def test_approved_ignored_file_is_staged(repository, tmp_path):
         v1, source, file_manifest(build), None, tmp_path / "candidate", lambda: None, build
     )
     assert git(bare, "show", result["candidate_sha"] + ":generated.py") == "approved = True"
+
+
+@pytest.mark.parametrize("name", [".env.template", "config/env.template"])
+def test_configured_env_template_is_preserved_and_scanned(repository, tmp_path, name):
+    repo, bare, _v1, _v2 = repository
+    git(repo.path, "switch", "-c", "prod", "origin/prod")
+    template = repo.path / name
+    template.parent.mkdir(parents=True, exist_ok=True)
+    template.write_text("APP_ENV=production\n")
+    (repo.path / "deploy.yaml").write_text("tiers: {was: {}}\nenv_example: " + name + "\n")
+    git(repo.path, "add", "deploy.yaml", name)
+    git(repo.path, "commit", "-m", "Configure environment template")
+    sha = git(repo.path, "rev-parse", "HEAD")
+    git(repo.path, "push", "origin", "prod")
+    scans = []
+    repo.secret_scan = lambda path: scans.append((path / name).read_text())
+    files = file_manifest(repo.path)
+    result = repo.prepare_candidate(sha, files, files, None, tmp_path / "candidate", lambda: None)
+    candidate = result["candidate_sha"]
+    assert name not in tree_manifest(repo, candidate)
+    assert git(bare, "show", candidate + ":" + name) == "APP_ENV=production"
+    repo.validate_candidate(sha, candidate, files, files, tmp_path / "validate", lambda: None)
+    assert scans and all(s == "APP_ENV=production\n" for s in scans)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [".env", ".ENV", "secret.KEY", "cert.PEM", ".secrets/env.template", ".env-dir/env.template"],
+)
+def test_configured_template_cannot_allow_secret_or_excluded_parent(repository, name):
+    repo, _bare, _v1, _v2 = repository
+    template = repo.path / name
+    template.parent.mkdir(parents=True, exist_ok=True)
+    template.write_text("fixture-only\n")
+    (repo.path / "deploy.yaml").write_text("tiers: {was: {}}\nenv_example: " + name + "\n")
+    git(repo.path, "add", "deploy.yaml", name)
+    git(repo.path, "commit", "-m", "Invalid template fixture")
+    with pytest.raises(DdakToolError, match="지원하지 않는 파일"):
+        tree_manifest(repo, git(repo.path, "rev-parse", "HEAD"))
+
+
+@pytest.mark.parametrize("changed", ["source", "patch", "deleted", "added"])
+def test_configured_template_cannot_diverge_from_approved_build(repository, tmp_path, changed):
+    repo, bare, _v1, previous = repository
+    git(repo.path, "switch", "-c", "prod", "origin/prod")
+    (repo.path / "config").mkdir()
+    if changed != "added":
+        (repo.path / "config/env.template").write_text("APP_ENV=production\n")
+    (repo.path / "deploy.yaml").write_text("tiers: {was: {}}\nenv_example: config/env.template\n")
+    git(repo.path, "add", "--all", ".")
+    git(repo.path, "commit", "-m", "Add configured template")
+    sha = git(repo.path, "rev-parse", "HEAD")
+    git(repo.path, "push", "origin", "prod")
+    source = file_manifest(repo.path)
+    if changed == "deleted":
+        (repo.path / "config/env.template").unlink()
+    else:
+        (repo.path / "config/env.template").write_text("APP_ENV=changed\n")
+    build = file_manifest(repo.path)
+    if changed in {"source", "added"}:
+        source = build
+    repo.secret_scan = lambda path: None
+    with pytest.raises(DdakToolError, match="prod 템플릿과 승인"):
+        repo.prepare_candidate(sha, source, build, None, tmp_path / "candidate", lambda: None)
+    assert git(bare, "rev-parse", "ai-prod") == previous
+
+    with pytest.raises(DdakToolError, match="prod 템플릿과 승인"):
+        repo.validate_candidate(sha, previous, source, build, tmp_path / "check", lambda: None)

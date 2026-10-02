@@ -10,29 +10,68 @@ from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+import yaml
+
 from ddak.core.app_repository import AppRepository, git_sha
+from ddak.core.contracts.deploy_config import DeployConfig
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.snapshots import apply_diff, digest_bytes, excluded, file_manifest
 
 
-class CandidateConflict(DdakToolError):
-    def __init__(self, source_sha: str, files: list[str]) -> None:
-        super().__init__(ErrorCode.PRECONDITION_FAILED, "후보 충돌: 충돌 파일 재패치 필요")
-        self.proposal = {
-            "status": "NEEDS_REPATCH",
-            "source_sha": source_sha,
-            "files": files,
-            "reason": "prod_merge_conflict",
-        }
+def _secret_name(path: Path) -> bool:
+    return path.name.lower() == ".env" or path.suffix.lower() in {".pem", ".key"}
 
 
-def template_file(path: Path) -> bool:
-    return path.name in {".env.example", ".env.sample"} and not excluded(path.parent)
+def template_file(path: Path, configured: frozenset[str] = frozenset()) -> bool:
+    return (
+        (path.name in {".env.example", ".env.sample"} or path.as_posix() in configured)
+        and not excluded(path.parent)
+        and not excluded(Path(path.parent.as_posix().lower()))
+        and not _secret_name(path)
+    )
+
+
+def _template_paths(repository: AppRepository, revision: str) -> frozenset[str]:
+    entry = repository.git_bytes("ls-tree", "-z", revision, "--", "deploy.yaml")
+    if not entry:
+        return frozenset()
+    metadata, _name = entry.rstrip(b"\0").split(b"\t", 1)
+    mode, kind, oid = metadata.decode().split()
+    if kind != "blob" or mode not in {"100644", "100755"}:
+        raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "deploy.yaml은 일반 파일이어야 한다")
+    try:
+        config = DeployConfig.model_validate(
+            yaml.safe_load(repository.git_bytes("cat-file", "blob", oid))
+        )
+    except (ValueError, yaml.YAMLError):
+        raise DdakToolError(ErrorCode.CONFIG_INVALID, "후보 deploy.yaml 형식 오류") from None
+    return (
+        frozenset({PurePosixPath(config.env_example).as_posix()})
+        if config.env_example
+        else frozenset()
+    )
+
+
+def _managed(files: dict[str, Any], configured: frozenset[str]) -> dict[str, Any]:
+    return {
+        name: metadata
+        for name, metadata in files.items()
+        if not template_file(Path(name), configured)
+    }
+
+
+def _manifest(root: Path, configured: frozenset[str]) -> dict[str, Any]:
+    return _managed(file_manifest(root), configured)
 
 
 def tree_manifest(
-    repository: AppRepository, revision: str, *, templates: bool = False
+    repository: AppRepository,
+    revision: str,
+    *,
+    templates: bool = False,
+    configured: frozenset[str] | None = None,
 ) -> dict[str, dict[str, Any]]:
+    configured = _template_paths(repository, revision) if configured is None else configured
     result: dict[str, dict[str, Any]] = {}
     for item in repository.git_bytes("ls-tree", "-rz", "--full-tree", revision).split(b"\0"):
         if not item:
@@ -46,12 +85,16 @@ def tree_manifest(
             or mode not in ("100644", "100755")
             or path.is_absolute()
             or ".." in path.parts
-            or (excluded(Path(name)) and not template_file(Path(name)))
+            or _secret_name(Path(name))
+            or (
+                (excluded(Path(name)) or excluded(Path(name.lower())))
+                and not template_file(Path(name), configured)
+            )
         ):
             raise DdakToolError(
                 ErrorCode.PRECONDITION_FAILED, "후보 Git 트리에 지원하지 않는 파일이 있다"
             )
-        if template_file(Path(name)) != templates:
+        if template_file(Path(name), configured) != templates:
             continue
         result[name] = {
             "sha256": digest_bytes(repository.git_bytes("cat-file", "blob", oid)),
@@ -93,6 +136,26 @@ def scan_staged(repository: Path) -> None:
             raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "비밀값 검사 실패; 커밋하지 않음")
 
 
+def _check_template_binding(
+    repository: AppRepository,
+    source_sha: str,
+    configured: frozenset[str],
+    source_files: dict[str, Any],
+    build_files: dict[str, Any],
+) -> None:
+    # .env.* 외의 경로는 공용 스냅샷에 포함된다. 그 경우 prod와 다른 승인본을
+    # 조용히 되돌리면 build-source와 candidate SHA가 달라지므로 실행을 거부한다.
+    templates = tree_manifest(repository, source_sha, templates=True, configured=configured)
+    for name in set(templates) | configured:
+        metadata = templates.get(name)
+        if not excluded(Path(name)) and (
+            source_files.get(name) != metadata or build_files.get(name) != metadata
+        ):
+            raise DdakToolError(
+                ErrorCode.PRECONDITION_FAILED, "prod 템플릿과 승인 원본/수정본이 다르다"
+            )
+
+
 def _validate_trees(
     repository: AppRepository,
     source_sha: str,
@@ -100,13 +163,19 @@ def _validate_trees(
     source_files: dict[str, Any],
     build_files: dict[str, Any],
 ) -> None:
-    if tree_manifest(repository, git_sha(source_sha)) != source_files:
+    configured = _template_paths(repository, git_sha(source_sha))
+    _check_template_binding(repository, source_sha, configured, source_files, build_files)
+    source_files, build_files = (
+        _managed(source_files, configured),
+        _managed(build_files, configured),
+    )
+    if tree_manifest(repository, git_sha(source_sha), configured=configured) != source_files:
         raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "prod SHA와 승인 원본이 다르다")
-    if tree_manifest(repository, git_sha(candidate_sha)) != build_files:
+    if tree_manifest(repository, git_sha(candidate_sha), configured=configured) != build_files:
         raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "후보 SHA와 승인 수정본이 다르다")
-    if tree_manifest(repository, source_sha, templates=True) != tree_manifest(
-        repository, candidate_sha, templates=True
-    ):
+    if tree_manifest(
+        repository, source_sha, templates=True, configured=configured
+    ) != tree_manifest(repository, candidate_sha, templates=True, configured=configured):
         raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "템플릿은 prod 원본을 유지해야 한다")
     repository.git("merge-base", "--is-ancestor", source_sha, candidate_sha)
 
@@ -129,12 +198,14 @@ def validate_candidate(
         "merge-base", "--is-ancestor", git_sha(candidate_sha), "refs/remotes/origin/ai-prod"
     )
     _validate_trees(repository, source_sha, candidate_sha, source_files, build_files)
+    configured = _template_paths(repository, source_sha)
+    build_files = _managed(build_files, configured)
     guard()
     repository.git("worktree", "add", "--detach", str(workspace), candidate_sha)
-    if file_manifest(workspace) != build_files:
+    if _manifest(workspace, configured) != build_files:
         raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "후보 검사 사본이 승인 트리와 다르다")
     (repository.secret_scan or scan_staged)(workspace)
-    if file_manifest(workspace) != build_files:
+    if _manifest(workspace, configured) != build_files:
         raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "검사 중 후보 사본이 바뀌었다")
     guard()
 
@@ -152,6 +223,13 @@ def prepare_candidate(
     source_sha = git_sha(source_sha)
     repository.git("fetch", "--no-tags", "origin", "refs/heads/prod:refs/remotes/origin/prod")
     repository.git("merge-base", "--is-ancestor", source_sha, "refs/remotes/origin/prod")
+    configured = _template_paths(repository, source_sha)
+    _check_template_binding(repository, source_sha, configured, source_files, build_files)
+    approved_manifests = source_files, build_files
+    source_files, build_files = (
+        _managed(source_files, configured),
+        _managed(build_files, configured),
+    )
     if tree_manifest(repository, source_sha) != source_files:
         raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "prod SHA와 승인 원본이 다르다")
     remote_ai = repository.git("ls-remote", "--refs", "origin", "refs/heads/ai-prod")
@@ -162,6 +240,7 @@ def prepare_candidate(
         )
         starting = git_sha(repository.git("rev-parse", "refs/remotes/origin/ai-prod"))
     tree_manifest(repository, starting)  # 제외 파일/링크는 checkout 이전에도 거부한다.
+    previous_templates = tree_manifest(repository, starting, templates=True)
     guard()
     repository.git("worktree", "add", "--detach", str(workspace), starting)
     work = AppRepository(
@@ -211,14 +290,18 @@ def prepare_candidate(
             write_files(approved, source_sha, source_files)
             if patch:
                 apply_diff(approved, patch)
-        if file_manifest(approved) != build_files:
+        if _manifest(approved, configured) != build_files:
             raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "승인 수정본 사본과 해시가 다르다")
         # 현재 후보의 관리 파일을 전부 비우고 승인한 내용만 넣는다. .git은 제외된다.
-        for name in file_manifest(workspace):
+        for name in _manifest(workspace, configured):
             (workspace / name).unlink()
         # prod 템플릿은 관리 대상 밖이지만 이전 ai-prod/충돌 내용은 남기지 않는다.
-        for path in workspace.rglob(".env.*"):
-            if template_file(path.relative_to(workspace)) and path.is_file():
+        template_names = set(previous_templates) | set(
+            tree_manifest(work, source_sha, templates=True)
+        )
+        for name in template_names:
+            path = workspace / name
+            if path.is_file():
                 path.unlink()
         for path in sorted(workspace.rglob("*"), key=lambda p: len(p.parts), reverse=True):
             if (
@@ -233,7 +316,10 @@ def prepare_candidate(
             shutil.copyfile(approved / name, target)
             target.chmod(0o755 if metadata["executable"] else 0o644)
         write_files(workspace, source_sha, tree_manifest(work, source_sha, templates=True))
-        if file_manifest(approved) != build_files or file_manifest(workspace) != build_files:
+        if (
+            _manifest(approved, configured) != build_files
+            or _manifest(workspace, configured) != build_files
+        ):
             raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "복사 중 승인 수정본이 바뀌었다")
 
     work.git("add", "--all", "--", ".")
@@ -242,10 +328,10 @@ def prepare_candidate(
         # 승인한 일반 파일/템플릿만 강제로 staging한다. 앱 ignore 규칙에 맡기지 않는다.
         work.git("add", "--force", "--", *approved_paths)
     tree = work.git("write-tree")
-    if tree_manifest(work, tree) != build_files:
+    if tree_manifest(work, tree, configured=configured) != build_files:
         raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "승인 수정본과 staged 트리가 다르다")
     scanner(workspace)  # commit-tree에도 커밋 직전 검사를 명시적으로 적용한다.
-    if work.git("write-tree") != tree or file_manifest(workspace) != build_files:
+    if work.git("write-tree") != tree or _manifest(workspace, configured) != build_files:
         raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "검사 중 staged 트리가 변경됐다")
     guard()
     parents = ["-p", starting]
@@ -255,10 +341,10 @@ def prepare_candidate(
         work.git("commit-tree", tree, *parents, "-m", "Merge approved deployment tree")
     )
     record("LOCAL_COMMIT", candidate_sha)
-    _validate_trees(work, source_sha, candidate_sha, source_files, build_files)
-    # 재사용 후보도 검사하며 모든 push 직전 승인을 다시 확인한다.
+    _validate_trees(work, source_sha, candidate_sha, *approved_manifests)
+    # 확정한 후보를 검사하며 모든 push 직전 승인을 다시 확인한다.
     scanner(workspace)
-    if file_manifest(workspace) != build_files:
+    if _manifest(workspace, configured) != build_files:
         raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "검사 중 후보 사본이 바뀌었다")
     guard()
     record("READY_TO_PUSH", candidate_sha)
@@ -269,6 +355,5 @@ def prepare_candidate(
         "candidate_sha": candidate_sha,
         "source_sha": source_sha,
         "workspace": str(workspace),
-        "reused": candidate_sha == starting,
         "merge_conflicts": conflicts,
     }

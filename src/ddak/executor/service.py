@@ -22,7 +22,6 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 from ddak.core.app_repository import AppRepository
-from ddak.core.candidate import CandidateConflict
 from ddak.core.config import AdapterMode
 from ddak.core.contracts.approval import ApprovalRecord
 from ddak.core.contracts.context import RunContext
@@ -340,11 +339,6 @@ class DeploymentService:
     def get_approvals(self, run_id: str) -> list[ApprovalRecord]:
         self.store.run(run_id)
         return self.store.approvals(run_id)
-
-    def get_conflict_proposal(self, run_id: str) -> dict[str, Any] | None:
-        self.store.run(run_id)
-        path = run_dir(self.root / "runs", run_id) / "conflict-proposal.json"
-        return json.loads(path.read_text()) if path.exists() else None
 
     def get_project_settings(self, project: str) -> dict[str, Any] | None:
         return self.store.project_settings(project)
@@ -684,10 +678,13 @@ class DeploymentService:
             write_context(self.root / "runs", ctx.run_id, updated.to_json_dict())
             return updated
 
+        def rollback_tier(step: PlanStep) -> str | None:
+            if step.tool == "prepare_db":
+                return step.tier or "was"
+            return step.tier if step.tool == "deploy_tier" else None
+
         planned_rollback_tiers = {
-            target: list(
-                dict.fromkeys(s.tier for s in section.steps if s.tool == "deploy_tier" and s.tier)
-            )
+            target: list(dict.fromkeys(tier for s in section.steps if (tier := rollback_tier(s))))
             for target, section in (
                 (Target.LOCAL, p.plan.deploy.local),
                 (Target.CLOUD, p.plan.deploy.cloud),
@@ -703,7 +700,7 @@ class DeploymentService:
                 if any(s.id == step.id for s in section.steps):
                     target = name
             if target and step.tool in {"deploy_tier", "prepare_db"}:
-                tier = step.tier or ("was" if step.tool == "prepare_db" else None)
+                tier = rollback_tier(step)
                 if tier and tier not in rollback_tiers[target]:
                     rollback_tiers[target].append(tier)
 
@@ -738,6 +735,7 @@ class DeploymentService:
         result: RunResult
         build_files: dict[str, dict[str, Any]] = {}
         git_record: dict[str, Any] = {"status": "NOT_CONFIGURED"}
+        merge_conflicts: list[str] = []
         candidate_stop = threading.Event()
         run_repository = self.repositories.get(ctx.project)
         git_timing_start = len(run_repository.timings) if run_repository else 0
@@ -806,6 +804,7 @@ class DeploymentService:
                         complete_on_cancel=True,
                         cancel_event=candidate_stop,
                     )
+                    merge_conflicts = candidate["merge_conflicts"]
                     ctx = replace(ctx, candidate_sha=candidate["candidate_sha"])
                     (directory / "candidate.json").write_text(json.dumps(candidate))
                 if candidate_stop.is_set():
@@ -856,10 +855,6 @@ class DeploymentService:
 
         except (Exception, asyncio.CancelledError) as exc:
             # 엔진 진입 전 실패는 대상 무변경. 엔진이 반환하지 못한 예외는 상태를 보수적으로 막는다.
-            if isinstance(exc, CandidateConflict):
-                (directory / "conflict-proposal.json").write_text(
-                    json.dumps(exc.proposal, ensure_ascii=False)
-                )
             unknown = (directory / "events.jsonl").exists()
             status = (
                 RunStatus.NEEDS_HUMAN
@@ -893,6 +888,7 @@ class DeploymentService:
         final_data = {
             "status": result.status.value,
             "git": git_record,
+            "merge_conflicts": merge_conflicts,
             "infra_changes": result.infra_changes,
             "targets": final_ctx.targets,
             "trigger": final_ctx.trigger,
@@ -914,6 +910,7 @@ class DeploymentService:
             "source_sha": final_ctx.source_sha,
             "candidate_sha": final_ctx.candidate_sha,
             "git": git_record,
+            "merge_conflicts": merge_conflicts,
             "infra_changes": result.infra_changes,
             "source_mode": p.context.adapter_mode.value,
             "source": p.snapshot.model_dump(mode="json"),
