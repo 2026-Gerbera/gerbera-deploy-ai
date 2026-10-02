@@ -7,7 +7,8 @@
 - 인프라 출력: ctx.platform['cloud']의 codebuild_project_name,
   image_repository(`<네임스페이스>/<저장소>`).
 - REAL은 호출마다 새 boto3 Session(AWS_PROFILE·AWS_REGION, 서울 기본). FAKE는 FakeCodeBuild이고
-  AWS를 부르지 않는다. FAKE에서 빠진 저장소·커밋·인프라 출력은 결정적 가짜 값으로 채운다.
+  AWS를 부르지 않는다. FAKE는 저장소 URL을 쓰지 않고(고정 가짜 URL), 커밋은 ctx.candidate_sha를
+  쓰되 40자가 아니면 가짜 값으로, 빠진 인프라 출력도 결정적 가짜 값으로 채운다.
 """
 
 from __future__ import annotations
@@ -43,8 +44,12 @@ def build_image(tier: str, ctx: RunContext) -> BuildImageOutput:
     if ctx.source_binding is None:
         raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "승인 스냅샷(source_binding)이 없다")
     cloud = _cloud(ctx)
-    repo_url = ctx.repo_url or (FAKE_REPO_URL if fake else None)
-    commit = ctx.candidate_sha or (_fake_sha(ctx.run_id) if fake else None)
+    if fake:
+        # FakeCodeBuild는 소스를 받지 않는다. 로컬(file://) 리허설 저장소·SHA-256 커밋도 통과
+        repo_url: str | None = FAKE_REPO_URL
+        commit = ctx.candidate_sha if _is_sha1(ctx.candidate_sha) else _fake_sha(ctx.run_id)
+    else:
+        repo_url, commit = ctx.repo_url, ctx.candidate_sha
     project = cloud.get("codebuild_project_name") or (FAKE_PROJECT if fake else None)
     repository = cloud.get("image_repository") or (FAKE_IMAGE_REPOSITORY if fake else None)
     if not repo_url or not commit:
@@ -90,6 +95,12 @@ def _codebuild(cloud: Mapping[str, Any]) -> CodeBuildClient:
         return boto3.Session(region_name=region).client("codebuild", config=config)  # pyright: ignore[reportUnknownMemberType]
     except Exception as exc:
         raise DdakToolError(ErrorCode.ADAPTER_FAILED, "AWS 세션을 만들지 못했다") from exc
+
+
+def _is_sha1(value: str | None) -> bool:
+    return (
+        bool(value) and len(value or "") == 40 and all(c in "0123456789abcdef" for c in value or "")
+    )
 
 
 def _fake_sha(run_id: str) -> str:
