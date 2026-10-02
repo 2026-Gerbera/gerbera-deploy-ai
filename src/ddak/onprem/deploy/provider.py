@@ -60,6 +60,7 @@ from ddak.cd.interface import ProviderName, ProviderResult
 from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.enums import Target
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
+from ddak.core.env_keys import check_runtime_keys
 from ddak.onprem.deploy import config, health, migrate, replicas
 from ddak.onprem.deploy.config import _private_env
 from ddak.onprem.deploy.containers import (
@@ -377,8 +378,8 @@ class OnPremProvider:
             if not migration and tier == "was":
                 from ddak.onprem.deploy.config import env_key_names
 
-                if "DATABASE_URL_MIGRATOR" in env_key_names(Path(config.env_file)):
-                    raise fail("앱 env에 마이그레이션 계정 키가 있다", ErrorCode.CONFIG_INVALID)
+                check_runtime_keys(env_key_names(Path(config.env_file)))
+                check_runtime_keys(config.public_env)
             args.extend(["--env-file", config.env_file])
         for key, value in config.public_env.items():
             args.extend(["-e", f"{key}={value}"])

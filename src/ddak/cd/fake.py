@@ -9,6 +9,7 @@ from typing import ClassVar, Literal
 from ddak.cd.interface import ProviderResult
 from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.enums import Target
+from ddak.core.env_keys import check_runtime_keys
 
 
 @dataclass(frozen=True)
@@ -36,6 +37,7 @@ class FakeProvider:
         return self._ok("migrate_db")
 
     def inject_config(self, keys: Sequence[str], ctx: RunContext) -> ProviderResult:
+        check_runtime_keys(keys)
         return self._ok("inject_config")
 
     def ensure_tls(self, mode: Literal["check", "apply"], ctx: RunContext) -> ProviderResult:

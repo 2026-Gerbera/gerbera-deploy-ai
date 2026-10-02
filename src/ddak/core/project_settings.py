@@ -18,7 +18,7 @@ class ProjectSettings(ContractModel):
     repo_url: RepoUrl | None = None
     watch_branch: str = Field(default="prod", pattern=r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$")
     auto_detect: bool = False
-    default_targets: Literal["onprem", "cloud", "both"] = "both"
+    default_targets: Literal["onprem", "cloud", "both"] = "onprem"
     cloud_domain: str | None = None
     dns_mode: Literal["route53", "external"] = "external"
     hosted_zone_id: str | None = Field(default=None, pattern=r"^Z[A-Z0-9]{5,31}$")

@@ -67,10 +67,13 @@ def carried_images(
     previous: Mapping[str, Mapping[str, Any]],
     mode: AdapterMode,
     supplied: Collection[str] = (),
+    blocked: Collection[str] = (),
 ) -> dict[str, dict[str, str]]:
     built = {s.tier for s in plan.build.steps if s.tool == "build_image"} | set(supplied)
     result: dict[str, dict[str, str]] = {}
     for target in ("local", "cloud"):
+        if target in blocked:
+            continue
         for step in getattr(plan.deploy, target).steps:
             if step.tool != "deploy_tier" or not step.tier or step.tier in built:
                 continue

@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
+
 from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.plan import Plan
 from ddak.core.contracts.tools.validate_plan import ValidatePlanInput
@@ -14,6 +16,8 @@ from ddak.plan.validate.assemble import assemble
 __all__ = ["validate_plan"]
 
 
-def validate_plan(inp: ValidatePlanInput, ctx: RunContext) -> Plan:
-    """순수 함수. draft=None이면 규칙 계획. 구조 위반은 DdakToolError(PLAN_INVALID)."""
-    return assemble(inp, ctx)
+def validate_plan(
+    inp: ValidatePlanInput, ctx: RunContext, *, registered_tools: Collection[str] | None = None
+) -> Plan:
+    """draft=None이면 규칙 계획. 등록 집합 생략 시 호출 시점의 실제 레지스트리를 쓴다."""
+    return assemble(inp, ctx, registered_tools=registered_tools)

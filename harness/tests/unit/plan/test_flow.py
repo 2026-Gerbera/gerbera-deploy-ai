@@ -385,7 +385,7 @@ def test_watch_new_commit_runs_plan_and_stops_cleanly(
     assert len(calls) == 1
     req = calls[0]["req"]
     assert (req.project, req.mode, req.repo_url) == (
-        "demo", RunMode.BOOTSTRAP, "https://github.com/o/r"
+        "flaskr", RunMode.BOOTSTRAP, "https://github.com/o/r"
     )  # fmt: skip
     assert calls[0]["prev"] == {"local": None, "cloud": None}
     assert re.fullmatch(RUN_ID_PATTERN, calls[0]["run_id"])

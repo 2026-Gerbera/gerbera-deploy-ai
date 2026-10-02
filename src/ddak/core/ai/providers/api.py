@@ -1,11 +1,12 @@
 """api backend(데모): 지금은 Groq(OpenAI 호환 chat completions)로 임시 연결한다. JSON 출력만.
 
 # TEMP(groq): 원래 구현은 `git show main:src/ddak/core/ai/providers/api.py`(Anthropic SDK).
-# 되돌릴 때 이 파일의 TEMP 블록과 jev.py의 TEMP 블록만 바꾼다.
+# LLM API 이름(AnthropicApiProvider)과 call_ai 동작은 호환성을 위해 유지한다.
 
-사용 설정(Claude 역할): DDAK_LLM_BACKEND=api, DDAK_LLM_API_KEY=<groq 키>,
+사용 설정(LLM 생성 역할, 실제 provider는 Groq): DDAK_LLM_BACKEND=api, DDAK_LLM_API_KEY=<groq 키>,
 DDAK_LLM_MODEL=<groq 모델>.
-Jev 역할은 jev.py docstring 참고(DDAK_JEV_API_KEY, DDAK_JEV_MODEL).
+판단 역할은 GroqJevClient(DDAK_GROQ_API_KEY, DDAK_GROQ_MODEL)가 담당한다.
+TypeSafe Jev와 DDAK_JEV_*는 미연결 예약이며 이 API에 사용하지 않는다.
 
 Groq 확인(공식 문서, 2026-10-01):
 - 엔드포인트 POST https://api.groq.com/openai/v1/chat/completions (Bearer 키).
