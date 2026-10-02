@@ -102,6 +102,16 @@ PR 본문: CodeBuild와 같은 buildspec을 사용하는 local backend, 승인 �
 
 ## 바뀐 파일 목록
 
+### 수정9 — 공개 인증서 PEM 허용
+
+- 작업은 `.worktrees/fix8-snap` / `o1/exec-fix8` / 기준 `3e59a14`에서만 진행했다. 원래 작업 트리와 기존 개발용 `.venv` 링크는 보존했다. 공유 venv의 의존성 동기화를 끄고 worktree 소스로 검증했다.
+- `core/pem.py`에서 최대 2MiB·엄격한 UTF-8·CERTIFICATE 블록 1개 이상·블록 밖 공백/#/; 주석을 검사한다. 각 블록의 Base64·DER 전체 길이와 X.509 구조도 확인한다. 개인키·CSR·혼합·빈 파일·바이너리·상한 초과 및 `.key`는 거부한다. 인증서의 신뢰/만료 판정은 이 함수의 역할이 아니다.
+- 공개 PEM은 snapshot manifest와 승인 해시, 후보 Git 트리, 빌드 사본에 포함한다. `env_example`으로 지정해도 PEM을 승인 대상에서 빼지 않는다. 후보·승인 전 검사·패치 적용·로컬 빌드는 같은 함수를 사용하며 오류에는 상대 경로와 고정 사유만 담는다.
+- **준석 확인 필요:** `plan/intake/logic.py`는 기존 공통 file_manifest를 그대로 쓰고, PEM 오류의 경로/사유를 지우지 않도록 예외 변환만 최소 수정했다. **승환 확인 필요:** local build의 무조건 `.pem` 차단을 제거하고 공통 manifest 판정으로 연결했다.
+- 회귀는 공개 인증서 여러 블록과 실제 앱 형태(`certs/global-bundle.pem`, was paths의 certs, Dockerfile COPY)를 사용한다. FAKE 왕복 테스트에서 접수·계획·preflight·승인 대기·후보·빌드 사본까지 확인한다. 실제 앱 원격 저장소/WSL/VM에는 접속하지 않았다.
+- 최종 검증: gitleaks 있음 `make -C harness ci` **1763 passed / 1 skipped / 4 deselected**, 전체 160.725초(exit 0). gitleaks 없는 PATH `make -C harness test` **1744 passed / 20 skipped / 4 deselected**, 전체 132.710초(exit 0). 실제 scanner 테스트 19개만 추가 skip했고 제품 fail-closed는 유지했다. lint/type/boundary/contracts도 통과했다. 두 실행은 병렬 검증 시간이며 배포 벤치마크가 아니다.
+- 검사 결과와 시간은 `harness/var/validation/fix9-20261003/` 및 개발 기록의 수정9 절을 따른다. 커밋·push·PR은 하지 않았다. 데스크탑 실환경 재실행은 사용자 측에서 남아 있다.
+
 ### 추가6 — Docker 로그인 사전 확인
 
 - Username 누락·중복은 로그인 확인 불가 경고, 단일 값의 namespace 불일치는 권한 확인 경고로 처리한다. 값 자체는 경고에 담지 않는다. buildx·QEMU 검사는 유지한다.
