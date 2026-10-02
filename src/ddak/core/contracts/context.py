@@ -18,6 +18,8 @@ from typing import Any, Literal
 
 from ddak.core.config import AdapterMode
 from ddak.core.contracts.enums import RunMode
+from ddak.core.contracts.errors import ErrorCode
+from ddak.core.contracts.infra_outputs import IMAGE_REPOSITORY_PATTERN
 from ddak.core.contracts.release import ReleaseArtifacts, SnapshotBinding
 
 
@@ -48,9 +50,34 @@ class RunContext:
     repo_url: str | None = None  # 요청한 앱 저장소(자격증명 없는 URL)
     ref: str | None = None  # 요청한 감시 브랜치. 실제 소스는 source_sha로 고정한다
     source_binding: SnapshotBinding | None = None  # 승인 뒤 실행기만 주입한다.
+    build_backend: Literal["codebuild", "local"] = "codebuild"
+    image_repository: str | None = None  # local 빌드 저장소, 승인 스냅샷에 결합
     preparation_failures: Mapping[str, list[str]] = field(default_factory=dict)
+    preparation_errors: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
+    preparation_warnings: list[str] = field(default_factory=list)  # 비밀값 없는 준비 경고
+    source_checks: Mapping[str, Any] = field(default_factory=dict)  # 비밀값 없는 검사·예외 요약
 
     def __post_init__(self) -> None:
+        if not isinstance(self.preparation_warnings, list) or len(self.preparation_warnings) > 20:
+            raise ValueError("준비 경고 형식 오류")
+        if any(not isinstance(w, str) or len(w) > 1000 for w in self.preparation_warnings):
+            raise ValueError("준비 경고 형식 오류")
+        for target, error in self.preparation_errors.items():
+            if (
+                target != "cloud"
+                or set(error) != {"phase", "code", "detail"}
+                or error.get("phase") != "infra"
+                or not all(isinstance(v, str) for v in error.values())
+                or len(error.get("detail", "")) > 1000
+            ):
+                raise ValueError("인프라 준비 오류 형식 오류")
+            ErrorCode(error["code"])
+        if self.build_backend not in ("codebuild", "local"):
+            raise ValueError("build_backend는 codebuild/local만 허용한다")
+        if self.image_repository is not None and not re.fullmatch(
+            IMAGE_REPOSITORY_PATTERN, self.image_repository
+        ):
+            raise ValueError("이미지 저장소 형식 오류")
         if any(
             t not in ("local", "cloud") or not tools or not all(isinstance(n, str) for n in tools)
             for t, tools in self.preparation_failures.items()

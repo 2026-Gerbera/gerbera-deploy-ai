@@ -58,7 +58,7 @@ async def test_candidate_cancellation_stops_next_commit_or_push(rig, repository,
         entered.set()
         assert release.wait(3)
 
-    repo.secret_scan = scan
+    repo.secret_scan = lambda _: None  # source=fixture: 승인 전 검사는 결정적으로 통과
     service.repositories["demo"] = repo
     p = service_tests.plan().model_copy(update={"toggles": {"code_patch": True}})
     rid = service.prepare(
@@ -69,6 +69,8 @@ async def test_candidate_cancellation_stops_next_commit_or_push(rig, repository,
         source,
         patch=candidate_tests.PATCH,
     )
+    # 승인 전 검사는 통과시키고 후보 생성 중의 검사만 정지시킨다.
+    repo.secret_scan = scan
     service.approve(rid, approver="operator")
     task = service.start(rid)
     try:

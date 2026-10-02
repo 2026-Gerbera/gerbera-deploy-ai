@@ -6,7 +6,7 @@
 DEV := uv run python scripts/dev.py
 
 .DEFAULT_GOAL := help
-.PHONY: help setup setup-local fmt lint type test test-docker test-aws test-llm contracts contracts-update boundary attribution check ci run up run-fake contract-smoke demo-reset demo-local demo smoke-local smoke-cloud patch-eval preflight secrets-scan tf-plan clean
+.PHONY: onprem-run onprem-plan unlock help setup setup-local fmt lint type test test-docker test-aws test-llm contracts contracts-update boundary attribution check ci run up run-fake contract-smoke demo-reset demo-local demo smoke-local smoke-cloud patch-eval preflight secrets-scan tf-plan clean
 
 help: ## 타깃 목록
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  %-18s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -63,6 +63,15 @@ up: run ## run과 같다(호스트 실행)
 
 run-fake: ## 같은 기동, 모든 어댑터 Fake
 	$(DEV) run-fake
+
+onprem-run: ## 로컬 빌드 + Claude 관리 웹·감시 기동
+	$(DEV) onprem-run
+
+onprem-plan: ## 실행 중인 관리 웹에 현재 HEAD 계획 요청(PROJECT·REF 선택)
+	$(DEV) onprem-plan $(if $(PROJECT),--project $(PROJECT),) $(if $(REF),--ref $(REF),)
+
+unlock: ## 실행 중인 관리 웹에서 제품 잠금·차단 해제(PROJECT 선택)
+	$(DEV) unlock $(if $(PROJECT),--project $(PROJECT),)
 
 contract-smoke: ## 레지스트리 구현 현황(등록/미구현) + Fake 1회 호출
 	$(DEV) contract-smoke

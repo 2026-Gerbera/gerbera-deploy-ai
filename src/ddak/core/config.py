@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -19,6 +20,7 @@ import yaml
 
 from ddak.core.contracts.enums import LLMBackend
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
+from ddak.core.contracts.infra_outputs import IMAGE_REPOSITORY_PATTERN
 from ddak.core.logging import get_logger
 
 
@@ -58,6 +60,8 @@ class Settings:
     jev_api_key: str | None = field(default=None, repr=False)
     jev_model: str = "jev-1.13.0"  # 버전 고정(jev-latest 쓰지 않음)
     jev_timeout_s: float = 2.0  # SDK 기본(10초 + 재시도 2회)을 줄인다
+    build_backend: Literal["codebuild", "local"] = "codebuild"
+    image_repository: str | None = None
 
     def __post_init__(self) -> None:
         if self.llm_effort not in ("low", "medium"):
@@ -66,6 +70,12 @@ class Settings:
             object.__setattr__(self, "llm_model", "claude-sonnet-5-5")
         if self.jev_backend not in ("groq", "claude-cli"):
             raise ValueError("DDAK_JEV_BACKEND는 groq/claude-cli만 허용한다")
+        if self.build_backend not in ("codebuild", "local"):
+            raise ValueError("DDAK_BUILD_BACKEND는 codebuild/local만 허용한다")
+        if self.image_repository is not None and not re.fullmatch(
+            IMAGE_REPOSITORY_PATTERN, self.image_repository
+        ):
+            raise ValueError("DDAK_IMAGE_REPOSITORY는 namespace/repository 형식이어야 한다")
         # make 진입점은 harness를 cwd로 쓴다. 설정을 읽는 시점에 기준을 고정하여
         # 이후 Git checkout의 cwd나 컨트롤러 재시작 위치에 영향을 받지 않게 한다.
         for name in ("deploy_config", "run_dir", "ai_replay_dir"):
@@ -99,6 +109,10 @@ class Settings:
             jev_key_configured="DDAK_JEV_API_KEY" in env,
             jev_model=env.get("DDAK_JEV_MODEL") or "jev-1.13.0",
             jev_timeout_s=float(env.get("DDAK_JEV_TIMEOUT_S") or "2"),
+            build_backend=cast(
+                Literal["codebuild", "local"], env.get("DDAK_BUILD_BACKEND") or "codebuild"
+            ),
+            image_repository=env.get("DDAK_IMAGE_REPOSITORY") or None,
         )
 
 

@@ -90,7 +90,7 @@ def test_concurrent_requests_for_one_project_have_one_lock_owner(store: Store) -
     store.check_lock("demo", winner, token)
 
 
-def test_expired_lock_survives_controller_restart(store: Store) -> None:
+def test_restart_removes_orphan_lock_but_preserves_unknown_infrastructure(store: Store) -> None:
     for run_id in ("run-1", "run-2"):
         store.create_run(run_id, "demo", HASH)
         store.approve([approval(run_id)])
@@ -109,9 +109,11 @@ def test_expired_lock_survives_controller_restart(store: Store) -> None:
     assert refresh.value.code is ErrorCode.LOCK_INVALID
     with pytest.raises(DdakToolError) as blocked:
         restarted.acquire("demo", "run-2")
-    assert blocked.value.code is ErrorCode.LOCK_HELD
+    assert blocked.value.code is ErrorCode.PRECONDITION_FAILED
     with restarted.connection() as db:
-        assert db.execute("SELECT run_id FROM locks").fetchone()[0] == "run-1"
+        assert db.execute("SELECT run_id FROM locks").fetchone() is None
+    assert restarted.project_state("demo")["blocked_targets"] == ["cloud", "local"]
+    assert all(row["status"] == "NEEDS_HUMAN" for row in restarted.environments("demo").values())
 
 
 def test_other_run_or_project_approval_does_not_authorize_start(store: Store) -> None:

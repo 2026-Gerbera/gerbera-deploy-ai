@@ -587,6 +587,22 @@ class Executor:
         if section.signal:
             own.add(section.signal)
         try:
+            if target is not None and state.ctx.preparation_errors.get(target.value):
+                error = state.ctx.preparation_errors[target.value]
+                detail = f"{error['code']}: {error['detail']}"
+                sid = f"prepare.infra.{target.value}"
+                state.records.append(
+                    StepRecord(sid, "apply_infra", target, "failed", 0, error=detail)
+                )
+                await state.emit(
+                    EventType.STEP_FINISHED,
+                    step=sid,
+                    tool="apply_infra",
+                    target=target,
+                    status="failed",
+                    detail=detail,
+                )
+                raise DdakToolError(ErrorCode(error["code"]), error["detail"])
             if target is not None and state.ctx.preparation_failures.get(target.value):
                 missing = state.ctx.preparation_failures[target.value]
                 for step in section.steps:

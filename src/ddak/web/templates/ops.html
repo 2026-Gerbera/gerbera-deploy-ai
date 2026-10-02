@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}온프렘 운영 · Gerbera{% endblock %}
+{% block content %}
+{% if preparations|selectattr('status', 'equalto', 'PREPARING')|list %}<meta http-equiv="refresh" content="2">{% endif %}
+<section class="card"><h2>계획 준비 요청</h2><ul>{% for item in preparations %}<li>{% if item.status == 'PREPARING' %}준비 중{% else %}{{ item.status }}{% endif %} · {{ item.request_id }}{% if item.detail %} · {{ item.detail }}{% endif %}{% if item.run_id %} · <a href="/runs/{{ item.run_id }}/result">기록</a>{% endif %}</li>{% endfor %}</ul></section>
+<section class="hero"><h1>{{ project }} 운영</h1><a href="/">대시보드</a></section>
+<section class="card"><h2>감시 설정</h2>
+<form method="post" action="/ops/settings">
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+<input type="hidden" name="project" value="{{ project }}">
+<input type="hidden" name="version" value="{{ settings.get('version', 0) }}">
+<p><label>저장소 <input name="repo_url" required value="{{ settings.get('repo_url') or '' }}"></label></p>
+<p><label>감시 브랜치 <input name="watch_branch" value="{{ settings.get('watch_branch') or 'prod' }}"></label></p>
+<p><label>기본 대상 <select name="default_targets">{% for v in ('onprem', 'cloud', 'both') %}<option value="{{ v }}" {% if settings.get('default_targets', 'onprem') == v %}selected{% endif %}>{{ v }}</option>{% endfor %}</select></label></p>
+<label><input type="checkbox" name="auto_detect" {% if settings.get('auto_detect', true) %}checked{% endif %}>자동 감시</label>
+<button class="button">설정 저장</button></form></section>
+<section class="card"><h2>현재 코드로 다시 계획</h2>
+<form method="post" action="/ops/plan"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="project" value="{{ project }}"><input name="ref" placeholder="현재 감시 HEAD 또는 v* 태그"><button class="button">지금 계획 요청</button></form>
+<p>컨트롤러를 먼저 시작한 뒤 prod에 PR을 merge합니다. 기존 HEAD를 실행하려면 이 버튼을 누릅니다.</p></section>
+<section class="card"><h2>잠금과 차단</h2>
+<p>차단 환경: {{ state.blocked_targets|join(', ') or '없음' }} · 실행 중: {{ state.active_runs|join(', ') or '없음' }}</p>
+<form method="post" action="/ops/unlock"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="project" value="{{ project }}"><input name="reason" value="운영자가 실제 대상 상태를 확인하고 재실행 요청" required><button class="button danger">제품 잠금·차단 해제</button></form>
+<p>해제는 제품 차단만 정리합니다. 실제 VM·DB와 NEEDS_HUMAN 기록은 바꾸지 않습니다. 실행 중이면 해제할 수 없습니다.</p></section>
+<section class="card"><h2>실행 기록</h2><ul>{% for run in runs %}<li><a href="/runs/{{ run.run_id }}/result">{{ run.run_id }}</a> {% if run.status == 'SUPERSEDED' %}대체됨(SUPERSEDED){% else %}{{ run.status }}{% endif %} {% if run.status == 'AWAITING_APPROVAL' %}<a href="/ops/runs/{{ run.run_id }}/approval">승인</a>{% endif %}</li>{% endfor %}</ul></section>
+{% endblock %}

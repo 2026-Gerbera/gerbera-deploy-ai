@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from ddak.core.contracts.release import SnapshotBinding
+from ddak.core.pem import UnsupportedPemError, read_source_bytes
 
 EXCLUDED = {
     ".git",
@@ -39,7 +40,6 @@ def excluded(path: Path) -> bool:
     return any(p in EXCLUDED or p.startswith(".env") for p in path.parts) or path.suffix in {
         ".sqlite",
         ".sqlite3",
-        ".pem",
         ".key",
     }
 
@@ -64,6 +64,8 @@ def file_manifest(root: Path) -> dict[str, dict[str, Any]]:
         for name in [*dirs, *sorted(names)]:
             path = parent / name
             relative = path.relative_to(root)
+            if path.suffix.lower() == ".key" and not path.is_dir():
+                raise UnsupportedPemError(relative)
             if excluded(relative):
                 continue
             if path.is_symlink():
@@ -73,7 +75,7 @@ def file_manifest(root: Path) -> dict[str, dict[str, Any]]:
             if not path.is_file():
                 raise ValueError("소스에 일반 파일이 아닌 항목이 있다")
             files[relative.as_posix()] = {
-                "sha256": digest_bytes(path.read_bytes()),
+                "sha256": digest_bytes(read_source_bytes(path, relative)),
                 "executable": bool(path.stat().st_mode & stat.S_IXUSR),
             }
     return files
@@ -113,6 +115,8 @@ def apply_diff(root: Path, patch: bytes) -> None:
             raise ValueError("패치 경로는 a/ 또는 b/ 접두사가 필요하다")
         relative = name[2:]
         path = Path(relative)
+        if path.suffix.lower() == ".key":
+            raise UnsupportedPemError(path)
         if (
             not relative
             or path.is_absolute()

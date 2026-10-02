@@ -1,0 +1,5 @@
+{# C3 통합 지점: dashboard/result의 content 블록, hero 다음에 include #}
+<section class="card">
+  <a href="/ops?project={{ project|default('flaskr')|urlencode }}">설정 · 현재 HEAD 계획 요청 · 잠금 해제</a>
+  {% if run is defined and run.status == 'SUPERSEDED' %}<p>대체됨: 새 prod 커밋의 승인 요청을 확인하세요.</p>{% endif %}
+</section>

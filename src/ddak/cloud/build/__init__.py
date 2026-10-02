@@ -16,5 +16,6 @@ AI 없음(import-linter 계약 1).
 """
 
 from ddak.cloud.build.image import build_image
+from ddak.cloud.build.local import LocalBuildRunner, configure_local_build, preflight_local_build
 
-__all__ = ["build_image"]
+__all__ = ["LocalBuildRunner", "build_image", "configure_local_build", "preflight_local_build"]
