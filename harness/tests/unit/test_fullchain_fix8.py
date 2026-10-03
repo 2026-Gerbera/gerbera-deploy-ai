@@ -205,7 +205,7 @@ async def test_ops_csrf_and_manual_plan_endpoint(rig):
             receive,
         )
 
-    response = await page(request())
+    response = await page(request(), "demo")
     assert response.status_code == 200 and "지금 배포 준비" in response.body.decode()
     with pytest.raises(HTTPException) as exc:
         await operate(request("POST", {"project": "demo"}, safe=False), "unlock")

@@ -36,11 +36,32 @@ def deployment(request: Request) -> DeploymentService:
 TERMINAL_STATUSES = frozenset({status.value for status in RunStatus} | {"SUPERSEDED"})
 
 
+class ProjectRequired(HTTPException):
+    """고를 프로젝트가 없다. HTML 화면은 프로젝트 생성 안내로 바꿔 보여 준다."""
+
+    def __init__(self) -> None:
+        super().__init__(404, "프로젝트를 먼저 만드세요. 프로젝트 설정에서 저장하면 선택됩니다")
+
+
+def default_project(service: DeploymentService) -> str:
+    """주소·실행환경 지정이 없을 때 최근 갱신된 저장 설정의 프로젝트를 고른다."""
+    saved = service.list_project_settings()
+    if not saved:
+        raise ProjectRequired()
+    # 감시 이관은 넘겨준 프로젝트도 같은 시각으로 갱신한다. 같은 시각이면 감시를 받은 쪽이 앞선다.
+    latest = max(
+        saved,
+        key=lambda s: (s.get("updated_at") or 0, s.get("auto_detect") is not False, s["project"]),
+    )
+    return latest["project"]
+
+
 def selected_project(request: Request, project: str | None = None) -> str:
-    name = project or os.environ.get("DDAK_WATCH_PROJECT") or "flaskr"
+    service = deployment(request)
+    name = project or os.environ.get("DDAK_WATCH_PROJECT") or default_project(service)
     if not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", name):
         raise HTTPException(400, "프로젝트 이름 형식 오류")
-    return deployment(request).resolve_project(name)
+    return service.resolve_project(name)
 
 
 def project_settings(request: Request, project: str) -> dict:
