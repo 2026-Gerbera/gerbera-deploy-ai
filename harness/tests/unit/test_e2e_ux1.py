@@ -3,7 +3,7 @@
 import pytest
 
 from ddak.web.dependencies import templates
-from tests.unit.test_ui_integration_fix10 import client_for, prepare
+from tests.unit.test_ui_integration_fix10 import PROJECT, client_for, prepare
 from tests.unit.test_ui_integration_fix10 import rig as rig
 
 
@@ -47,7 +47,7 @@ def test_no_error_boxes_outside_inert_template(rig, page):
     rid = prepare(service, source)
     if page == "result":
         service.approve(rid, approver="fixture", approved=False)
-    path = "/ops" if page == "ops" else f"/runs/{rid}/{page}"
+    path = f"/ops?project={PROJECT}" if page == "ops" else f"/runs/{rid}/{page}"
     with client_for(service) as client:
         response = client.get(path)
         assert response.status_code == 200

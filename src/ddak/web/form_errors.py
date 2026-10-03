@@ -179,19 +179,25 @@ class FormRoute(APIRoute):
                     return failure_response(request, exc)
                 if "text/html" not in request.headers.get("accept", ""):
                     raise
-                from ddak.web.dependencies import templates
+                from ddak.web.dependencies import ProjectRequired, templates
 
-                status, error = error_data(exc, {})
-                original = form_context(request)["post_error"]
-                if original:
-                    error = original
-                    request.state.form_error_shown = True
-                response = templates.TemplateResponse(
-                    request=request,
-                    name="form_failure.html",
-                    context={"error": error},
-                    status_code=status,
-                )
+                if isinstance(exc, ProjectRequired):
+                    # 첫 실행은 오류가 아니라 프로젝트를 만드는 안내 화면이다.
+                    response = templates.TemplateResponse(
+                        request=request, name="project_required.html", context={}
+                    )
+                else:
+                    status, error = error_data(exc, {})
+                    original = form_context(request)["post_error"]
+                    if original:
+                        error = original
+                        request.state.form_error_shown = True
+                    response = templates.TemplateResponse(
+                        request=request,
+                        name="form_failure.html",
+                        context={"error": error},
+                        status_code=status,
+                    )
             # 닫힌 승인 화면이 결과 화면으로 이동해도 오류는 해당 세션에 전달한다.
             flash = request.query_params.get(FLASH_QUERY, "")
             record = _flashes(request).get(flash)
