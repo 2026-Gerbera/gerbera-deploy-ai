@@ -33,6 +33,9 @@ class SettingsStore:
     def list_projects(self) -> list[str]:
         return sorted(self.rows)
 
+    def list_project_settings(self) -> list[dict[str, Any]]:
+        return [{**row, "project": name} for name, row in sorted(self.rows.items())]
+
     def save_project_settings(self, project: str, data: dict[str, Any], **kwargs: Any) -> dict:
         version = (self.rows.get(project) or {}).get("version", 0)
         if kwargs["expected_version"] != version:
