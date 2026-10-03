@@ -30,7 +30,7 @@ from tests.unit.cloud.infra.test_generate_storage import context as storage_cont
 
 JA_LINE = (
     "上記で韓国語と指定された自由記述フィールド(conclusion・changes・checks・next_action・"
-    "reason・summary・answer・rationale)も含め、すべて日本語で書いてください。"
+    "reason・summary・answer・rationale・suggested_next)も含め、すべて日本語で書いてください。"
     "JSONのキー・列挙値・構造・文字数/バイト上限は変更しないでください。"
 )
 # 언어 연결 전 KO 프롬프트의 UTF-8 바이트 해시.

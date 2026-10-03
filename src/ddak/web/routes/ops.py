@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from starlette.concurrency import run_in_threadpool
 
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
+from ddak.core.logging import get_logger
 from ddak.core.redact import redact
 from ddak.web.dependencies import (
     deployment,
@@ -17,11 +18,12 @@ from ddak.web.dependencies import (
 )
 from ddak.web.form_errors import FormRoute
 from ddak.web.forms import parse_form
-from ddak.web.i18n import enqueue_localized
+from ddak.web.i18n import enqueue_localized, language
 from ddak.web.routes.approvals import approval_page as canonical_approval_page
 from ddak.web.security import csrf_token, issue_csrf, require_safe_post
 
 router = APIRouter(prefix="/ops", route_class=FormRoute)
+_log = get_logger("web.ops")
 
 
 def _render(request: Request, name: str, context: dict):
@@ -145,6 +147,10 @@ async def demo_action(request: Request, action: str):
     require_safe_post(request, form.get("csrf_token", ""))
     project = selected_project(request, form.get("project"))
     result = await run_in_threadpool(_demo(request).create, project, action)
+    try:
+        deployment(request).remember_answer_language(project, language(request))
+    except Exception:
+        _log.warning("답변 언어 저장 실패: 시연 PR 요청은 계속 진행")
     if action == "reset-v1" and result.get("already_source"):
         # prod 트리만 v1인 경우에도 실제 배포는 별도로 승인받는다.
         enqueue_localized(request, deployment(request), project, ref="prod")

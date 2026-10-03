@@ -150,3 +150,52 @@ async def test_language_change_during_plan_preserves_version_and_run_snapshot(
     assert service.get_project_settings("demo") == before
     reviews = PatchReviews(service, generate=None, combine=None, finalize=None, diff=None)
     assert reviews._prepared(rid).context.project_settings["version"] == before["version"]
+
+
+@pytest.mark.parametrize("action", ["prepare-v2", "prepare-v3", "reset-v1"])
+def test_demo_pr_remembers_language_without_changing_settings(rig, action):
+    service, _, _ = rig
+    before = service.save_project_settings(
+        PROJECT, {"auto_detect": False}, updated_by="operator", expected_version=0
+    )
+    create = Mock(return_value={"url": "https://example.test/pull/1"})
+    with client_for(service) as client:
+        client.get(f"/?project={PROJECT}&lang=ja")
+        service.demo_reset = SimpleNamespace(create=create)
+        response = post(client, f"/ops/demo/{action}", project=PROJECT)
+    create.assert_called_once_with(PROJECT, action)
+    assert response.status_code == 303
+    assert service.get_answer_language(PROJECT) == "ja"
+    assert service.get_project_settings(PROJECT) == before
+
+
+def test_demo_pr_language_save_failure_keeps_redirect(rig, monkeypatch):
+    from ddak.web.routes import ops
+
+    service, _, _ = rig
+    create = Mock(return_value={"url": "https://example.test/pull/1"})
+    save = Mock(side_effect=RuntimeError("private failure content"))
+    warning = Mock()
+    monkeypatch.setattr(service, "remember_answer_language", save)
+    monkeypatch.setattr(ops._log, "warning", warning)
+    with client_for(service) as client:
+        client.get(f"/?project={PROJECT}&lang=ja")
+        service.demo_reset = SimpleNamespace(create=create)
+        response = post(client, "/ops/demo/prepare-v3", project=PROJECT)
+    assert response.status_code == 303
+    assert "private failure content" not in response.text + str(warning.call_args)
+    save.assert_called_once_with(PROJECT, "ja")
+    warning.assert_called_once_with("답변 언어 저장 실패: 시연 PR 요청은 계속 진행")
+
+
+def test_rejected_demo_pr_does_not_record_language(rig, monkeypatch):
+    service, _, _ = rig
+    save = Mock()
+    monkeypatch.setattr(service, "remember_answer_language", save)
+    create = Mock(side_effect=DdakToolError(ErrorCode.LOCK_HELD, "시연 PR 준비 중입니다"))
+    with client_for(service) as client:
+        client.get(f"/?project={PROJECT}&lang=ja")
+        service.demo_reset = SimpleNamespace(create=create)
+        response = post(client, "/ops/demo/prepare-v3", project=PROJECT)
+    assert response.status_code == 303
+    save.assert_not_called()

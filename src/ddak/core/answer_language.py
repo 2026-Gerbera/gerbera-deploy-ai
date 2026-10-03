@@ -6,7 +6,7 @@ request_language: ContextVar[str | None] = ContextVar("ddak_request_language", d
 
 _JA_INSTRUCTION = (
     "上記で韓国語と指定された自由記述フィールド(conclusion・changes・checks・next_action・"
-    "reason・summary・answer・rationale)も含め、すべて日本語で書いてください。"
+    "reason・summary・answer・rationale・suggested_next)も含め、すべて日本語で書いてください。"
     "JSONのキー・列挙値・構造・文字数/バイト上限は変更しないでください。"
 )
 
