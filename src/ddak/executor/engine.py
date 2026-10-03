@@ -42,6 +42,13 @@ ToolContextHook = Callable[[PlanStep, Target | None, RunContext], RunContext]
 _QUIESCE_TIMEOUT_S = 0.1
 _ROLLBACK_TIMEOUT_S = 300.0
 _VERIFIED_TOOLS = frozenset({"health_check", "smoke_test", "verify_tls", "compare_env_results"})
+_PARITY_TOOL = "compare_env_results"  # passed=False만 PARITY_FAILED(클라우드 롤백)
+# 원인 분석(AI 허용 툴)은 설명 전용 내장 step이다(불변 조건 (a), 10/3 결정). 계획에 넣지 않고
+# 실행기가 compare 불합격이나 환경 트랙 실패 뒤에만 부른다. 출력의 passed·예외·타임아웃은
+# run 상태·롤백·관문 판정에 쓰지 않는다. 보고와 결과 화면 설명에만 남는다.
+_ADVISORY_TOOL = "diagnose_parity_gap"
+_ADVISORY_STEP = "verify.diagnose"
+_ADVISORY_IN_PLAN = "원인 분석은 실행기 내장 step이다(계획에 넣지 않는다)"
 
 
 class TrackStatus(StrEnum):
@@ -54,6 +61,12 @@ class TrackStatus(StrEnum):
     ROLLBACK_FAILED = "ROLLBACK_FAILED"
     NOT_APPLICABLE = "N/A"
     SKIPPED = "SKIPPED"  # 빌드 의존성 실패 또는 교차 검증 조건 미충족
+
+
+# 원인 분석을 부르는 환경 트랙 실패 상태
+_TRACK_FAILED = frozenset(
+    {TrackStatus.FAILED, TrackStatus.ROLLED_BACK, TrackStatus.ROLLBACK_FAILED}
+)
 
 
 class RunStatus(StrEnum):
@@ -190,7 +203,20 @@ def _changes_state(step: PlanStep, spec: ToolSpec) -> bool:
     return Effect.STATE_CHANGE in (step.effect, spec.effect) or spec.requires_lock
 
 
-def _check_tool(step: PlanStep, spec: ToolSpec, ctx: RunContext) -> None:
+def _check_tool(step: PlanStep, spec: ToolSpec, ctx: RunContext, *, advisory: bool = False) -> None:
+    if advisory:
+        # 실행기 내장 원인 분석만 계획 밖에서 부를 수 있다. 상태를 바꾸는 툴은 거부한다.
+        if (
+            spec.name != _ADVISORY_TOOL
+            or step.tool != _ADVISORY_TOOL
+            or spec.kind is not ToolKind.TOOL_FN
+            or not spec.read_only
+            or _changes_state(step, spec)
+        ):
+            raise DdakToolError(ErrorCode.PLAN_INVALID, f"설명 전용이 아닌 툴: {step.tool}")
+        return
+    if step.tool == _ADVISORY_TOOL:
+        raise DdakToolError(ErrorCode.PLAN_INVALID, _ADVISORY_IN_PLAN)
     # 기존 fake ping 예제만 허용한다. service의 실제 계획 검사는 예외 없이 canonical을 요구한다.
     fake_ping = (
         ctx.adapter_mode is AdapterMode.FAKE
@@ -284,9 +310,16 @@ def check_signals(plan: Plan, registry: Registry | None = None) -> None:
 
 
 def build_input(
-    registered: RegisteredTool, step: PlanStep, track_target: Target | None, ctx: RunContext
+    registered: RegisteredTool,
+    step: PlanStep,
+    track_target: Target | None,
+    ctx: RunContext,
+    supplied: Mapping[str, Any] | None = None,
 ) -> ToolInput:
-    """step과 실행 컨텍스트로 입력 모델을 만든다. 스키마로 한 번 더 검증된다(extra=forbid)."""
+    """step과 실행 컨텍스트로 입력 모델을 만든다. 스키마로 한 번 더 검증된다(extra=forbid).
+
+    supplied는 실행기가 직접 채우는 값(원인 분석 입력)이다. 입력 모델에 선언된 필드만 넣는다.
+    """
     spec = registered.spec
     if step.target is not None and track_target is not None and step.target is not track_target:
         raise DdakToolError(ErrorCode.PLAN_INVALID, f"{step.id}: target이 트랙과 다르다")
@@ -306,6 +339,7 @@ def build_input(
     if "lock_token" in fields and ctx.lock_token is not None:
         data["lock_token"] = ctx.lock_token
     data.update(step.params)
+    data.update({k: v for k, v in (supplied or {}).items() if k in fields})
     return registered.input_model.model_validate(data)
 
 
@@ -357,6 +391,8 @@ class Executor:
         check_signals(plan, self._registry)
         for name, section in _sections(plan).items():
             for step in section.steps:
+                if step.tool == _ADVISORY_TOOL or step.id == _ADVISORY_STEP:
+                    raise DdakToolError(ErrorCode.PLAN_INVALID, _ADVISORY_IN_PLAN)
                 try:
                     spec = self._registry.spec(step.tool)
                 except UnknownToolError:
@@ -447,17 +483,13 @@ class Executor:
         failures = [r for r in state.records if r.status in {"failed", "check_failed"}]
         verify_ids = {s.id for s in plan.verify.steps if s.run is None}
         parity_failed = any(
-            r.step_id in verify_ids
-            and r.status == "check_failed"
-            and r.tool in {"compare_env_results", "diagnose_parity_gap"}
+            r.step_id in verify_ids and r.status == "check_failed" and r.tool == _PARITY_TOOL
             for r in failures
         )
         for target in {
             r.target
             for r in failures
-            if r.step_id in verify_ids
-            and r.target
-            and r.tool not in {"compare_env_results", "diagnose_parity_gap"}
+            if r.step_id in verify_ids and r.target and r.tool != _PARITY_TOOL
         }:
             if state.tracks[target.value] is TrackStatus.DONE:
                 state.tracks[target.value] = (
@@ -491,6 +523,11 @@ class Executor:
         elif internal_failure and status is RunStatus.SUCCEEDED:
             status = RunStatus.FAILED_BEFORE_DEPLOY
 
+        if not cancelled and not internal_failure and not state.event_failed:
+            # 판정·롤백이 끝난 뒤에 돈다. 결과(passed·예외·타임아웃)는 status를 바꾸지 않는다.
+            with contextlib.suppress(Exception, asyncio.CancelledError):
+                await self._diagnose(state, parity_failed)
+
         for step in plan.verify.steps:
             if step.run == "finally":
                 # 보고의 예외·타임아웃·자체 취소는 배포 판정을 바꾸지 않는다.
@@ -512,7 +549,9 @@ class Executor:
             infra_changes=list(state.infra_changes),
         )
 
-    async def _skip(self, step: PlanStep, state: _RunState) -> None:
+    async def _skip(
+        self, step: PlanStep, state: _RunState, detail: str = "검증 대상 트랙의 성공 조건 미충족"
+    ) -> None:
         state.records.append(StepRecord(step.id, step.tool, step.target, "skipped", 0))
         await state.emit(
             EventType.STEP_SKIPPED,
@@ -520,8 +559,46 @@ class Executor:
             tool=step.tool,
             target=step.target,
             status="skipped",
-            detail="검증 대상 트랙의 성공 조건 미충족",
+            detail=detail,
         )
+
+    async def _diagnose(self, state: _RunState, parity_failed: bool) -> None:
+        """설명 전용 원인 분석. compare 불합격이나 환경 트랙 실패 뒤에만 부른다.
+
+        구현이 등록되지 않았으면 아무것도 남기지 않는다. 결과는 기록·이벤트로만 남고
+        run 상태·롤백·관문에는 쓰지 않는다(호출한 쪽이 이미 판정을 끝냈다).
+        """
+        if _ADVISORY_TOOL not in self._registry.registered():
+            return
+        step = PlanStep(
+            id=_ADVISORY_STEP, tool=_ADVISORY_TOOL, layer=Layer.BUILTIN, effect=Effect.READ
+        )
+        failed_tracks = [
+            name for name in (TRACK_LOCAL, TRACK_CLOUD) if state.tracks.get(name) in _TRACK_FAILED
+        ]
+        if not parity_failed and not failed_tracks:
+            await self._skip(step, state, "실패·불일치가 없어 원인 분석을 하지 않음")
+            return
+        # 실행기가 채우는 입력. 입력 모델에 선언된 필드만 들어간다(build_input).
+        # error는 이미 redact된 실패 메시지, output은 계약 모델을 통과한 툴 출력이다.
+        supplied = {
+            "reason": "parity_failed" if parity_failed else "track_failed",
+            "tracks": {name: status.value for name, status in state.tracks.items()},
+            "failed_steps": [
+                {
+                    "step_id": r.step_id,
+                    "tool": r.tool,
+                    "target": r.target.value if r.target else None,
+                    "status": r.status,
+                    "error": r.error,
+                    "output": r.output,
+                }
+                for r in state.records
+                if r.status in {"failed", "check_failed"}
+            ],
+        }
+        with contextlib.suppress(StepFailed):
+            await self._call(step, None, state, final=True, advisory=supplied)
 
     async def _verify(self, section: Section, state: _RunState) -> None:
         failed_targets: set[Target] = set()
@@ -534,17 +611,12 @@ class Executor:
             )
             eligible = (
                 both_ok
-                if step.target is None
-                or step.tool in {"compare_env_results", "diagnose_parity_gap"}
+                if step.target is None or step.tool == _PARITY_TOOL
                 else (
                     step.target not in failed_targets
                     and state.tracks.get(step.target.value) is TrackStatus.DONE
                 )
             )
-            if step.tool == "diagnose_parity_gap" and any(
-                r.tool == "compare_env_results" and r.status == "failed" for r in state.records
-            ):
-                eligible = False
             if not eligible:
                 skipped = True
                 await self._skip(step, state)
@@ -709,8 +781,18 @@ class Executor:
                 state.unquiesced.add(target)
 
     async def _call(
-        self, step: PlanStep, target: Target | None, state: _RunState, *, final: bool = False
+        self,
+        step: PlanStep,
+        target: Target | None,
+        state: _RunState,
+        *,
+        final: bool = False,
+        advisory: Mapping[str, Any] | None = None,
     ) -> StepRecord:
+        """advisory는 설명 전용 내장 step(원인 분석)의 실행기 입력이다.
+
+        이때 출력의 passed는 기록 상태에 쓰지 않고, after_step으로 실행 컨텍스트를 바꾸지 않는다.
+        """
         track_target = target
         target = step.target or target
         started = time.monotonic()
@@ -724,7 +806,7 @@ class Executor:
             registered = self._registry.get(step.tool)
             spec = registered.spec
             changing = _changes_state(step, spec)
-            _check_tool(step, spec, state.ctx)
+            _check_tool(step, spec, state.ctx, advisory=advisory is not None)
             deadline = started + spec.timeout_s
             if not final and state.ctx.deadline is not None:
                 deadline = min(deadline, state.ctx.deadline)
@@ -732,7 +814,7 @@ class Executor:
                 ctx = replace(state.ctx, deadline=deadline)
                 if self._tool_context is not None:
                     ctx = self._tool_context(step, target, ctx)
-                inp = build_input(registered, step, track_target, ctx)
+                inp = build_input(registered, step, track_target, ctx, advisory)
                 if spec.requires_lock and not ctx.lock_token:
                     raise DdakToolError(
                         ErrorCode.LOCK_INVALID, "잠금이 필요한 툴에 lock_token이 없다"
@@ -783,11 +865,12 @@ class Executor:
             if not isinstance(out, registered.output_model):
                 raise DdakToolError(ErrorCode.INTERNAL, "출력 모델이 레지스트리와 다르다")
             output = out.model_dump(mode="json")
-            passed = (
-                getattr(out, "passed", None) is True
-                if spec.canonical and step.tool in _VERIFIED_TOOLS
-                else getattr(out, "passed", True) is not False
-            )
+            if advisory is not None:
+                passed = True  # 설명 전용: passed는 출력에만 남고 판정에 쓰지 않는다
+            elif spec.canonical and step.tool in _VERIFIED_TOOLS:
+                passed = getattr(out, "passed", None) is True
+            else:
+                passed = getattr(out, "passed", True) is not False
             if passed and step.tool == "apply_infra":
                 # 실제 적용 성공은 refresh/기록 후처리 실패와 독립적으로 보존한다.
                 state.infra_changes.append(
@@ -798,7 +881,7 @@ class Executor:
                         "plan_sha256": output.get("plan_sha256"),
                     }
                 )
-            if passed and self._after_step is not None:
+            if passed and self._after_step is not None and advisory is None:
                 # 툴 실행 시작 때의 ctx를 다시 쓰지 않는다. hook과 교체가 하나의 임계 구역이다.
                 async with state.context_lock:
                     if deadline <= time.monotonic():
@@ -856,7 +939,9 @@ class Executor:
             if not passed:
                 raise StepFailed(step.id, None, "검사 불합격")
             return record
-        if step.tool in {"compare_env_results", "diagnose_parity_gap"}:
+        if advisory is not None:
+            message = "원인 분석 실패(판정 영향 없음): " + message
+        elif step.tool == _PARITY_TOOL:
             message = "검증 실패(비교 불가): " + message
         message = redact(message)
         record = self._record_failure(step, target, state, started, f"{code.value}: {message}")

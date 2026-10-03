@@ -9,6 +9,7 @@ import pytest
 from fastapi import FastAPI, Request, Response
 
 from ddak.app import create
+from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.web.app import create_app
 from ddak.web.routes import approvals, settings
 
@@ -75,6 +76,27 @@ async def test_approval_page_shows_exact_patch(monkeypatch: pytest.MonkeyPatch) 
     assert captured["approval"]["patch"] == patch
 
 
+async def test_failed_preparation_redirects_to_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Service:
+        @staticmethod
+        def get_run(run_id: str) -> dict[str, str]:
+            return {"status": "AWAITING_APPROVAL"}
+
+        @staticmethod
+        def approval_view(run_id: str) -> dict[str, Any]:
+            raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "준비 실패")
+
+    request = Request(
+        {"type": "http", "method": "GET", "path": "/runs/run-1/approval", "headers": []}
+    )
+    monkeypatch.setattr(approvals, "deployment", lambda request: Service())
+
+    response = await approvals.approval_page(request, "run-1")
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/runs/run-1/result"
+
+
 def _form_request(path: str, body: str) -> Request:
     sent = False
 
@@ -117,6 +139,7 @@ async def test_settings_save_real_deploy_fields(monkeypatch: pytest.MonkeyPatch)
     response = await settings.save_settings(_form_request("/settings", body))
 
     assert response.status_code == 303
+    assert response.headers["location"] == "/settings?project=flaskr&saved=1"
     assert captured["project"] == "flaskr"
     assert captured["expected_version"] == 3
     assert captured["data"] == {
