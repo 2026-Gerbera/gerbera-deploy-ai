@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import threading
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -9,7 +10,6 @@ from fastapi.testclient import TestClient
 
 from ddak import app
 from ddak.core.config import Settings
-from ddak.core.contracts.errors import DdakToolError
 from ddak.core.project_settings import watch_source
 from ddak.web.app import create_app
 from ddak.web.routes.ops import router as ops_router
@@ -53,13 +53,16 @@ def legacy_duplicates(service):
         ("https://GITHUB.com/Fixture/App.git", "prod"),
     ],
 )
-def test_saving_second_auto_watcher_is_atomic_and_names_owner(rig, repo, branch):
+def test_saving_second_auto_watcher_transfers_owner_atomically(rig, repo, branch):
     service, _, _ = rig
-    save(service, "flaskr", settings())
-    with pytest.raises(DdakToolError, match="flaskr 프로젝트"):
-        save(service, "flaskr-three", settings(repo, branch))
-    assert service.get_project_settings("flaskr-three") is None
-    assert service.get_project_settings("flaskr")["version"] == 1
+    before = save(service, "flaskr", settings())
+    saved = save(service, "flaskr-three", settings(repo, branch))
+    assert saved["auto_detect"] is True and saved["version"] == 1
+    previous = service.get_project_settings("flaskr")
+    assert previous["auto_detect"] is False and previous["version"] == before["version"] + 1
+    assert previous["repo_url"] == before["repo_url"]
+    assert previous["watch_branch"] == before["watch_branch"]
+    assert [t.project for t in app._watch_targets(service)] == ["flaskr-three"]
 
 
 def test_unchanged_owner_and_different_branches_repos_manual_are_allowed(rig):
@@ -69,26 +72,30 @@ def test_unchanged_owner_and_different_branches_repos_manual_are_allowed(rig):
     save(service, "manual", settings(auto=False))
     save(service, "branch", settings(branch="release"))
     save(service, "repository", settings(repo=REPO + "-other"))
-    with pytest.raises(DdakToolError, match="flaskr"):
-        save(service, "manual", {"auto_detect": True}, 1)
-    assert not service.get_project_settings("manual")["auto_detect"]
-    save(service, "flaskr", {"auto_detect": False}, 2)
     assert save(service, "manual", {"auto_detect": True}, 1)["auto_detect"]
+    assert service.get_project_settings("flaskr")["auto_detect"] is False
+    assert service.get_project_settings("flaskr")["default_targets"] == "both"
+    assert service.get_project_settings("branch")["auto_detect"] is True
+    assert service.get_project_settings("repository")["auto_detect"] is True
+    assert {t.project for t in app._watch_targets(service)} == {"manual", "branch", "repository"}
 
 
 def test_simultaneous_auto_enable_cannot_create_two_owners(rig):
     service, _, _ = rig
+    barrier = threading.Barrier(2)
 
     def attempt(name):
-        try:
-            save(service, name, settings())
-            return True
-        except DdakToolError:
-            return False
+        barrier.wait(timeout=5)
+        return save(service, name, settings())
 
     with ThreadPoolExecutor(max_workers=2) as pool:
-        assert sorted(pool.map(attempt, ("flaskr", "flaskr-three"))) == [False, True]
-    assert len(service.list_project_settings()) == 1
+        results = list(pool.map(attempt, ("flaskr", "flaskr-three")))
+    assert {row["project"] for row in results} == {"flaskr", "flaskr-three"}
+    rows = service.list_project_settings()
+    assert len(rows) == 2
+    assert len([row for row in rows if row["auto_detect"]]) == 1
+    assert sorted(row["version"] for row in rows) == [1, 2]
+    assert len(app._watch_targets(service)) == 1
 
 
 @pytest.mark.parametrize(

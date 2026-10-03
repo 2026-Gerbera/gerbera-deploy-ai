@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import subprocess
 import sys
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -14,12 +15,35 @@ from ddak.core.private_values import SecretVault
 from ddak.core.project_settings import ProjectSettings, watch_source
 
 
-def configured_identity(saved: dict) -> tuple[str, str]:
+def configured_identity(saved: dict, repo_path: Path | None = None) -> tuple[str, str]:
+    """명시한 사람 신원 우선. 앱 checkout/global 설정은 읽기만 한다."""
+    values = {key: saved.get(key) for key in ("git_author_name", "git_author_email")}
+    environment = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    environment["GIT_CONFIG_NOSYSTEM"] = "1"
+    for field, key in (("git_author_name", "user.name"), ("git_author_email", "user.email")):
+        if values[field] is not None:
+            continue
+        commands = []
+        if repo_path is not None and (repo_path / ".git").exists():
+            commands.append(["git", "-C", str(repo_path), "config", "--local", "--get", key])
+        commands.append(["git", "config", "--global", "--get", key])
+        for command in commands:
+            try:
+                result = subprocess.run(
+                    command,
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                    check=False,
+                    env=environment,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+            if result.returncode == 0 and result.stdout.strip():
+                values[field] = result.stdout.strip()
+                break
     try:
-        cfg = ProjectSettings(
-            git_author_name=saved.get("git_author_name"),
-            git_author_email=saved.get("git_author_email"),
-        )
+        cfg = ProjectSettings.model_validate(values)
         if cfg.git_author_name and cfg.git_author_email:
             return cfg.git_author_name, cfg.git_author_email
     except ValueError:

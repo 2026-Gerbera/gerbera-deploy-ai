@@ -14,10 +14,26 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from ddak.core.config import AdapterMode, Settings
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
+from ddak.core.defaults import load_defaults, project_values
 from ddak.core.env_keys import check_runtime_keys
 from ddak.core.private_values import SecretVault, private_directory, read_private, write_private
 from ddak.core.project_settings import ProjectSettings
+
+_CHOICE_FIELDS = {
+    "generation_provider",
+    "generation_model",
+    "judgment_provider",
+    "judgment_model",
+    "llm_effort",
+    "ai_timeout_s",
+    "build_backend",
+    "image_repository",
+    "buildx_builder",
+    "git_author_name",
+    "git_author_email",
+}
 
 
 class SetupService:
@@ -34,12 +50,14 @@ class SetupService:
         build_factory: Callable,
         probes: Mapping[str, Callable] | None = None,
         provider_status: Callable | None = None,
+        display_effective: Callable | None = None,
     ) -> None:
         self.service = service
         self.root = service.root / "setup"
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.vault = SecretVault(service.root / "private")
         self.catalog, self.effective = catalog, effective
+        self._display_effective = display_effective or effective
         self._test_provider, self._validate = test_provider, validate_selection
         self._write_inventory, self._read_inventory = inventory_writer, inventory_reader
         self._build_factory = build_factory
@@ -90,8 +108,8 @@ class SetupService:
         }
         return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
-    def _selected(self, project: str, saved: dict) -> dict:
-        cfg = self.effective(project, saved, self.vault)
+    def _selected(self, project: str, saved: dict, *, cfg=None) -> dict:
+        cfg = cfg or self.effective(project, saved, self.vault)
         return {
             "generation_provider": cfg.selected_provider("generation"),
             "judgment_provider": cfg.selected_provider("judgment"),
@@ -154,18 +172,68 @@ class SetupService:
 
     def _state(self, project: str, ident: str) -> dict[str, Any]:
         record = self._records(project).get(ident, {})
-        if record.get("signature") == self._signature(project, ident):
+        try:
+            signature = self._signature(project, ident)
+        except DdakToolError as error:
+            from ddak.core.redact import redact
+
+            return {"status": "red", "detail": redact(str(error))[:240], "verified_at": None}
+        if record.get("signature") == signature:
             return {k: v for k, v in record.items() if k != "signature"}
         return {"status": "gray", "detail": "연결 확인 필요", "verified_at": None}
 
     def view(self, project: str) -> dict[str, Any]:
         project = self._project(project)
         saved = self._saved(project)
+        display_error = None
+        try:
+            cfg = self._display_effective(project, saved, self.vault)
+        except (DdakToolError, ValueError):
+            cfg = Settings()
+            display_error = "설정 오류: 연결 설정을 수정하세요"
         settings = {
-            **ProjectSettings().model_dump(mode="json"),
+            **project_values(saved),
             **saved,
-            **self._selected(project, saved),
+            **self._selected(project, saved, cfg=cfg),
         }
+        defaults = load_defaults()
+        sources = {
+            key: "기본 파일" if key in defaults else "기본 설정"
+            for key in ProjectSettings.model_fields
+        }
+        sources.update({key: "관리 페이지" for key, value in saved.items() if value is not None})
+        sources.update(cfg.setting_sources)
+        identity_error = None
+        if cfg.adapter_mode is AdapterMode.REAL:
+            from ddak.core.git_credentials import configured_identity
+
+            repo_path = (
+                self.service.root
+                / "repositories"
+                / project
+                / hashlib.sha256((saved.get("repo_url") or "").encode()).hexdigest()
+            )
+            try:
+                name, email = configured_identity(saved, repo_path)
+                for key, value in (("git_author_name", name), ("git_author_email", email)):
+                    settings[key] = value
+                    sources[key] = "관리 페이지" if saved.get(key) is not None else "머신 git 신원"
+            except DdakToolError:
+                identity_error = "설정 필요: 앱 커밋 작성자 이름·이메일"
+                for key in ("git_author_name", "git_author_email"):
+                    if saved.get(key) is None:
+                        sources[key] = "설정 필요"
+        builder = self._builder(project)
+        settings["buildx_builder"] = builder.builder_name
+        sources["buildx_builder"] = "관리 페이지" if saved.get("buildx_builder") else "기본 파일"
+        remember = getattr(getattr(self.service, "store", None), "remember_settings_view", None)
+        view_token = None
+        if remember is not None:
+            view_token = remember(
+                project,
+                saved.get("version", 0),
+                {key: settings[key] for key in _CHOICE_FIELDS},
+            )
         providers = self.catalog()
         states = {p["id"]: self._state(project, p["id"]) for p in providers}
         keys = {
@@ -173,7 +241,7 @@ class SetupService:
             for p in providers
         }
         inventory = None
-        inventory_path = os.environ.get("DDAK_ONPREM_INVENTORY") or saved.get("inventory_path")
+        inventory_path = saved.get("inventory_path") or os.environ.get("DDAK_ONPREM_INVENTORY")
         if inventory_path:
             inventory = self._read_inventory(Path(inventory_path))
         selected = [settings.get("generation_provider"), settings.get("judgment_provider")]
@@ -200,37 +268,40 @@ class SetupService:
             ("repository", "앱 저장소 push 권한"),
         ):
             checklist.append({"id": ident, "label": label, **self._state(project, ident)})
+        if identity_error:
+            next(item for item in checklist if item["id"] == "repository").update(
+                status="red", detail=identity_error
+            )
         names_path = self._path(project) / "runtime-keys.json"
         names = json.loads(names_path.read_text()) if names_path.exists() else []
         return {
             "settings": settings,
+            "settings_view": view_token,
+            "setting_sources": sources,
             "providers": providers,
             "states": states,
             "keys": keys,
             "checklist": checklist,
             "inventory": inventory,
             "env_keys": names,
-            "build_plan": self.build_plan(project),
+            "build_plan": builder.plan(),
             "build_state": self._state(project, "build"),
             "git_token_configured": self.vault.configured(project, "git_push_token"),
-            "configuration_notes": self._configuration_notes(project, saved, inventory),
+            "configuration_notes": self._configuration_notes(project, saved, inventory)
+            + [error for error in (identity_error, display_error) if error],
         }
 
-    def save_choices(self, project: str, data: Mapping[str, Any], *, expected_version: int) -> dict:
-        allowed = {
-            "generation_provider",
-            "generation_model",
-            "judgment_provider",
-            "judgment_model",
-            "llm_effort",
-            "ai_timeout_s",
-            "build_backend",
-            "image_repository",
-            "buildx_builder",
-            "git_author_name",
-            "git_author_email",
-        }
-        if set(data) - allowed:
+    def save_choices(
+        self,
+        project: str,
+        data: Mapping[str, Any],
+        *,
+        expected_version: int,
+        view_token: str | None = None,
+    ) -> dict:
+        project = self._project(project)
+        data = dict(data)
+        if set(data) - _CHOICE_FIELDS:
             raise DdakToolError(ErrorCode.CONFIG_INVALID, "연결 설정 필드 오류")
         for role, field in (
             ("generation", "generation_provider"),
@@ -238,10 +309,15 @@ class SetupService:
         ):
             if data.get(field):
                 self._validate(data[field], role)
-        merged = {**self._saved(project), **data}
-        self.effective(project, merged, self.vault)  # CLI 경계·모델 설정도 저장 전에 확인
+        if data.get("buildx_builder") == self._build_factory(self._path(project)).builder_name:
+            data["buildx_builder"] = None
+        # service/Store가 3-way 최종 병합과 CLI 검사를 같은 트랜잭션에서 수행한다.
         return self.service.save_project_settings(
-            project, dict(data), updated_by="local-operator", expected_version=expected_version
+            project,
+            dict(data),
+            updated_by="local-operator",
+            expected_version=expected_version,
+            **({"view_token": view_token} if view_token else {}),
         )
 
     def _configuration_notes(self, project: str, saved: dict, inventory: dict | None) -> list[str]:
@@ -255,7 +331,7 @@ class SetupService:
             "DDAK_WATCH_BRANCH",
         ):
             if os.environ.get(name):
-                notes.append(name + " 선택적 덮어쓰기 적용 중; 저장한 설정과 다를 수 있습니다")
+                notes.append(name + " 실행환경 설정 있음; 관리 페이지 저장값이 우선합니다")
         if inventory:
             was = inventory.get("tiers", {}).get("was", {})
             path = self._path(project) / "runtime-keys.json"
@@ -408,7 +484,7 @@ class SetupService:
         except ValueError:
             raise DdakToolError(ErrorCode.CONFIG_INVALID, "마이그레이션 URL 형식 오류") from None
         saved = self._saved(project)
-        inventory_path = os.environ.get("DDAK_ONPREM_INVENTORY") or saved.get("inventory_path")
+        inventory_path = saved.get("inventory_path") or os.environ.get("DDAK_ONPREM_INVENTORY")
         inventory = self._read_inventory(Path(inventory_path)) if inventory_path else {}
         configured = inventory.get("tiers", {}).get("was", {}).get("migration_env_file")
         path = (

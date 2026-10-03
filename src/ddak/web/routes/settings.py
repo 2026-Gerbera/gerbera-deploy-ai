@@ -1,3 +1,6 @@
+from typing import Any
+from urllib.parse import urlencode
+
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
@@ -13,6 +16,7 @@ from ddak.web.dependencies import (
 )
 from ddak.web.domain import validate_domain_settings
 from ddak.web.forms import parse_form
+from ddak.web.routes.setup import transferred_names
 from ddak.web.security import csrf_token, issue_csrf, require_safe_post
 
 router = APIRouter(prefix="/settings")
@@ -22,6 +26,13 @@ router = APIRouter(prefix="/settings")
 async def settings_page(request: Request, project: str | None = None):
     project = selected_project(request, project)
     current = project_settings(request, project)
+    remember = getattr(deployment(request).store, "remember_settings_view", None)
+    if remember is not None:
+        current["settings_view"] = remember(
+            project,
+            current.get("version", 0),
+            {key: current[key] for key in ProjectSettings.model_fields},
+        )
     token = csrf_token(request)
     response = templates.TemplateResponse(
         request=request,
@@ -31,9 +42,11 @@ async def settings_page(request: Request, project: str | None = None):
             "settings": current,
             "csrf_token": token,
             "watch_warnings": watch_warnings(request),
+            "transferred_watchers": transferred_names(request.query_params.getlist("transferred")),
         },
     )
     issue_csrf(request, response, token)
+    response.headers["Cache-Control"] = "no-store"
     return response
 
 
@@ -52,7 +65,7 @@ async def save_settings(request: Request):
             domain, dns_mode, zone = value.cloud_domain, value.dns_mode, value.hosted_zone_id
         version_text = form.get("version", "")
         expected = int(version_text) if version_text else 0
-        deployment(request).save_project_settings(
+        saved = deployment(request).save_project_settings(
             project,
             {
                 "repo_url": form.get("repo_url", "").strip() or None,
@@ -66,10 +79,17 @@ async def save_settings(request: Request):
             },
             updated_by="local-operator",
             expected_version=expected,
+            **({"view_token": form["settings_view"]} if form.get("settings_view") else {}),
         )
     except (DdakToolError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=redact(str(exc))) from exc
-    return RedirectResponse(f"/settings?project={project}&saved=1", status_code=303)
+    params: dict[str, Any] = {"project": project, "saved": "1"}
+    names = transferred_names(saved.get("transferred_watchers")) if isinstance(saved, dict) else []
+    if names:
+        params["transferred"] = names
+    response = RedirectResponse("/settings?" + urlencode(params, doseq=True), status_code=303)
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @router.post("/deploy")

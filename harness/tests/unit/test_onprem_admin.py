@@ -19,7 +19,15 @@ URL = "https://github.com/fixture/app.git"
 PRIVATE = "fixture-" + "not-a-real-git-credential"
 
 
-def test_missing_identity_and_bad_characters():
+def test_missing_identity_and_bad_characters(monkeypatch):
+    import subprocess
+
+    def missing_machine_identity(argv, **kwargs):
+        assert argv[:-1] == ["git", "config", "--global", "--get"]
+        assert argv[-1] in {"user.name", "user.email"}
+        return subprocess.CompletedProcess(argv, 1, "", "")
+
+    monkeypatch.setattr(subprocess, "run", missing_machine_identity)
     with pytest.raises(DdakToolError, match="작성자"):
         configured_identity({})
     for values in ({"git_author_name": "name\ncontrol"}, {"git_author_email": "not-an-email"}):
@@ -53,6 +61,14 @@ def test_token_bound_to_project_repository_and_private_storage(tmp_path):
 
 
 def test_real_factory_blocks_before_clone_and_uses_saved_identity(tmp_path, monkeypatch):
+    import subprocess
+
+    def missing_machine_identity(argv, **kwargs):
+        assert argv[:-1] == ["git", "config", "--global", "--get"]
+        assert argv[-1] in {"user.name", "user.email"}
+        return subprocess.CompletedProcess(argv, 1, "", "")
+
+    monkeypatch.setattr(subprocess, "run", missing_machine_identity)
     factory = app._repository_factory(tmp_path / "repos", vault_root=tmp_path / "private")
     ctx = RunContext("test-run", AdapterMode.REAL, project="flaskr", repo_url=URL)
     calls = []

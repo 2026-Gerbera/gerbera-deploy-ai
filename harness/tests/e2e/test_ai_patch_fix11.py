@@ -153,6 +153,7 @@ def rig(tmp_path, monkeypatch):
             return value
 
     monkeypatch.setattr("ddak.executor.service.ProjectSettings", LocalSettings)
+    monkeypatch.setattr("ddak.core.store.ProjectSettings", LocalSettings)
     monkeypatch.delenv("DDAK_ONPREM_INVENTORY", raising=False)
     settings = Settings(run_dir=tmp_path / "state/runs", ai_retries=0)
     policy = FetchPolicy(allowed_schemes=("file",), allowed_hosts=None, root=tmp_path / "intake")

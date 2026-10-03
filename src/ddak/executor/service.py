@@ -43,6 +43,7 @@ from ddak.core.contracts.release import (
     ReleaseArtifacts,
     SnapshotBinding,
 )
+from ddak.core.defaults import project_values
 from ddak.core.patch_ledger import guard_patch_loss, ledger, reuse_patches, save_ledger
 from ddak.core.project_settings import ProjectSettings
 from ddak.core.redact import redact, redact_obj
@@ -269,7 +270,18 @@ class DeploymentService:
         ):
             raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "계획 중 프로젝트 설정이 변경됐다")
         if settings is not None:
-            settings_data = {k: v for k, v in settings.items() if k in ProjectSettings.model_fields}
+            settings_data = {
+                k: v
+                for k, v in context.project_settings.items()
+                if k in ProjectSettings.model_fields
+            }
+            settings_data.update(
+                {
+                    k: v
+                    for k, v in settings.items()
+                    if k in ProjectSettings.model_fields and v is not None
+                }
+            )
             validated = ProjectSettings.model_validate(settings_data)
             context = replace(
                 context,
@@ -926,9 +938,7 @@ class DeploymentService:
         """수동 요청 → 주입된 계획 흐름 → 승인 대기 run_id. 승인·실행은 별도 동작이다."""
         project = self.resolve_project(project)
         data = self.store.project_settings(project) or {}
-        settings = ProjectSettings.model_validate(
-            {k: v for k, v in data.items() if k in ProjectSettings.model_fields}
-        )
+        settings = ProjectSettings.model_validate(project_values(data))
         if not settings.repo_url or self.planning_flow is None:
             raise DdakToolError(ErrorCode.CONFIG_INVALID, "저장소 설정과 계획 흐름 연결이 필요하다")
         chosen = targets if targets is not None else settings.default_targets
@@ -955,21 +965,28 @@ class DeploymentService:
         return await self.planning_flow(self, request)
 
     def save_project_settings(
-        self, project: str, data: dict[str, Any], *, updated_by: str, expected_version: int | None
+        self,
+        project: str,
+        data: dict[str, Any],
+        *,
+        updated_by: str,
+        expected_version: int | None,
+        view_token: str | None = None,
     ) -> dict[str, Any]:
         if not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", project):
             raise DdakToolError(ErrorCode.CONFIG_INVALID, "프로젝트 이름 형식 오류")
         if expected_version is None or isinstance(expected_version, bool) or expected_version < 0:
             raise DdakToolError(ErrorCode.CONFIG_INVALID, "설정 저장에는 읽은 버전이 필요하다")
-        existing = self.store.project_settings(project) or {}
-        merged = {k: v for k, v in existing.items() if k in ProjectSettings.model_fields}
-        merged.update(data)
-        validated = ProjectSettings.model_validate(merged)
+        onboarding = getattr(self, "onboarding", None)
         return self.store.save_project_settings(
             project,
-            validated.model_dump(mode="json", exclude_unset=True),
+            data,
             updated_by=updated_by,
             expected_version=expected_version,
+            view_token=view_token,
+            validate=(lambda merged: onboarding.effective(project, merged, onboarding.vault))
+            if onboarding is not None
+            else None,
         )
 
     def _decision_basis(self, run_id: str, plan: dict[str, Any] | None) -> dict[str, Any]:

@@ -164,6 +164,7 @@ async def test_watch_manual_approval_git_roundtrip(
             return value
 
     monkeypatch.setattr(service_module, "ProjectSettings", LocalSettings)
+    monkeypatch.setattr("ddak.core.store.ProjectSettings", LocalSettings)
     real_plan = app.plan_deployment
     plan_calls = []
 

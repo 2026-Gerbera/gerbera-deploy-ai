@@ -58,6 +58,7 @@ from ddak.core.contracts.plan import Plan, PlanStep
 from ddak.core.contracts.plan_facts import FileMeta
 from ddak.core.contracts.tools.generate_infra import GenerateInfraInput, GenerateInfraOutput
 from ddak.core.contracts.tools.patch_config import PatchConfigInput, PatchConfigOutput
+from ddak.core.defaults import load_defaults, project_values
 from ddak.core.logging import get_logger
 from ddak.core.project_settings import ProjectSettings, watch_source
 from ddak.core.redact import redact_obj
@@ -234,7 +235,7 @@ async def _infra_approval(service: DeploymentService, plan: Plan, ctx: RunContex
 
 
 def _watch_configuration(service: DeploymentService) -> tuple[list[WatchTarget], list[str]]:
-    saved = {s["project"]: s for s in service.list_project_settings()}
+    saved = {s["project"]: {**s, **project_values(s)} for s in service.list_project_settings()}
     targets = [
         WatchTarget(
             project,
@@ -289,14 +290,31 @@ def _attach_watch(app: FastAPI, settings: Settings) -> None:
     policy = replace(policy, root=policy.root.expanduser().resolve())
     inner = app.router.lifespan_context
     app.state.watch_warnings = lambda: _watch_configuration(app.state.deployment)[1]
+    source_locks: dict[tuple[str, str], asyncio.Lock] = {}
+    seen: dict[tuple[str, str], str] = {}
+    callbacks: set[asyncio.Task] = set()
 
     async def on_new_commit(t: WatchTarget, sha: str) -> None:
         service = app.state.deployment
-        rid = await _prepare_commit(service, settings, t, sha, policy=policy)
-        row = service.get_run(rid)
-        if row["status"] == "FAILED_BEFORE_DEPLOY":
-            code = (row.get("result") or {}).get("code", ErrorCode.INTERNAL.value)
-            raise DdakToolError(ErrorCode(code), f"배포 준비 실패: {rid}")
+        identity = watch_source(t.repo_url, t.ref)
+        callback = asyncio.current_task()
+        if callback is not None:
+            callbacks.add(callback)
+        try:
+            async with source_locks.setdefault(identity, asyncio.Lock()):
+                # stop 직전 큐에 있던 callback도 현재 소유권을 다시 확인한다.
+                if t not in _watch_targets(service):
+                    return
+                if seen.get(identity) == sha or service.store.has_auto_run(t.repo_url, t.ref, sha):
+                    return
+                rid = await _prepare_commit(service, settings, t, sha, policy=policy)
+                row = service.get_run(rid)
+                if row["status"] == "FAILED_BEFORE_DEPLOY":
+                    code = (row.get("result") or {}).get("code", ErrorCode.INTERNAL.value)
+                    raise DdakToolError(ErrorCode(code), f"배포 준비 실패: {rid}")
+                seen[identity] = sha  # 실패·취소된 준비는 새 owner가 같은 SHA로 재시도한다.
+        finally:
+            callbacks.discard(callback)
 
     @asynccontextmanager
     async def lifespan(a: FastAPI) -> AsyncIterator[Any]:
@@ -315,6 +333,9 @@ def _attach_watch(app: FastAPI, settings: Settings) -> None:
                     if task is not None:
                         with contextlib.suppress(TimeoutError, asyncio.CancelledError):
                             await asyncio.wait_for(task, 5)
+                    if callbacks:
+                        # Watcher.stop은 handler를 취소만 한다. 정리 완료 뒤 새 owner를 띄운다.
+                        await asyncio.gather(*tuple(callbacks), return_exceptions=True)
 
                 try:
                     while not stopped.is_set():
@@ -393,11 +414,40 @@ async def _prepare_commit_inner(
         saved = service.get_project_settings(target.project) or {}
         if service.onboarding is not None:
             settings = service.onboarding.effective(target.project, saved, service.onboarding.vault)
+        saved = {**saved, **project_values(saved)}
+        saved.update(
+            generation_provider=settings.selected_provider("generation"),
+            generation_model=settings.llm_model,
+            judgment_provider=settings.selected_provider("judgment"),
+            judgment_model=settings.judgment_model,
+            llm_effort=settings.llm_effort,
+            ai_timeout_s=settings.ai_timeout_s,
+            build_backend=settings.build_backend,
+            image_repository=settings.image_repository,
+        )
+        if settings.adapter_mode is AdapterMode.REAL:
+            from ddak.core.git_credentials import configured_identity
+
+            repo_path = (
+                service.root
+                / "repositories"
+                / target.project
+                / hashlib.sha256(target.repo_url.encode()).hexdigest()
+            )
+            name, email = configured_identity(saved, repo_path)
+            saved.update(git_author_name=name, git_author_email=email)
         if saved.get("repo_url") and saved["repo_url"] != target.repo_url:
             raise DdakToolError(
                 ErrorCode.PRECONDITION_FAILED, "감시 저장소와 프로젝트 설정이 다르다"
             )
-        if trigger == "auto" and saved.get("watch_branch") and saved["watch_branch"] != target.ref:
+        if (
+            trigger == "auto"
+            and saved.get("watch_branch")
+            and (
+                saved["watch_branch"].removeprefix("refs/heads/")
+                != target.ref.removeprefix("refs/heads/")
+            )
+        ):
             raise DdakToolError(
                 ErrorCode.PRECONDITION_FAILED, "감시 브랜치와 프로젝트 설정이 다르다"
             )
@@ -479,7 +529,7 @@ async def _prepare_commit_inner(
         if cloud_outputs or request.target != "local":
             # region은 Terraform 출력·사용자 입력이 아니라 제품의 서울 고정 규약이다.
             platform["cloud"] = {**cloud_outputs, "region": "ap-northeast-2"}
-        path = os.environ.get("DDAK_ONPREM_INVENTORY") or saved.get("inventory_path")
+        path = saved.get("inventory_path") or os.environ.get("DDAK_ONPREM_INVENTORY")
         if request.target != "cloud" and path:
             platform["onprem"] = load_inventory(Path(path))
             if service.onboarding is not None and saved.get("inventory_path") == path:
@@ -489,27 +539,50 @@ async def _prepare_commit_inner(
         context = replace(context, platform=platform)
         # 브랜치가 다음 poll 전에 움직여도 감지된 커밋만 intake한다.
         phase = "plan"
-        bundle = await asyncio.to_thread(
-            plan_deployment,
-            request.model_copy(update={"ref": sha}),
-            run_id=run_id,
-            settings=settings,
-            fetch_policy=policy,
-            **({"jev_client": get_jev_client(settings)} if service.onboarding is not None else {}),
-            previous_manifests=lambda project: _previous_manifests(service.store, project),
-            patch_preparer=lambda source, facts, ctx: _prepare_config_patch(
-                service,
-                source,
-                facts,
-                ctx,
+        planning = asyncio.create_task(
+            asyncio.to_thread(
+                plan_deployment,
+                request.model_copy(update={"ref": sha}),
+                run_id=run_id,
                 settings=settings,
-                source_root=policy.root,
-                selected=selected,
-            ),
-            record_stage=lambda name, ms, status: service.record_stage(run_id, name, ms, status),
-            cloud_domain=context.cloud_domain,
-            platform=platform,
+                fetch_policy=policy,
+                **(
+                    {"jev_client": get_jev_client(settings)}
+                    if service.onboarding is not None
+                    else {}
+                ),
+                previous_manifests=lambda project: _previous_manifests(service.store, project),
+                patch_preparer=lambda source, facts, ctx: _prepare_config_patch(
+                    service,
+                    source,
+                    facts,
+                    ctx,
+                    settings=settings,
+                    source_root=policy.root,
+                    selected=selected,
+                ),
+                record_stage=lambda name, ms, status: service.record_stage(
+                    run_id, name, ms, status
+                ),
+                cloud_domain=context.cloud_domain,
+                platform=platform,
+            )
         )
+        try:
+            bundle = await asyncio.shield(planning)
+        except asyncio.CancelledError:
+            # coroutine 취소는 계획 스레드를 멈추지 않는다. 다음 감시 소유자를 시작하기
+            # 전에 종료를 확인하며, 반복 취소도 기존 작업의 종료 대기를 끊지 못한다.
+            while not planning.done():
+                try:
+                    await asyncio.shield(planning)
+                except asyncio.CancelledError:
+                    continue
+                except Exception:
+                    break
+            if not planning.cancelled():
+                planning.exception()
+            raise
         plan = bundle.plan
         if getattr(bundle, "facts", None) is not None:
             facts = bundle.facts.model_dump(mode="json")
@@ -685,7 +758,7 @@ def _repository_factory(root: Path, *, allow_local: bool = False, vault_root: Pa
             if ctx.adapter_mode is AdapterMode.REAL and not allow_local:
                 from ddak.core.git_credentials import configured_identity, require_token
 
-                author = configured_identity(ctx.project_settings)
+                author = configured_identity(ctx.project_settings, root / ctx.project / identity)
                 if vault_root is None:
                     raise DdakToolError(ErrorCode.CONFIG_INVALID, "앱 저장소 인증 연결 필요")
                 require_token(vault_root, ctx.project, ctx.repo_url)
@@ -730,7 +803,9 @@ def _configure_onprem(service: DeploymentService) -> None:
         return  # 저장된 사람이 정한 설정은 프로필이 덮어쓰지 않는다.
     repo = os.environ.get("DDAK_WATCH_REPO_URL")
     if repo:
-        identity = watch_source(repo, os.environ.get("DDAK_WATCH_BRANCH") or "prod")
+        defaults = load_defaults()
+        branch = os.environ.get("DDAK_WATCH_BRANCH") or defaults["watch_branch"]
+        identity = watch_source(repo, branch)
         for s in service.list_project_settings():
             if s["project"] == project or not s.get("auto_detect") or not s.get("repo_url"):
                 continue
@@ -745,17 +820,20 @@ def _configure_onprem(service: DeploymentService) -> None:
             project,
             {
                 "repo_url": repo,
-                "watch_branch": os.environ.get("DDAK_WATCH_BRANCH") or "prod",
-                "default_targets": "onprem",
-                "auto_detect": True,
+                "watch_branch": branch,
+                "default_targets": defaults["default_targets"],
+                "auto_detect": defaults["auto_detect"],
             },
             updated_by="local-profile",
             expected_version=saved.get("version", 0),
         )
 
 
-def _effective_project_settings(base, project, saved, vault, *, cli_host):
+def _effective_project_settings(base, project, saved, vault, *, cli_host, check_local=True):
     updates = {}
+    sources = dict(base.setting_sources)
+    defaults = load_defaults() if base.adapter_mode is AdapterMode.REAL else {}
+    fallback = Settings()
     fields = {
         "generation_provider": ("llm_provider", "DDAK_LLM_PROVIDER"),
         "generation_model": ("llm_model", "DDAK_LLM_MODEL"),
@@ -771,9 +849,17 @@ def _effective_project_settings(base, project, saved, vault, *, cli_host):
             "generation_provider": "DDAK_LLM_BACKEND",
             "judgment_provider": "DDAK_JEV_BACKEND",
         }.get(stored)
-        overridden = os.environ.get(variable) or (legacy and os.environ.get(legacy))
-        if saved.get(stored) is not None and not overridden:
+        if saved.get(stored) is not None:
             updates[field] = saved[stored]
+            sources[stored] = "관리 페이지"
+        elif stored not in sources:
+            overridden = os.environ.get(variable) or (legacy and os.environ.get(legacy))
+            explicit = getattr(base, field) != getattr(fallback, field)
+            if stored in defaults and not overridden and not explicit:
+                updates[field] = defaults[stored]
+                sources[stored] = "기본 파일"
+            else:
+                sources[stored] = "실행환경"
     provider_keys = dict(getattr(base, "provider_keys", {}))
     for spec in provider_catalog():
         key = spec.get("key_name")
@@ -785,20 +871,33 @@ def _effective_project_settings(base, project, saved, vault, *, cli_host):
                     updates[key] = value
     updates["provider_keys"] = provider_keys
     catalog = {p["id"]: p for p in provider_catalog()}
-    if (
-        updates.get("llm_provider")
-        and not saved.get("generation_model")
-        and not os.environ.get("DDAK_LLM_MODEL")
+    for role, provider_field, model_field in (
+        ("generation", "llm_provider", "llm_model"),
+        ("judgment", "judgment_provider", "judgment_model"),
     ):
-        updates["llm_model"] = catalog[updates["llm_provider"]]["default_model"]
-    if (
-        updates.get("judgment_provider")
-        and not saved.get("judgment_model")
-        and not os.environ.get("DDAK_JUDGMENT_MODEL")
-    ):
-        updates["judgment_model"] = catalog[updates["judgment_provider"]]["default_model"]
+        provider = updates.get(provider_field) or base.selected_provider(role)
+        model_key = role + "_model"
+        provider_changed = provider != base.selected_provider(role)
+        explicit_model = (
+            sources.get(model_key) == "실행환경" and getattr(base, model_field) is not None
+        )
+        if provider not in catalog:
+            raise DdakToolError(ErrorCode.CONFIG_INVALID, "등록되지 않은 AI provider 설정")
+        if saved.get(model_key) is None and (
+            (provider_changed and not explicit_model) or sources.get(model_key) == "기본 파일"
+        ):
+            updates[model_field] = (
+                defaults.get(model_key)
+                if provider == defaults.get(role + "_provider")
+                else catalog[provider]["default_model"]
+            ) or None
+            sources[model_key] = (
+                "기본 파일" if provider == defaults.get(role + "_provider") else "실행환경"
+            )
+    updates["setting_sources"] = sources
     result = replace(base, **updates)
-    require_local_cli(result, host=cli_host)
+    if check_local:
+        require_local_cli(result, host=cli_host)
     return result
 
 
@@ -808,8 +907,13 @@ def _setup_service(service, settings, cli_host):
             settings, project, {**saved, "project": project}, vault, cli_host=cli_host
         )
 
+    def display_effective(project, saved, vault):
+        return _effective_project_settings(
+            settings, project, saved, vault, cli_host=cli_host, check_local=False
+        )
+
     def inventory_probe(project, saved):
-        path = os.environ.get("DDAK_ONPREM_INVENTORY") or saved.get("inventory_path")
+        path = saved.get("inventory_path") or os.environ.get("DDAK_ONPREM_INVENTORY")
         if not path:
             return {"status": "gray", "detail": "온프렘 환경 등록 필요"}
         result = preflight_inventory(load_inventory(Path(path)), project=project)
@@ -825,7 +929,14 @@ def _setup_service(service, settings, cli_host):
             from ddak.core.git_credentials import configured_identity, require_token
 
             try:
-                configured_identity(saved)
+                repo_path = (
+                    service.root
+                    / "repositories"
+                    / project
+                    / hashlib.sha256(saved["repo_url"].encode()).hexdigest()
+                )
+                name, email = configured_identity(saved, repo_path)
+                saved = {**saved, "git_author_name": name, "git_author_email": email}
                 require_token(service.root / "private", project, saved["repo_url"])
             except DdakToolError as error:
                 return {"status": "red", "detail": str(error)}
@@ -865,6 +976,7 @@ def _setup_service(service, settings, cli_host):
         service,
         catalog=provider_catalog,
         effective=effective,
+        display_effective=display_effective,
         test_provider=test_connection,
         validate_selection=validate_provider_selection,
         inventory_writer=write_inventory,
@@ -883,7 +995,7 @@ def _setup_actions(service, settings):
             self.project = project
             self.setup = service.onboarding
             saved = service.get_project_settings(project) or {}
-            path = os.environ.get("DDAK_ONPREM_INVENTORY") or saved.get("inventory_path")
+            path = saved.get("inventory_path") or os.environ.get("DDAK_ONPREM_INVENTORY")
             if settings.adapter_mode is not AdapterMode.REAL or not path:
                 raise DdakToolError(
                     ErrorCode.PRECONDITION_FAILED, "REAL 온프렘 인벤토리 등록이 필요하다"
@@ -951,7 +1063,7 @@ def _setup_actions(service, settings):
 
         def apply(self, plan, approvalcheck):
             current = service.get_project_settings(self.project) or {}
-            path = os.environ.get("DDAK_ONPREM_INVENTORY") or current.get("inventory_path")
+            path = current.get("inventory_path") or os.environ.get("DDAK_ONPREM_INVENTORY")
             if not path or load_inventory(Path(path)) != self.inventory:
                 raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "인벤토리 변경; 재계획 필요")
             if not isinstance(plan, DatabasePreparationPlan):

@@ -10,6 +10,7 @@ from urllib.parse import urlsplit, urlunsplit
 from fastapi import HTTPException, Request
 from fastapi.templating import Jinja2Templates
 
+from ddak.core.defaults import load_defaults, project_values
 from ddak.core.project_settings import ProjectSettings
 from ddak.executor.engine import RunStatus
 from ddak.executor.service import DeploymentService
@@ -36,9 +37,19 @@ def selected_project(request: Request, project: str | None = None) -> str:
 
 
 def project_settings(request: Request, project: str) -> dict:
+    saved = deployment(request).get_project_settings(project) or {}
+    defaults = load_defaults()
     return {
-        **ProjectSettings().model_dump(mode="json"),
-        **(deployment(request).get_project_settings(project) or {}),
+        **saved,
+        **project_values(saved),
+        "setting_sources": {
+            key: "관리 페이지"
+            if saved.get(key) is not None
+            else "기본 파일"
+            if key in defaults
+            else "기본 설정"
+            for key in ProjectSettings.model_fields
+        },
     }
 
 

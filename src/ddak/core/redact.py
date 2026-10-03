@@ -58,7 +58,7 @@ _RULES: tuple[tuple[re.Pattern[str], _Replacement], ...] = (
         REDACTED,
     ),
     # URL 자격증명: scheme://user:password@host -> scheme://user:[REDACTED]@host
-    (re.compile(r"\b([a-z][a-z0-9+.-]*://[^/\s:@]+):[^/\s@]+@", re.IGNORECASE), rf"\1:{REDACTED}@"),
+    (re.compile(r"\b([a-z][a-z0-9+.-]*://[^/\s:@]*):[^/\s@]+@", re.IGNORECASE), rf"\1:{REDACTED}@"),
     # Authorization 헤더와 Bearer 토큰
     (re.compile(r"\b(authorization\s*[:=]\s*)\S+(\s+\S+)?", re.IGNORECASE), rf"\1{REDACTED}"),
     (re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]+", re.IGNORECASE), f"Bearer {REDACTED}"),
