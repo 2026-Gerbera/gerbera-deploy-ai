@@ -10,5 +10,5 @@ from ddak.plan.patch import patch_config as _patch_config
 
 @tool("patch_config")
 def patch_config(inp: PatchConfigInput, ctx: RunContext) -> PatchConfigOutput:
-    """토글 code_patch가 켜진 run에서 prod 원본에 맞는 설정 패치를 제안·검사한다."""
+    """prod 원본에 맞는 설정 패치를 제안·검사한다(토글 OFF면 AI 없이 이전 패치 재적용만)."""
     return _patch_config(inp, ctx)

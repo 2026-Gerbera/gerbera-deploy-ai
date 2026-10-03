@@ -1,12 +1,133 @@
-"""source=fixture: 승인한 환경변수 표현식의 손실과 정상 upstream 변경 회귀."""
+"""source=fixture: 결정12 툴 판정 연결·승인 해시·원장 호환 회귀."""
 
 import json
 
 import pytest
 
 from ddak.core.contracts.errors import DdakToolError
-from ddak.core.patch_ledger import file_diff, guard_patch_loss, save_ledger
-from ddak.core.snapshots import copy_source, digest_bytes
+from ddak.core.contracts.tools.patch_config import PatchConfigOutput, PatchMeta, PatchViolation
+from ddak.core.patch_ledger import (
+    approved_patches,
+    file_diff,
+    guard_patch_loss,
+    reuse_patches,
+    save_ledger,
+)
+from ddak.core.snapshots import digest_bytes
+
+RUN_ID = "run-current"
+PATCH = file_diff(
+    "app.py",
+    b"import os\nSESSION_COOKIE_SECURE = False\n",
+    b'import os\nSESSION_COOKIE_SECURE = (os.environ["SESSION_COOKIE_SECURE"] == "true")\n',
+)
+
+
+def review(status, **changes):
+    accepted = status in {"proposed", "reused"}
+    return PatchConfigOutput(
+        **{
+            "run_id": RUN_ID,
+            "status": status,
+            "passed": accepted,
+            "patch": PATCH.decode() if accepted else None,
+            "patch_sha256": digest_bytes(PATCH) if accepted else None,
+            "meta": (
+                PatchMeta(reason="fixture", reuse=status == "reused", source="fixture")
+                if accepted
+                else None
+            ),
+            **changes,
+        }
+    )
+
+
+@pytest.mark.parametrize("status", ["no_targets", "rejected"])
+def test_ledger_follows_tool_verdict_without_patch_even_with_previous(status):
+    guard_patch_loss(review(status), run_id=RUN_ID, patch=None, has_previous=True)
+
+
+@pytest.mark.parametrize("status", ["proposed", "reused"])
+def test_ledger_follows_accepted_tool_verdict_with_exact_patch_hash(status):
+    guard_patch_loss(review(status), run_id=RUN_ID, patch=PATCH, has_previous=True)
+
+
+def test_ledger_stops_on_patch_lost_with_only_current_locations():
+    out = review(
+        "patch_lost",
+        violations=[PatchViolation(code="patch_lost", file="app.py", line=7)],
+    )
+    with pytest.raises(DdakToolError, match="patch_lost") as caught:
+        guard_patch_loss(out, run_id=RUN_ID, patch=None, has_previous=True)
+    message = str(caught.value)
+    assert "app.py:7" in message and "값 가림" in message
+    assert "SESSION_COOKIE_SECURE" not in message and "False" not in message
+
+
+def test_ledger_stops_on_patch_lost_without_violation_details():
+    with pytest.raises(DdakToolError, match="patch_lost"):
+        guard_patch_loss(review("patch_lost"), run_id=RUN_ID, patch=None, has_previous=True)
+
+
+@pytest.mark.parametrize("patch", [None, b""])
+def test_previous_without_patch_requires_tool_verdict(patch):
+    with pytest.raises(DdakToolError, match="툴 판정"):
+        guard_patch_loss(None, run_id=RUN_ID, patch=patch, has_previous=True)
+
+
+@pytest.mark.parametrize(("has_previous", "patch"), [(False, None), (False, PATCH)])
+def test_missing_verdict_preserves_existing_patch_connection(has_previous, patch):
+    guard_patch_loss(None, run_id=RUN_ID, patch=patch, has_previous=has_previous)
+
+
+@pytest.mark.parametrize("status", ["no_targets", "rejected", "proposed", "reused", "patch_lost"])
+def test_tool_verdict_for_other_run_is_rejected(status):
+    with pytest.raises(DdakToolError, match="run ID"):
+        guard_patch_loss(
+            review(status, run_id="run-other"),
+            run_id=RUN_ID,
+            patch=PATCH if status in {"proposed", "reused"} else None,
+            has_previous=True,
+        )
+
+
+@pytest.mark.parametrize("status", ["proposed", "reused"])
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"passed": False},
+        {"patch_sha256": None},
+        {"patch_sha256": digest_bytes(b"different patch")},
+        {"patch": None},
+        {"patch": PATCH.decode() + "\n"},
+    ],
+    ids=["not-passed", "missing-hash", "wrong-hash", "missing-text", "wrong-text"],
+)
+def test_accepted_verdict_must_match_passed_hash_and_patch_text(status, changes):
+    with pytest.raises(DdakToolError, match="승인 대상"):
+        guard_patch_loss(review(status, **changes), run_id=RUN_ID, patch=PATCH)
+
+
+@pytest.mark.parametrize("status", ["proposed", "reused"])
+@pytest.mark.parametrize("patch", [None, b"", PATCH + b"\n"])
+def test_accepted_verdict_requires_matching_nonempty_approval_bytes(status, patch):
+    with pytest.raises(DdakToolError, match="승인 대상"):
+        guard_patch_loss(review(status), run_id=RUN_ID, patch=patch)
+
+
+@pytest.mark.parametrize("status", ["no_targets", "rejected"])
+@pytest.mark.parametrize("mismatch", ["passed", "review-patch", "approval-patch"])
+def test_nonaccepted_verdict_cannot_carry_approval(status, mismatch):
+    changes = {"passed": True} if mismatch == "passed" else {}
+    if mismatch == "review-patch":
+        changes["patch"] = PATCH.decode()
+    with pytest.raises(DdakToolError, match="승인 대상"):
+        guard_patch_loss(
+            review(status, **changes),
+            run_id=RUN_ID,
+            patch=PATCH if mismatch == "approval-patch" else None,
+            has_previous=True,
+        )
 
 
 def history(tmp_path, old, fixed):
@@ -15,137 +136,20 @@ def history(tmp_path, old, fixed):
     (source / "app.py").write_text(old)
     directory = tmp_path / "runs" / "first"
     directory.mkdir(parents=True)
-    entries = save_ledger(directory, source, file_diff("app.py", old.encode(), fixed.encode()))
-    return source, {"local": {"release_id": "first", "patch_ledger": entries}}
-
-
-def changed_tree(tmp_path, source, upstream, approved=None):
-    (source / "app.py").write_text(upstream)
-    built = tmp_path / "built"
-    copy_source(source, built)
-    if approved is not None:
-        (built / "app.py").write_text(approved)
-    return built
-
-
-COOKIE_OLD = 'import os\nSESSION_COOKIE_SECURE = False\nHOST = "example.test"\n'
-COOKIE_FIXED = (
-    'import os\nSESSION_COOKIE_SECURE = (os.environ["SESSION_COOKIE_SECURE"].lower() == "true")\n'
-    'HOST = "example.test"\n'
-)
-
-
-@pytest.mark.parametrize(
-    ("old", "fixed"),
-    [
-        (COOKIE_OLD, COOKIE_FIXED),
-        (
-            'import os\nSECRET_KEY = "' + 'dev"\n',
-            'import os\nSECRET_KEY = os.environ["SECRET_KEY"]\n',
-        ),
-        ('import os\nHOST = "localhost"\n', 'import os\nHOST = os.environ["HOST"]\n'),
-        (
-            "import os\napp.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1)\n",
-            "import os\napp.wsgi_app = ProxyFix(app.wsgi_app, "
-            'x_proto=int(os.environ["PROXY_FIX_X_PROTO"]))\n',
-        ),
-    ],
-)
-def test_upstream_preserves_expression_with_version_and_line_movement(tmp_path, old, fixed):
-    source, previous = history(tmp_path, old, fixed)
-    upstream = fixed.replace("import os\n", "import os\nVERSION = 2\n\n")
-    built = changed_tree(tmp_path, source, upstream)
-    guard_patch_loss(source, built, previous)
-
-
-def test_unpatched_existing_env_expression_can_change_upstream(tmp_path):
-    existing = 'A = os.environ["A"]\n'
-    source, previous = history(tmp_path, COOKIE_OLD + existing, COOKIE_FIXED + existing)
-    upstream = COOKIE_FIXED + 'A = os.environ["A"].strip()\nVERSION = 2\n'
-    built = changed_tree(tmp_path, source, upstream)
-    guard_patch_loss(source, built, previous)
-
-
-def test_cookie_loss_hidden_by_other_address_patch_is_rejected(tmp_path):
-    source, previous = history(tmp_path, COOKIE_OLD, COOKIE_FIXED)
-    upstream = 'import os\nSESSION_COOKIE_SECURE = bool(0)\nHOST = "localhost"\n'
-    approved = upstream.replace('"localhost"', 'os.environ["HOST"]')
-    built = changed_tree(tmp_path, source, upstream, approved)
-    with pytest.raises(DdakToolError, match="손실"):
-        guard_patch_loss(source, built, previous)
-
-
-@pytest.mark.parametrize(
-    "replacement",
-    [
-        'OTHER = (os.environ["SESSION_COOKIE_SECURE"].lower() == "true")\n'
-        "SESSION_COOKIE_SECURE = bool(0)",
-        'SESSION_COOKIE_SECURE = (os.environ["SESSION_COOKIE_SECURE"].lower() == "true")\n'
-        "SESSION_COOKIE_SECURE = bool(0)",
-        "if False:\n    SESSION_COOKIE_SECURE = "
-        '(os.environ["SESSION_COOKIE_SECURE"].lower() == "true")',
-        'SESSION_COOKIE_SECURE = (os.environ["SESSION_COOKIE_SECURE"].lower() == "true") and False',
-    ],
-)
-def test_same_env_read_in_decoy_or_changed_expression_cannot_satisfy_obligation(
-    tmp_path, replacement
-):
-    source, previous = history(tmp_path, COOKIE_OLD, COOKIE_FIXED)
-    upstream = "import os\n" + replacement + '\nHOST = "localhost"\n'
-    approved = upstream.replace('"localhost"', 'os.environ["HOST"]')
-    built = changed_tree(tmp_path, source, upstream, approved)
-    with pytest.raises(DdakToolError, match="손실"):
-        guard_patch_loss(source, built, previous)
-
-
-def test_expression_in_other_function_is_not_same_semantic_owner(tmp_path):
-    old = 'import os\ndef configure(app):\n    app.config["SESSION_COOKIE_SECURE"] = False\n'
-    fixed = old.replace("False", '(os.environ["SESSION_COOKIE_SECURE"].lower() == "true")')
-    source, previous = history(tmp_path, old, fixed)
-    upstream = fixed.replace("def configure(app):", "def unused(app):") + 'HOST = "localhost"\n'
-    built = changed_tree(
-        tmp_path, source, upstream, upstream.replace('"localhost"', 'os.environ["HOST"]')
-    )
-    with pytest.raises(DdakToolError, match="손실"):
-        guard_patch_loss(source, built, previous)
-
-
-@pytest.mark.parametrize("binding", ["os = object()\n", "def unused(os):\n    pass\n"])
-def test_rebound_os_cannot_satisfy_same_expression_hash(tmp_path, binding):
-    source, previous = history(tmp_path, COOKIE_OLD, COOKIE_FIXED)
-    upstream = COOKIE_FIXED + binding + "VERSION = 2\n"
-    built = changed_tree(tmp_path, source, upstream)
-    with pytest.raises(DdakToolError, match="손실"):
-        guard_patch_loss(source, built, previous)
-
-
-def test_rebound_conversion_cannot_satisfy_same_expression_hash(tmp_path):
-    old = "import os\napp.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1)\n"
-    fixed = old.replace("x_proto=1", 'x_proto=int(os.environ["PROXY_FIX_X_PROTO"])')
-    source, previous = history(tmp_path, old, fixed)
-    upstream = fixed + "int = lambda value: 0\n"
-    built = changed_tree(tmp_path, source, upstream)
-    with pytest.raises(DdakToolError, match="손실"):
-        guard_patch_loss(source, built, previous)
-
-
-def test_quote_and_whitespace_changes_preserve_semantic_expression(tmp_path):
-    source, previous = history(tmp_path, COOKIE_OLD, COOKIE_FIXED)
-    upstream = (
-        COOKIE_FIXED.replace('"SESSION_COOKIE_SECURE"', "'SESSION_COOKIE_SECURE'") + "VERSION = 2\n"
-    )
-    built = changed_tree(tmp_path, source, upstream)
-    guard_patch_loss(source, built, previous)
+    patch = file_diff("app.py", old.encode(), fixed.encode())
+    entries = save_ledger(directory, source, patch)
+    return source, {"local": {"release_id": "first", "patch_ledger": entries}}, patch
 
 
 def test_ledger_keeps_old_hashes_and_contains_only_hashed_semantic_evidence(tmp_path):
     sentinel = "fixture-" + "private-original-value"
     old = f'import os\nSECRET_KEY = "{sentinel}"\n'
     fixed = 'import os\nSECRET_KEY = os.environ["SECRET_KEY"]\n'
-    _, previous = history(tmp_path, old, fixed)
+    _, previous, patch = history(tmp_path, old, fixed)
     entry = previous["local"]["patch_ledger"]["app.py"]
     assert entry["source_sha256"] == digest_bytes(old.encode())
     assert entry["result_sha256"] == digest_bytes(fixed.encode())
+    assert entry["patch_sha256"] == digest_bytes(patch)
     assert entry["removed_lines"] == [digest_bytes(old.splitlines()[1].encode())]
     evidence = entry["required_env_expressions"]
     assert evidence and all(key.startswith("sha256:") for key in evidence)
@@ -154,24 +158,31 @@ def test_ledger_keeps_old_hashes_and_contains_only_hashed_semantic_evidence(tmp_
     assert "os.environ" not in json.dumps(evidence)
 
 
-@pytest.mark.parametrize("exact", [True, False])
-def test_legacy_semantic_evidence_missing_allows_only_exact_result(tmp_path, exact):
-    source, previous = history(tmp_path, COOKIE_OLD, COOKIE_FIXED)
-    previous["local"]["patch_ledger"]["app.py"].pop("required_env_expressions", None)
-    upstream = COOKIE_FIXED if exact else COOKIE_FIXED + "VERSION = 2\n"
-    built = changed_tree(tmp_path, source, upstream)
-    if exact:
-        guard_patch_loss(source, built, previous)
-    else:
-        with pytest.raises(DdakToolError, match="손실"):
-            guard_patch_loss(source, built, previous)
-
-
 @pytest.mark.parametrize("evidence", [None, {}, [], {"bad": ["bad"]}])
-def test_missing_or_malformed_semantic_evidence_is_fail_closed(tmp_path, evidence):
-    source, previous = history(tmp_path, COOKIE_OLD, COOKIE_FIXED)
+def test_legacy_semantic_evidence_is_metadata_without_content_veto(tmp_path, evidence):
+    old = "import os\nSESSION_COOKIE_SECURE = False\n"
+    fixed = 'import os\nSESSION_COOKIE_SECURE = os.environ["SESSION_COOKIE_SECURE"]\n'
+    source, previous, patch = history(tmp_path, old, fixed)
     previous["local"]["patch_ledger"]["app.py"]["required_env_expressions"] = evidence
-    upstream = COOKIE_FIXED + "VERSION = 2\n"
-    built = changed_tree(tmp_path, source, upstream)
-    with pytest.raises(DdakToolError, match="손실"):
-        guard_patch_loss(source, built, previous)
+    assert reuse_patches(source, previous, tmp_path / "runs") == (patch, [])
+    (source / "app.py").write_text(fixed + "VERSION = 2\n")
+    assert approved_patches(previous, tmp_path / "runs") == {"app.py": patch}
+    assert reuse_patches(source, previous, tmp_path / "runs") == (None, ["app.py"])
+    guard_patch_loss(review("no_targets"), run_id=RUN_ID, patch=None, has_previous=True)
+
+
+def test_missing_legacy_semantic_evidence_does_not_require_exact_result(tmp_path):
+    old = "import os\nSESSION_COOKIE_SECURE = False\n"
+    fixed = 'import os\nSESSION_COOKIE_SECURE = os.environ["SESSION_COOKIE_SECURE"]\n'
+    source, previous, patch = history(tmp_path, old, fixed)
+    previous["local"]["patch_ledger"]["app.py"].pop("required_env_expressions", None)
+    assert reuse_patches(source, previous, tmp_path / "runs") == (patch, [])
+    (source / "app.py").write_text(fixed + "VERSION = 2\n")
+    assert approved_patches(previous, tmp_path / "runs") == {"app.py": patch}
+    assert reuse_patches(source, previous, tmp_path / "runs") == (None, ["app.py"])
+    guard_patch_loss(review("no_targets"), run_id=RUN_ID, patch=None, has_previous=True)
+
+
+def test_previous_with_partial_patch_still_requires_tool_verdict():
+    with pytest.raises(DdakToolError, match="툴 판정"):
+        guard_patch_loss(None, run_id=RUN_ID, patch=PATCH, has_previous=True)
