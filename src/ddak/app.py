@@ -957,11 +957,13 @@ def _setup_service(service, settings, cli_host):
     def inventory_probe(project, saved):
         path = saved.get("inventory_path") or os.environ.get("DDAK_ONPREM_INVENTORY")
         if not path:
-            return {"status": "gray", "detail": "온프렘 환경 등록 필요"}
+            return {"status": "gray", "detail": "온프레미스 환경 등록 필요"}
         result = preflight_inventory(load_inventory(Path(path)), project=project)
         return {
             "status": "green" if result["passed"] else "red",
-            "detail": "VM·Docker·지문 점검 완료" if result["passed"] else "온프렘 사전 점검 실패",
+            "detail": "VM·Docker·지문 점검 완료"
+            if result["passed"]
+            else "온프레미스 사전 점검 실패",
         }
 
     def repository_probe(project, saved):
@@ -1040,7 +1042,7 @@ def _setup_actions(service, settings):
             path = saved.get("inventory_path") or os.environ.get("DDAK_ONPREM_INVENTORY")
             if settings.adapter_mode is not AdapterMode.REAL or not path:
                 raise DdakToolError(
-                    ErrorCode.PRECONDITION_FAILED, "REAL 온프렘 인벤토리 등록이 필요하다"
+                    ErrorCode.PRECONDITION_FAILED, "REAL 온프레미스 인벤토리 등록이 필요하다"
                 )
             self.inventory = load_inventory(Path(path))
             self.saved = saved

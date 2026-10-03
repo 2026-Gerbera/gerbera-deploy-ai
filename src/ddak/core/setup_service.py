@@ -267,7 +267,7 @@ class SetupService:
         ]
         for ident, label in (
             ("docker", "Docker Hub"),
-            ("inventory", "온프렘 환경"),
+            ("inventory", "온프레미스 환경"),
             ("build", "빌드 환경 준비"),
             ("repository", "앱 저장소 push 권한"),
         ):

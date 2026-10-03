@@ -293,7 +293,7 @@
   const records = { local: {}, cloud: {} };
   const statusLabels = {
     APPROVED: "승인됨 · 곧 시작", RUNNING: "배포 중", DEPLOYING: "배포 중", FINALIZING: "마무리 중",
-    SUCCEEDED: "배포 완료", FAILED_LOCAL: "온프렘 배포 실패", FAILED_CLOUD: "클라우드 배포 실패",
+    SUCCEEDED: "배포 완료", FAILED_LOCAL: "온프레미스 배포 실패", FAILED_CLOUD: "클라우드 배포 실패",
     FAILED_VERIFY: "배포 후 검증 실패", FAILED_BEFORE_DEPLOY: "배포 전에 중단",
     PARITY_FAILED: "두 환경 결과가 다름", NEEDS_HUMAN: "직접 확인 필요", SUPERSEDED: "새 승인 자료로 대체됨", CANCELLED: "취소됨",
     succeeded: "성공", failed: "실패", check_failed: "검사 불합격", skipped: "건너뜀",
@@ -393,7 +393,7 @@
     if (data.step) activatePhase(data);
     lastEventAt = timestamp(data.ts) ?? Date.now();
     const track = data.target || (data.step?.endsWith(".local") ? "local" : data.step?.endsWith(".cloud") ? "cloud" : "common");
-    const target = { local: "온프렘", cloud: "클라우드", common: "공통" }[track] || "공통";
+    const target = { local: "온프레미스", cloud: "클라우드", common: "공통" }[track] || "공통";
     const step = data.step ? `${stepLabels[data.step.replace(/\.(local|cloud)$/, "")] || data.step} (${data.step})` : "";
     const date = data.ts ? new Date(data.ts) : null;
     const time = date && !Number.isNaN(date.getTime()) ? date.toLocaleTimeString("ko-KR", { hour12: false, timeZone: "Asia/Seoul" }) : "시각 없음";

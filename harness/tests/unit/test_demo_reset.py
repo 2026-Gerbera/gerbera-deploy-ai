@@ -333,7 +333,7 @@ def test_ops_buttons_pr_link_approval_and_version_html(rig):
     with client_for(deployment) as client:
         page = client.get("/ops?project=" + PROJECT)
         assert page.status_code == 200
-        for text in ("시연 초기화", "v1으로 되돌리기", "v2 시연 PR 준비", "온프렘·클라우드"):
+        for text in ("시연 초기화", "v1으로 되돌리기", "v2 시연 PR 준비", "온프레미스·클라우드"):
             assert text in page.text
         assert post(client, "reset-v1").status_code == 303
         status = client.get("/ops/demo/status?project=" + PROJECT)

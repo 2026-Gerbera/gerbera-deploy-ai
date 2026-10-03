@@ -10,7 +10,7 @@
 {% if watch_warnings %}<section class="watch-warning"><h2>자동 감시 경고</h2><ul>{% for warning in watch_warnings %}<li>{{ warning }}</li>{% endfor %}</ul></section>{% endif %}
 {% if transferred_watchers %}<div class="notice" role="status"><strong>자동 감시 주체 전환</strong><p>{{ transferred_watchers|join(', ') }}의 자동 감시를 끄고 {{ project }}에서 감시하도록 전환했습니다.</p></div>{% endif %}
 {% if request.query_params.get('saved') == '1' %}<div class="toast" role="status" aria-live="polite" data-toast><p><strong>저장했습니다.</strong> 다음 배포부터 적용됩니다.</p><button type="button" data-toast-close aria-label="알림 닫기">닫기</button></div>{% endif %}
-<p><a href="/setup?project={{ project|urlencode }}">초기 연결 설정 · AI / 온프렘 / 빌드 준비 →</a></p>
+<p><a href="/setup?project={{ project|urlencode }}">초기 연결 설정 · AI / 온프레미스 / 빌드 준비 →</a></p>
 <form class="settings-layout" method="post" action="/settings">{{ form_fields("settings") }}
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="project" value="{{ project }}"><input type="hidden" name="version" value="{{ settings.version or 0 }}">
   {% if settings.get('settings_view') %}<input type="hidden" name="settings_view" value="{{ settings.settings_view }}">{% endif %}
@@ -22,7 +22,7 @@
       <label class="toggle-row"><input name="auto_detect" type="checkbox" {% if settings.auto_detect %}checked{% endif %}><span>자동 감지<small>새 커밋이 반영되면 배포를 준비합니다. 승인은 항상 사람이 합니다.</small>{{ source('auto_detect') }}</span></label>
     </section>
     <section class="section form-section"><h2>배포 위치</h2>
-      <label><span>배포 대상</span><select name="default_targets" onchange="this.form.elements.namedItem('cloud_domain').required = this.value !== 'onprem'"><option value="onprem" {% if settings.default_targets == 'onprem' or not settings.default_targets %}selected{% endif %}>온프렘만</option><option value="both" {% if settings.default_targets == 'both' %}selected{% endif %}>온프렘 + 클라우드(AWS)</option><option value="cloud" {% if settings.default_targets == 'cloud' %}selected{% endif %}>클라우드(AWS)만</option></select>{{ source('default_targets') }}</label>
+      <label><span>배포 대상</span><select name="default_targets" onchange="this.form.elements.namedItem('cloud_domain').required = this.value !== 'onprem'"><option value="onprem" {% if settings.default_targets == 'onprem' or not settings.default_targets %}selected{% endif %}>온프레미스만</option><option value="both" {% if settings.default_targets == 'both' %}selected{% endif %}>온프레미스 + 클라우드(AWS)</option><option value="cloud" {% if settings.default_targets == 'cloud' %}selected{% endif %}>클라우드(AWS)만</option></select>{{ source('default_targets') }}</label>
     </section>
     <details data-cloud-settings{% if settings.default_targets in ('cloud','both') %} open{% endif %}><summary>AWS 계정과 HTTPS</summary><p class="note">클라우드에 배포할 때만 필요합니다.</p>
       <label><span>AWS 프로필</span><input name="aws_profile" value="{{ settings.aws_profile or '' }}" maxlength="128"><small>이 컴퓨터에 설정된 프로필 이름입니다. 실행 전 기대 계정 {{ settings.aws_expected_account_id }}과 일치하는지 확인합니다.</small>{{ source('aws_profile') }}</label>

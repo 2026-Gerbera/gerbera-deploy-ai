@@ -21,7 +21,7 @@ def local_base_url(ctx: RunContext) -> str:
             if url:
                 break
     if not isinstance(url, str) or not url:
-        raise DdakToolError(ErrorCode.CONFIG_INVALID, "온프렘 공개 주소가 인벤토리에 없다")
+        raise DdakToolError(ErrorCode.CONFIG_INVALID, "온프레미스 공개 주소가 인벤토리에 없다")
     return url
 
 

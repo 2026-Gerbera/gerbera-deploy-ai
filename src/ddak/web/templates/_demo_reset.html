@@ -2,7 +2,7 @@
 <section class="section" id="demo-reset">
   <h2>시연 초기화</h2>
   <p>v1 복원 PR을 만들고 GitHub에서 merge하세요. 자동 감시가 배포를 준비합니다.
-    승인하면 {% if settings.default_targets == 'both' %}온프렘·클라우드가{% elif settings.default_targets == 'cloud' %}클라우드가{% else %}온프렘이{% endif %} v1로 돌아갑니다.</p>
+    승인하면 {% if settings.default_targets == 'both' %}온프레미스·클라우드가{% elif settings.default_targets == 'cloud' %}클라우드가{% else %}온프레미스가{% endif %} v1로 돌아갑니다.</p>
   <p class="note">PR merge만으로 초기화가 끝나지 않습니다. 아래에서 선택한 모든 환경의 ‘v1 배포 완료’를 확인하세요. 승인 대기 중에는 다음 PR을 merge하지 마세요.</p>
   <div class="ops-forms">
     <div><form method="post" action="/ops/demo/reset-v1">{{ form_fields('demo-reset-v1') }}

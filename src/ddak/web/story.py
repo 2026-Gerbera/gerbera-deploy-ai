@@ -6,7 +6,7 @@ import re
 
 from ddak.core.redact import redact
 
-ENV = {"local": "온프렘", "cloud": "클라우드"}
+ENV = {"local": "온프레미스", "cloud": "클라우드"}
 STEP = {
     "build.was": "WAS 이미지 빌드",
     "build.web": "WEB 이미지 빌드",

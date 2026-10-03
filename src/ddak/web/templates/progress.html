@@ -25,7 +25,7 @@
   <p class="note">움직이는 점은 진행 중인 작업입니다. 두 환경은 동시에 진행될 수 있습니다. 로그는 작업 단위로 갱신되며, 점의 움직임은 완료율을 뜻하지 않습니다. 수신 작업 성공은 해당 구간 전체의 완료를 뜻하지 않습니다.</p>
   <p id="event-age" class="note" aria-live="off">{{ '최종 결과를 확인하세요.' if ended else '첫 이벤트를 기다립니다.' }}</p>
   <p id="connection-state" role="status">{% if ended %}실행 종료{% else %}실시간 연결을 준비합니다.{% endif %}</p>
-  <details class="story-technical"><summary>기술 정보 · 작업별 이벤트</summary><section class="section"><h2>온프렘 이벤트</h2><ol id="local-events" class="event-list"><li class="event-placeholder">{{ '최종 기록은 결과 화면에서 확인하세요.' if ended else '이벤트를 기다리는 중입니다.' }}</li></ol></section>
+  <details class="story-technical"><summary>기술 정보 · 작업별 이벤트</summary><section class="section"><h2>온프레미스 이벤트</h2><ol id="local-events" class="event-list"><li class="event-placeholder">{{ '최종 기록은 결과 화면에서 확인하세요.' if ended else '이벤트를 기다리는 중입니다.' }}</li></ol></section>
   <section class="section"><h2>클라우드 이벤트</h2><ol id="cloud-events" class="event-list"><li class="event-placeholder">{{ '최종 기록은 결과 화면에서 확인하세요.' if ended else '이벤트를 기다리는 중입니다.' }}</li></ol></section>
 <section class="section"><h2>공통 이벤트</h2><ol id="common-events" class="event-list"><li class="event-placeholder">{{ '최종 기록은 결과 화면에서 확인하세요.' if ended else '이벤트를 기다리는 중입니다.' }}</li></ol></section>
 </details></section>

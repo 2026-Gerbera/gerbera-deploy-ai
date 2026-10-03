@@ -130,7 +130,7 @@ def public_links(context: dict) -> list[dict[str, str]]:
     targets = context.get("targets")
     addresses = []
     if targets != "cloud":
-        addresses.append(("온프렘", context.get("public_url")))
+        addresses.append(("온프레미스", context.get("public_url")))
     if targets not in ("local", "onprem") and context.get("cloud_domain"):
         addresses.append(("클라우드", "https://" + context["cloud_domain"]))
     for label, raw in addresses:

@@ -113,7 +113,7 @@ def test_approval_onprem_scope_comes_from_plan(rig):
         csrf_token="fixture",
         request={"url": {"path": "/approval"}},
     )
-    assert "승인하면 온프렘에 배포합니다. 클라우드는 바뀌지 않습니다." in html
+    assert "승인하면 온프레미스에 배포합니다. 클라우드는 바뀌지 않습니다." in html
     assert 'data-code="N/A"' in html
     assert html.count('value="approved"') == 2
     assert html.count('value="denied"') == 2
@@ -155,7 +155,7 @@ def test_parallel_progress_events_and_confirmation():
     send('step.started',{seq:2,step:'deploy.infra.cloud',target:'cloud'});
     assert.equal(cell('local','verify').textContent,'진행 중');
     assert.equal(cell('cloud','infra').textContent,'진행 중');
-    assert.ok(others['current-activity'].textContent.includes('온프렘'));
+    assert.ok(others['current-activity'].textContent.includes('온프레미스'));
     assert.ok(others['current-activity'].textContent.includes('클라우드'));
     connection.onerror();
     assert.equal(progress.dataset.stream,'reconnecting');
