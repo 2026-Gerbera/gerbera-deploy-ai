@@ -16,6 +16,7 @@ from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.enums import Source
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.contracts.tools.generate_infra import GenerateInfraInput, GenerateInfraOutput
+from ddak.core.project_settings import cloud_platform_name
 from ddak.core.redact import MAX_LEN, redact
 from ddak.core.snapshots import digest_bytes
 
@@ -30,6 +31,8 @@ _REPAIR_INSTRUCTION = (
 )
 _FILE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*\.tf$")
 _NAMESPACE = re.compile(r"^[a-z0-9]+(?:[._-][a-z0-9]+)*$")
+# 이미지 저장소 앞부분을 쓸 때는 레지스트리 주소(점 포함)를 Docker Hub 네임스페이스로 보지 않는다.
+_HUB_NAMESPACE = re.compile(r"^[a-z0-9]+(?:[_-][a-z0-9]+)*$")
 _FEEDBACK = re.compile(r"^[A-Z][A-Z0-9_]{0,63}(?:,[A-Z][A-Z0-9_]{0,63}){0,2}$")
 _CODEBUILD_BUILDSPEC = "version: 0.2\\nphases:\\n  build:\\n    commands:\\n      - exit 1\\n"
 _DOUBLE_ESCAPED_CODEBUILD_BUILDSPEC = _CODEBUILD_BUILDSPEC.replace("\\", "\\\\")
@@ -104,6 +107,22 @@ def _platform_outputs(namespace: str, project: str) -> dict[str, tuple[str, str]
     }
 
 
+def _dockerhub_namespace(ctx: RunContext) -> str:
+    """DDAK_DOCKERHUB_NAMESPACE가 우선이고, 없으면 프로젝트 이미지 저장소 설정의 앞부분을 쓴다."""
+    namespace = os.environ.get("DDAK_DOCKERHUB_NAMESPACE", "").strip()
+    if not namespace:
+        repository = ctx.project_settings.get("image_repository") or ctx.image_repository
+        head = repository.split("/", 1)[0] if isinstance(repository, str) else ""
+        namespace = head if _HUB_NAMESPACE.fullmatch(head) else ""
+    if not _NAMESPACE.fullmatch(namespace):
+        raise DdakToolError(
+            ErrorCode.CONFIG_INVALID,
+            "Docker Hub 네임스페이스가 필요하다. 관리 페이지 '초기 연결 설정'의 이미지 저장소"
+            "(예: 2026gerbera/flaskr)를 입력하거나 DDAK_DOCKERHUB_NAMESPACE를 설정한다",
+        )
+    return namespace
+
+
 def _safe_data(ctx: RunContext, namespace: str) -> str:
     settings = ctx.project_settings
     domain = settings.get("cloud_domain") or ctx.cloud_domain
@@ -117,7 +136,7 @@ def _safe_data(ctx: RunContext, namespace: str) -> str:
     if not ctx.repo_url:
         raise DdakToolError(ErrorCode.CONFIG_INVALID, "GitHub 저장소 URL이 필요하다")
     return (
-        f"project={ctx.project}\n"
+        f"project={cloud_platform_name(ctx.project, ctx.project_settings)}\n"
         f"domain={domain}\n"
         f"hosted_zone_id={zone}\n"
         f"repository_url={ctx.repo_url.removesuffix('.git')}\n"
@@ -167,8 +186,8 @@ def _repair_source(ctx: RunContext, directory: Path) -> tuple[str, dict[str, str
     return feedback, files
 
 
-def _baseline_source(ctx: RunContext, directory: Path) -> dict[str, str] | None:
-    root = directory.parent.parent / "infra-baselines" / ctx.project / PROMPT_VERSION
+def _baseline_source(platform: str, directory: Path) -> dict[str, str] | None:
+    root = directory.parent.parent / "infra-baselines" / platform / PROMPT_VERSION
     if not root.exists():
         return None
     if not root.is_dir() or root.is_symlink():
@@ -252,9 +271,9 @@ def generate_infra(inp: GenerateInfraInput, ctx: RunContext) -> GenerateInfraOut
             "앱 인프라 갱신에는 새 시크릿 키 목록 계약이 필요하다",
             needs_human=True,
         )
-    namespace = os.environ.get("DDAK_DOCKERHUB_NAMESPACE", "").strip()
-    if not _NAMESPACE.fullmatch(namespace):
-        raise DdakToolError(ErrorCode.CONFIG_INVALID, "DDAK_DOCKERHUB_NAMESPACE 설정이 필요하다")
+    namespace = _dockerhub_namespace(ctx)
+    # 기존 클라우드 플랫폼을 재사용할 수 있게 생성 입력·기준본·출력은 플랫폼 이름을 쓴다.
+    platform = cloud_platform_name(ctx.project, ctx.project_settings)
     original = Path(inp.directory)
     directory = original.resolve()
     if not directory.is_dir() or original.is_symlink() or any(directory.iterdir()):
@@ -263,7 +282,7 @@ def generate_infra(inp: GenerateInfraInput, ctx: RunContext) -> GenerateInfraOut
     base = _safe_data(ctx, namespace)
     repair = _repair_source(ctx, directory)
     if repair is None:
-        baseline = _baseline_source(ctx, directory)
+        baseline = _baseline_source(platform, directory)
         if baseline is not None:
             rendered = baseline
             source = Source.CACHE
@@ -300,6 +319,6 @@ def generate_infra(inp: GenerateInfraInput, ctx: RunContext) -> GenerateInfraOut
         directory=str(directory),
         layer="platform",
         files=files,
-        outputs=_platform_outputs(namespace, ctx.project),
+        outputs=_platform_outputs(namespace, platform),
         source=source,
     )

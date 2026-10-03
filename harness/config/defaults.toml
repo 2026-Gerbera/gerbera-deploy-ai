@@ -18,3 +18,8 @@ code_patch = true
 
 [aws]
 expected_account_id = "458781646776"
+
+# 프로젝트별 클라우드 플랫폼 이름(state bucket·key·리소스 이름). 없으면 프로젝트 이름을 쓴다.
+# 관리 페이지 저장값이 이 표보다 우선한다.
+[cloud_platform]
+flaskr-three = "flaskr"

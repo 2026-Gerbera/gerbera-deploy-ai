@@ -81,6 +81,11 @@ async def save_settings(request: Request):
                     if "aws_profile" in form
                     else {}
                 ),
+                **(
+                    {"cloud_platform": form["cloud_platform"].strip() or None}
+                    if "cloud_platform" in form
+                    else {}
+                ),
             },
             updated_by="local-operator",
             expected_version=expected,

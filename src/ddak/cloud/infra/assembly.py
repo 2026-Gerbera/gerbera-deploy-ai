@@ -13,6 +13,7 @@ from ddak.core.contracts.approval import ApprovalRecord
 from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.contracts.tools.generate_infra import GenerateInfraOutput
+from ddak.core.project_settings import cloud_platform_name
 from ddak.core.snapshots import digest_bytes
 
 from .bindings import InfraBinding
@@ -75,10 +76,13 @@ def create_binding(
 
     sdk_session()
     account = selection["aws_expected_account_id"]
+    # state·리소스는 클라우드 플랫폼 이름, 승인 기록은 프로젝트 이름으로 찾는다.
+    platform = cloud_platform_name(ctx.project, ctx.project_settings)
     settings = AwsSettings(
-        project=ctx.project,
+        project=platform,
+        approval_project=ctx.project,
         account_id=account,
-        state_bucket=f"ddak-state-{account}-{sha256(ctx.project.encode()).hexdigest()[:16]}",
+        state_bucket=f"ddak-state-{account}-{sha256(platform.encode()).hexdigest()[:16]}",
         layer=bundle.layer,
         outputs=bundle.outputs,
         alb_security_group_addresses=(

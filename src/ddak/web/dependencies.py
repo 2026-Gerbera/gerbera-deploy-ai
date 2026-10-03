@@ -10,7 +10,12 @@ from urllib.parse import urlsplit, urlunsplit
 from fastapi import HTTPException, Request
 from fastapi.templating import Jinja2Templates
 
-from ddak.core.defaults import load_aws_defaults, load_defaults, project_values
+from ddak.core.defaults import (
+    cloud_platform_default,
+    load_aws_defaults,
+    load_defaults,
+    project_values,
+)
 from ddak.core.project_settings import ProjectSettings
 from ddak.executor.engine import RunStatus
 from ddak.executor.service import DeploymentService
@@ -54,6 +59,12 @@ def project_settings(request: Request, project: str) -> dict:
             for key in ProjectSettings.model_fields
         },
     }
+    # 클라우드 플랫폼 이름: 관리 페이지 > 기본 파일 [cloud_platform] > 프로젝트 이름.
+    # 저장값이 없으면 입력칸은 비우고 실제로 쓸 이름을 안내만 한다(기본값을 저장하지 않는다).
+    platform = cloud_platform_default(project)
+    result["cloud_platform_default"] = platform or project
+    if saved.get("cloud_platform") is None and platform:
+        result["setting_sources"]["cloud_platform"] = "기본 파일"
     base = getattr(request.app.state, "settings", None)
     if saved.get("aws_profile") is None and base is not None and base.aws_profile:
         result["aws_profile"] = base.aws_profile

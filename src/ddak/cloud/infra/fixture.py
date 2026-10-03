@@ -14,6 +14,7 @@ from ddak.core.config import AdapterMode
 from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.enums import RunMode, Source
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
+from ddak.core.project_settings import cloud_platform_name
 
 from .bindings import InfraBinding
 from .runtime import AwsSettings, CommandResult, InfraRuntime, SessionKeys
@@ -143,7 +144,8 @@ def fixture_binding(ctx: RunContext, *, root: Path, approvals: Any, guard: Any) 
         raise DdakToolError(ErrorCode.CONFIG_INVALID, "fixture 인프라는 FAKE 모드 전용이다")
     layer = "platform" if ctx.mode is RunMode.BOOTSTRAP else "app"
     resource = "aws_ecs_cluster" if layer == "platform" else "aws_secretsmanager_secret"
-    name = f"ddak-{ctx.project}-fixture" if layer == "platform" else f"ddak/{ctx.project}/FIXTURE"
+    platform = cloud_platform_name(ctx.project, ctx.project_settings)
+    name = f"ddak-{platform}-fixture" if layer == "platform" else f"ddak/{platform}/FIXTURE"
     source = f'resource "{resource}" "fixture" {{ name = "{name}" }}\n'
     if layer == "platform":
         source += """
@@ -224,7 +226,14 @@ resource "aws_subnet" "fixture" { cidr_block = "10.0.1.0/24" }
     runtime = InfraRuntime(
         root=root,
         run_id=ctx.run_id,
-        settings=AwsSettings(ctx.project, _ACCOUNT, "ddak-fixture-state", layer, declarations),
+        settings=AwsSettings(
+            platform,
+            _ACCOUNT,
+            "ddak-fixture-state",
+            layer,
+            declarations,
+            approval_project=ctx.project,
+        ),
         lock_file=b"source=fixture\n",
         runner=runner,
         approvals=approvals,
