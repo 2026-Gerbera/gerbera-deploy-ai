@@ -11,7 +11,10 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from enum import StrEnum
+
+from ddak.core.contracts.infra_evidence import BoundaryPolicyVersion
 
 
 class ErrorCode(StrEnum):
@@ -37,12 +40,20 @@ class ErrorCode(StrEnum):
 class DdakToolError(Exception):
     """툴이 작업을 수행할 수 없을 때 던진다. 문자열 형식: "<CODE>: <메시지>"."""
 
-    def __init__(self, code: ErrorCode, message: str, *, needs_human: bool = False) -> None:
+    def __init__(
+        self,
+        code: ErrorCode,
+        message: str,
+        *,
+        needs_human: bool = False,
+        boundary_versions: Sequence[BoundaryPolicyVersion] = (),
+    ) -> None:
         super().__init__(f"{code.value}: {message}")
         self.code = code
         self.message = message
         # 앱 롤백으로 복구할 수 없는 부분 변경(예: Terraform)의 상태 확인이 필요하다.
         self.needs_human = needs_human
+        self.boundary_versions = tuple(boundary_versions)
 
 
 _CODE_IN_TEXT = re.compile(r"\b(" + "|".join(c.value for c in ErrorCode) + r"): ")

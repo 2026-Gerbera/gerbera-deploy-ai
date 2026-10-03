@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 NAME = "aws"
 REGION = "ap-northeast-2"  # 서울만
 STATE_LAYERS = ("platform", "app")  # 💭 플랫폼 층(VPC·ALB·ECS 클러스터·공유 RDS·CodeBuild) / 앱 층
@@ -106,8 +108,10 @@ def bootstrap_dbinit_exception(account_id: str) -> dict:
     }
 
 
-def boundary_document(account_id: str) -> dict:
+def boundary_document(account_id: str, project: str) -> dict:
     """research/IAM §13-3의 앱 경계. 권한 자체를 주는 정책은 아니다."""
+    if not isinstance(project, str) or not re.fullmatch(r"[a-z][a-z0-9-]{0,39}", project):
+        raise ValueError("PROJECT_INVALID")
     prefix = f"arn:aws:secretsmanager:{REGION}:{account_id}:secret:"
     return {
         "Version": "2012-10-17",
@@ -120,7 +124,10 @@ def boundary_document(account_id: str) -> dict:
             {
                 "Effect": "Allow",
                 "Action": ["logs:CreateLogStream", "logs:PutLogEvents"],
-                "Resource": f"arn:aws:logs:{REGION}:{account_id}:log-group:/aws/ecs/ddak-*:*",
+                "Resource": [
+                    f"arn:aws:logs:{REGION}:{account_id}:log-group:/aws/ecs/{project}:*",
+                    f"arn:aws:logs:{REGION}:{account_id}:log-group:/aws/ecs/ddak-*:*",
+                ],
             },
             {
                 "Effect": "Allow",

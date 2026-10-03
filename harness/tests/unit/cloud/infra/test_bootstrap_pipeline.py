@@ -8,6 +8,7 @@ import pytest
 from botocore.exceptions import ClientError
 
 from ddak.cloud.infra import InfraBinding, bind_infra, run_plan, run_validate, unbind_infra
+from ddak.cloud.infra.boundary_versions import snapshot_boundaries
 from ddak.cloud.infra.foundation import foundation_template
 from ddak.core.config import AdapterMode
 from ddak.core.contracts.context import RunContext
@@ -15,6 +16,7 @@ from ddak.core.contracts.enums import RunMode
 from ddak.core.contracts.errors import DdakToolError
 from ddak.core.contracts.tools.plan_infra import PlanInfraInput
 from ddak.core.contracts.tools.validate_infra import ValidateInfraInput
+from ddak.core.runtime import tool_context
 from ddak.executor.approval_meta import encode_meta
 from tests.unit.cloud.infra import test_runtime as f
 
@@ -32,6 +34,12 @@ def bootstrap(tmp_path):
     sdk["s3"].head_object.side_effect = missing("404")
     sdk["s3"].put_object.return_value = {"ETag": "fixture-etag"}
     sdk["iam"].get_policy.side_effect = missing("NoSuchEntity")
+    sdk["iam"].create_policy.side_effect = lambda **kw: {
+        "Policy": {
+            "Arn": f"arn:aws:iam::{settings.account_id}:policy{kw['Path']}{kw['PolicyName']}",
+            "DefaultVersionId": "v1",
+        }
+    }
     sdk["iam"].get_role.side_effect = missing("NoSuchEntity")
     records = []
     runner = f.FakeRunner()
@@ -84,6 +92,94 @@ def test_first_platform_requires_one_infra_approval_then_creates_and_migrates(bo
     }
     assert (runtime.work / "backend-migrated").exists()
     assert (runtime.work / "apply-succeeded").exists()
+
+
+@pytest.mark.parametrize("failure", [None, "second-boundary", "platform"])
+def test_updated_boundary_receipts_survive_later_failures(bootstrap, failure):
+    runtime, runner, sdk, records = bootstrap
+    template = foundation_template(runtime.settings)
+    old = {"Version": "2012-10-17", "Statement": []}
+    sdk["iam"].get_policy.side_effect = lambda **kw: {
+        "Policy": {"Arn": kw["PolicyArn"], "DefaultVersionId": "v1"}
+    }
+    sdk["iam"].get_policy_version.side_effect = lambda **kw: {
+        "PolicyVersion": {"Document": old, "VersionId": "v1", "IsDefaultVersion": True}
+    }
+    sdk["iam"].list_policy_versions.return_value = {
+        "Versions": [{"VersionId": "v1", "IsDefaultVersion": True}],
+        "IsTruncated": False,
+    }
+    runtime._boundary_snapshot = f.canonical(snapshot_boundaries(runtime.settings, sdk["iam"]))
+    summary = plan(runtime)
+    assert encode_meta(summary, infra=True)
+    records.append(f.approval(summary["plan_sha256"]))
+    sdk["iam"].create_policy_version.side_effect = [
+        {"PolicyVersion": {"VersionId": "v2", "IsDefaultVersion": True}},
+        missing("AccessDenied")
+        if failure == "second-boundary"
+        else {"PolicyVersion": {"VersionId": "v3", "IsDefaultVersion": True}},
+    ]
+    if failure == "platform":
+        runner.apply_code = 1
+    published = []
+    with tool_context("apply_infra", boundary_recorder=published.append):
+        if failure:
+            with pytest.raises(DdakToolError) as caught:
+                runtime.apply(session=f.SESSION)
+            assert caught.value.needs_human
+            versions = [row.model_dump(mode="json") for row in caught.value.boundary_versions]
+            with pytest.raises(DdakToolError):
+                runtime.apply(session=f.SESSION)
+        else:
+            versions = runtime.apply(session=f.SESSION)["boundary_versions"]
+    assert versions[0]["previous_version_id"] == "v1"
+    assert versions[0]["new_version_id"] == "v2"
+    assert versions[0]["status"] == "updated"
+    assert versions[0] in [row.model_dump(mode="json") for row in published]
+    assert versions[1]["status"] == ("unknown" if failure == "second-boundary" else "updated")
+    assert versions[1]["new_version_id"] == (None if failure == "second-boundary" else "v3")
+    receipts = list(
+        runtime._attempt.parent.glob(runtime._attempt.name + "-foundation-boundary-*.json")
+    )
+    assert len(receipts) == (3 if failure == "second-boundary" else 4)
+    persisted = [json.loads(path.read_text()) for path in receipts]
+    assert versions[0] in persisted
+    assert runtime.settings.account_id not in json.dumps(persisted)
+    sdk["iam"].create_policy.assert_not_called()
+    sdk["iam"].delete_policy_version.assert_not_called()
+    calls = sdk["iam"].create_policy_version.call_args_list
+    assert len(calls) == 2
+    assert all(call.kwargs["SetAsDefault"] is True for call in calls)
+    assert json.loads(calls[0].kwargs["PolicyDocument"]) == template["boundary"]
+    if failure == "second-boundary":
+        assert not any(cmd[1] == "apply" for cmd, _ in runner.calls)
+
+
+@pytest.mark.parametrize("field", ["default_version_id", "document"])
+def test_approval_hash_binds_observed_boundary_state(bootstrap, field):
+    runtime, _, sdk, records = bootstrap
+    summary = plan(runtime)
+    records.append(f.approval(summary["plan_sha256"]))
+    snapshots = json.loads(runtime._boundary_snapshot)
+    snapshots[0][field] = "v9" if field == "default_version_id" else {"Statement": []}
+    runtime._boundary_snapshot = f.canonical(snapshots)
+    with pytest.raises(DdakToolError, match="APPROVAL_REQUIRED"):
+        runtime.apply(session=f.SESSION)
+    sdk["s3"].create_bucket.assert_not_called()
+    sdk["iam"].create_policy.assert_not_called()
+
+
+def test_representative_rolling_plan_with_foundation_fits_approval_metadata(bootstrap):
+    from tests.unit.cloud.infra.test_generate_infra_rolling import fixture_data
+
+    runtime, runner, _, _ = bootstrap
+    _, runner.raw, _ = fixture_data()
+    summary = runtime.plan(
+        session=f.SESSION,
+        analyzer=Mock(validate_policy=Mock(return_value={"findings": []})),
+        update=False,
+    )
+    assert len(encode_meta(summary, infra=True).encode()) <= 8192
 
 
 @pytest.mark.parametrize(
@@ -149,10 +245,20 @@ def test_registered_bootstrap_with_existing_bucket_uses_remote_backend(tmp_path)
         "TagSet": [{"Key": k, "Value": v} for k, v in template["tags"].items()]
     }
     sdk["s3"].get_bucket_policy.return_value = {"Policy": json.dumps(template["bucket_policy"])}
-    sdk["iam"].get_policy.return_value = {"Policy": {"DefaultVersionId": "v1"}}
-    sdk["iam"].get_policy_version.side_effect = [
-        {"PolicyVersion": {"Document": template[k]}} for k in ("boundary", "build_boundary")
-    ]
+    documents = {
+        settings.boundary_arn: template["boundary"],
+        settings.build_boundary_arn: template["build_boundary"],
+    }
+    sdk["iam"].get_policy.side_effect = lambda **kw: {
+        "Policy": {"Arn": kw["PolicyArn"], "DefaultVersionId": "v1"}
+    }
+    sdk["iam"].get_policy_version.side_effect = lambda **kw: {
+        "PolicyVersion": {
+            "Document": documents[kw["PolicyArn"]],
+            "VersionId": "v1",
+            "IsDefaultVersion": True,
+        }
+    }
     records = []
     runner = f.FakeRunner()
     runner.raw = {"format_version": "1.2", "resource_changes": []}

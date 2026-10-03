@@ -1,0 +1,1093 @@
+{
+  "format_version": "1.2",
+  "errored": false,
+  "complete": true,
+  "resource_changes": [
+    {
+      "address": "aws_vpc.main",
+      "mode": "managed",
+      "type": "aws_vpc",
+      "name": "main",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "after": {
+          "id": "vpc-fixture",
+          "cidr_block": "10.40.0.0/16",
+          "enable_dns_support": true,
+          "enable_dns_hostnames": true
+        },
+        "after_unknown": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "aws_subnet.public_a",
+      "mode": "managed",
+      "type": "aws_subnet",
+      "name": "public_a",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "after": {
+          "id": "subnet-public_a",
+          "vpc_id": "vpc-fixture",
+          "cidr_block": "10.40.1.0/24",
+          "availability_zone": "ap-northeast-2a"
+        },
+        "after_unknown": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "aws_subnet.public_b",
+      "mode": "managed",
+      "type": "aws_subnet",
+      "name": "public_b",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "after": {
+          "id": "subnet-public_b",
+          "vpc_id": "vpc-fixture",
+          "cidr_block": "10.40.2.0/24",
+          "availability_zone": "ap-northeast-2c"
+        },
+        "after_unknown": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "aws_subnet.private_a",
+      "mode": "managed",
+      "type": "aws_subnet",
+      "name": "private_a",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "after": {
+          "id": "subnet-private_a",
+          "vpc_id": "vpc-fixture",
+          "cidr_block": "10.40.11.0/24",
+          "availability_zone": "ap-northeast-2a"
+        },
+        "after_unknown": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "aws_subnet.private_b",
+      "mode": "managed",
+      "type": "aws_subnet",
+      "name": "private_b",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "after": {
+          "id": "subnet-private_b",
+          "vpc_id": "vpc-fixture",
+          "cidr_block": "10.40.12.0/24",
+          "availability_zone": "ap-northeast-2c"
+        },
+        "after_unknown": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "aws_internet_gateway.main",
+      "mode": "managed",
+      "type": "aws_internet_gateway",
+      "name": "main",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "after": {
+          "id": "igw-fixture",
+          "vpc_id": "vpc-fixture"
+        },
+        "after_unknown": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "aws_route_table.public",
+      "mode": "managed",
+      "type": "aws_route_table",
+      "name": "public",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "after": {
+          "id": "rtb-fixture",
+          "vpc_id": "vpc-fixture",
+          "route": [
+            {
+              "cidr_block": "0.0.0.0/0",
+              "gateway_id": "igw-fixture"
+            }
+          ]
+        },
+        "after_unknown": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "aws_route_table_association.public_a",
+      "mode": "managed",
+      "type": "aws_route_table_association",
+      "name": "public_a",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "after": {
+          "subnet_id": "subnet-public_a",
+          "route_table_id": "rtb-fixture"
+        },
+        "after_unknown": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "aws_route_table_association.public_b",
+      "mode": "managed",
+      "type": "aws_route_table_association",
+      "name": "public_b",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "after": {
+          "subnet_id": "subnet-public_b",
+          "route_table_id": "rtb-fixture"
+        },
+        "after_unknown": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "aws_security_group.alb",
+      "mode": "managed",
+      "type": "aws_security_group",
+      "name": "alb",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "after": {
+          "id": "sg-alb",
+          "name": "ddak-flaskr-alb",
+          "vpc_id": "vpc-fixture",
+          "ingress": [],
+          "egress": []
+        },
+        "after_unknown": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "aws_security_group.app",
+      "mode": "managed",
+      "type": "aws_security_group",
+      "name": "app",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "after": {
+          "id": "sg-app",
+          "name": "ddak-flaskr-app",
+          "vpc_id": "vpc-fixture",
+          "ingress": [],
+          "egress": []
+        },
+        "after_unknown": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "aws_security_group.db",
+      "mode": "managed",
+      "type": "aws_security_group",
+      "name": "db",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "after": {
+          "id": "sg-db",
+          "name": "ddak-flaskr-db",
+          "vpc_id": "vpc-fixture",
+          "ingress": [],
+          "egress": []
+        },
+        "after_unknown": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "aws_vpc_security_group_ingress_rule.alb_http",
+      "mode": "managed",
+      "type": "aws_vpc_security_group_ingress_rule",
+      "name": "alb_http",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "after": {
+          "security_group_id": "sg-alb",
+          "ip_protocol": "tcp",
+          "from_port": 80,
+          "to_port": 80,
+          "cidr_ipv4": "0.0.0.0/0"
+        },
+        "after_unknown": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "aws_vpc_security_group_ingress_rule.alb_https",
+      "mode": "managed",
+      "type": "aws_vpc_security_group_ingress_rule",
+      "name": "alb_https",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "after": {
+          "security_group_id": "sg-alb",
+          "ip_protocol": "tcp",
+          "from_port": 443,
+          "to_port": 443,
+          "cidr_ipv4": "0.0.0.0/0"
+        },
+        "after_unknown": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "aws_vpc_security_group_ingress_rule.app_web",
+      "mode": "managed",
+      "type": "aws_vpc_security_group_ingress_rule",
+      "name": "app_web",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "after": {
+          "security_group_id": "sg-app",
+          "ip_protocol": "tcp",
+          "from_port": 8080,
+          "to_port": 8080,
+          "referenced_security_group_id": "sg-alb"
+        },
+        "after_unknown": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "aws_vpc_security_group_ingress_rule.db_mysql",
+      "mode": "managed",
+      "type": "aws_vpc_security_group_ingress_rule",
+      "name": "db_mysql",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "after": {
+          "security_group_id": "sg-db",
+          "ip_protocol": "tcp",
+          "from_port": 3306,
+          "to_port": 3306,
+          "referenced_security_group_id": "sg-app"
+        },
+        "after_unknown": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "aws_vpc_security_group_egress_rule.alb_app",
+      "mode": "managed",
+      "type": "aws_vpc_security_group_egress_rule",
+      "name": "alb_app",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "after": {
+          "security_group_id": "sg-alb",
+          "ip_protocol": "tcp",
+          "from_port": 8080,
+          "to_port": 8080,
+          "referenced_security_group_id": "sg-app"
+        },
+        "after_unknown": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "aws_vpc_security_group_egress_rule.app_db",
+      "mode": "managed",
+      "type": "aws_vpc_security_group_egress_rule",
+      "name": "app_db",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "after": {
+          "security_group_id": "sg-app",
+          "ip_protocol": "tcp",
+          "from_port": 3306,
+          "to_port": 3306,
+          "referenced_security_group_id": "sg-db"
+        },
+        "after_unknown": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "aws_vpc_security_group_egress_rule.app_https",
+      "mode": "managed",
+      "type": "aws_vpc_security_group_egress_rule",
+      "name": "app_https",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "after": {
+          "security_group_id": "sg-app",
+          "ip_protocol": "tcp",
+          "from_port": 443,
+          "to_port": 443,
+          "cidr_ipv4": "0.0.0.0/0"
+        },
+        "after_unknown": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "aws_vpc_security_group_egress_rule.app_dns_tcp",
+      "mode": "managed",
+      "type": "aws_vpc_security_group_egress_rule",
+      "name": "app_dns_tcp",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "after": {
+          "security_group_id": "sg-app",
+          "ip_protocol": "tcp",
+          "from_port": 53,
+          "to_port": 53,
+          "cidr_ipv4": "10.40.0.2/32"
+        },
+        "after_unknown": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "aws_vpc_security_group_egress_rule.app_dns_udp",
+      "mode": "managed",
+      "type": "aws_vpc_security_group_egress_rule",
+      "name": "app_dns_udp",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "after": {
+          "security_group_id": "sg-app",
+          "ip_protocol": "udp",
+          "from_port": 53,
+          "to_port": 53,
+          "cidr_ipv4": "10.40.0.2/32"
+        },
+        "after_unknown": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "aws_lb.main",
+      "mode": "managed",
+      "type": "aws_lb",
+      "name": "main",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "after": {
+          "arn": "arn:aws:elasticloadbalancing:ap-northeast-2:123456789012:loadbalancer/app/ddak-flaskr/1111",
+          "name": "ddak-flaskr",
+          "internal": false,
+          "load_balancer_type": "application",
+          "security_groups": [
+            "sg-alb"
+          ],
+          "subnets": [
+            "subnet-public_a",
+            "subnet-public_b"
+          ],
+          "dns_name": "fixture.ap-northeast-2.elb.amazonaws.com",
+          "zone_id": "ZELBFIXTURE"
+        },
+        "after_unknown": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "aws_lb_target_group.app",
+      "mode": "managed",
+      "type": "aws_lb_target_group",
+      "name": "app",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "after": {
+          "arn": "arn:aws:elasticloadbalancing:ap-northeast-2:123456789012:targetgroup/ddak-flaskr-app/2222",
+          "name": "ddak-flaskr-app",
+          "vpc_id": "vpc-fixture",
+          "target_type": "ip",
+          "port": 8080,
+          "protocol": "HTTP",
+          "deregistration_delay": "30",
+          "health_check": [
+            {
+              "interval": 5,
+              "timeout": 3,
+              "healthy_threshold": 2,
+              "unhealthy_threshold": 2,
+              "path": "/health/ready",
+              "matcher": "200"
+            }
+          ]
+        },
+        "after_unknown": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "aws_lb_listener.http",
+      "mode": "managed",
+      "type": "aws_lb_listener",
+      "name": "http",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "after": {
+          "arn": "arn:aws:elasticloadbalancing:ap-northeast-2:123456789012:listener/app/ddak-flaskr/1111/3333",
+          "load_balancer_arn": "arn:aws:elasticloadbalancing:ap-northeast-2:123456789012:loadbalancer/app/ddak-flaskr/1111",
+          "port": 80,
+          "protocol": "HTTP",
+          "default_action": [
+            {
+              "type": "redirect",
+              "redirect": [
+                {
+                  "port": "443",
+                  "protocol": "HTTPS",
+                  "status_code": "HTTP_301"
+                }
+              ]
+            }
+          ]
+        },
+        "after_unknown": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "aws_lb_listener.https",
+      "mode": "managed",
+      "type": "aws_lb_listener",
+      "name": "https",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "after": {
+          "arn": "arn:aws:elasticloadbalancing:ap-northeast-2:123456789012:listener/app/ddak-flaskr/1111/4444",
+          "load_balancer_arn": "arn:aws:elasticloadbalancing:ap-northeast-2:123456789012:loadbalancer/app/ddak-flaskr/1111",
+          "port": 443,
+          "protocol": "HTTPS",
+          "ssl_policy": "ELBSecurityPolicy-TLS13-1-2-2021-06",
+          "certificate_arn": "arn:aws:acm:ap-northeast-2:123456789012:certificate/00000000-0000-4000-8000-000000000001",
+          "default_action": [
+            {
+              "type": "forward",
+              "target_group_arn": "arn:aws:elasticloadbalancing:ap-northeast-2:123456789012:targetgroup/ddak-flaskr-app/2222"
+            }
+          ]
+        },
+        "after_unknown": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "aws_acm_certificate.main",
+      "mode": "managed",
+      "type": "aws_acm_certificate",
+      "name": "main",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "after": {
+          "arn": "arn:aws:acm:ap-northeast-2:123456789012:certificate/00000000-0000-4000-8000-000000000001",
+          "domain_name": "app.example.com",
+          "validation_method": "DNS"
+        },
+        "after_unknown": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "aws_route53_record.certificate_validation[\"app.example.com\"]",
+      "mode": "managed",
+      "type": "aws_route53_record",
+      "name": "certificate_validation",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "after": {
+          "zone_id": "Z123456",
+          "name": "_fixture.app.example.com",
+          "type": "CNAME",
+          "records": [
+            "_fixture.acm-validations.aws"
+          ],
+          "ttl": 60,
+          "fqdn": "_fixture.app.example.com"
+        },
+        "after_unknown": {},
+        "after_sensitive": {}
+      },
+      "index": "app.example.com"
+    },
+    {
+      "address": "aws_acm_certificate_validation.main",
+      "mode": "managed",
+      "type": "aws_acm_certificate_validation",
+      "name": "main",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "after": {
+          "certificate_arn": "arn:aws:acm:ap-northeast-2:123456789012:certificate/00000000-0000-4000-8000-000000000001",
+          "validation_record_fqdns": [
+            "_fixture.app.example.com"
+          ]
+        },
+        "after_unknown": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "aws_route53_record.app",
+      "mode": "managed",
+      "type": "aws_route53_record",
+      "name": "app",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "after": {
+          "zone_id": "Z123456",
+          "name": "app.example.com",
+          "type": "A",
+          "alias": [
+            {
+              "name": "fixture.ap-northeast-2.elb.amazonaws.com",
+              "zone_id": "ZELBFIXTURE",
+              "evaluate_target_health": true
+            }
+          ]
+        },
+        "after_unknown": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "aws_ecs_cluster.main",
+      "mode": "managed",
+      "type": "aws_ecs_cluster",
+      "name": "main",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "after": {
+          "arn": "arn:aws:ecs:ap-northeast-2:123456789012:cluster/ddak-flaskr",
+          "name": "ddak-flaskr"
+        },
+        "after_unknown": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "aws_cloudwatch_log_group.app",
+      "mode": "managed",
+      "type": "aws_cloudwatch_log_group",
+      "name": "app",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "after": {
+          "name": "/aws/ecs/flaskr",
+          "retention_in_days": 30
+        },
+        "after_unknown": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "aws_ecs_task_definition.app",
+      "mode": "managed",
+      "type": "aws_ecs_task_definition",
+      "name": "app",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "after": {
+          "arn": "arn:aws:ecs:ap-northeast-2:123456789012:task-definition/ddak-flaskr:1",
+          "family": "ddak-flaskr",
+          "requires_compatibilities": [
+            "FARGATE"
+          ],
+          "network_mode": "awsvpc",
+          "cpu": "512",
+          "memory": "1024",
+          "execution_role_arn": "arn:aws:iam::123456789012:role/ddak/app/ddak-flaskr-exec",
+          "task_role_arn": "arn:aws:iam::123456789012:role/ddak/app/ddak-flaskr-task",
+          "runtime_platform": [
+            {
+              "cpu_architecture": "X86_64",
+              "operating_system_family": "LINUX"
+            }
+          ],
+          "container_definitions": "[{\"name\": \"web\", \"image\": \"nginx:alpine\", \"essential\": true, \"repositoryCredentials\": {\"credentialsParameter\": \"arn:aws:secretsmanager:ap-northeast-2:123456789012:secret:ddak-platform/dockerhub-pull-ABC123\"}, \"logConfiguration\": {\"logDriver\": \"awslogs\", \"options\": {\"awslogs-group\": \"/aws/ecs/flaskr\", \"awslogs-region\": \"ap-northeast-2\", \"awslogs-stream-prefix\": \"web\"}}, \"portMappings\": [{\"containerPort\": 8080, \"hostPort\": 8080, \"protocol\": \"tcp\"}]}, {\"name\": \"was\", \"image\": \"python:3.13-slim\", \"essential\": true, \"repositoryCredentials\": {\"credentialsParameter\": \"arn:aws:secretsmanager:ap-northeast-2:123456789012:secret:ddak-platform/dockerhub-pull-ABC123\"}, \"logConfiguration\": {\"logDriver\": \"awslogs\", \"options\": {\"awslogs-group\": \"/aws/ecs/flaskr\", \"awslogs-region\": \"ap-northeast-2\", \"awslogs-stream-prefix\": \"was\"}}}]"
+        },
+        "after_unknown": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "aws_ecs_service.app",
+      "mode": "managed",
+      "type": "aws_ecs_service",
+      "name": "app",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "after": {
+          "name": "ddak-flaskr",
+          "cluster": "arn:aws:ecs:ap-northeast-2:123456789012:cluster/ddak-flaskr",
+          "task_definition": "arn:aws:ecs:ap-northeast-2:123456789012:task-definition/ddak-flaskr:1",
+          "desired_count": 0,
+          "launch_type": "FARGATE",
+          "deployment_minimum_healthy_percent": 100,
+          "deployment_maximum_percent": 200,
+          "deployment_circuit_breaker": [
+            {
+              "enable": true,
+              "rollback": true
+            }
+          ],
+          "network_configuration": [
+            {
+              "assign_public_ip": true,
+              "subnets": [
+                "subnet-public_a",
+                "subnet-public_b"
+              ],
+              "security_groups": [
+                "sg-app"
+              ]
+            }
+          ],
+          "load_balancer": [
+            {
+              "target_group_arn": "arn:aws:elasticloadbalancing:ap-northeast-2:123456789012:targetgroup/ddak-flaskr-app/2222",
+              "container_name": "web",
+              "container_port": 8080
+            }
+          ]
+        },
+        "after_unknown": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "aws_db_subnet_group.main",
+      "mode": "managed",
+      "type": "aws_db_subnet_group",
+      "name": "main",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "after": {
+          "name": "ddak-flaskr",
+          "subnet_ids": [
+            "subnet-private_a",
+            "subnet-private_b"
+          ]
+        },
+        "after_unknown": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "aws_db_instance.main",
+      "mode": "managed",
+      "type": "aws_db_instance",
+      "name": "main",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "after": {
+          "identifier": "ddak-flaskr",
+          "engine": "mysql",
+          "instance_class": "db.t3.micro",
+          "allocated_storage": 20,
+          "username": "ddakadmin",
+          "db_subnet_group_name": "ddak-flaskr",
+          "vpc_security_group_ids": [
+            "sg-db"
+          ],
+          "storage_encrypted": true,
+          "manage_master_user_password": true,
+          "publicly_accessible": false,
+          "deletion_protection": true,
+          "endpoint": "fixture.ap-northeast-2.rds.amazonaws.com:3306",
+          "master_user_secret": [
+            {
+              "secret_arn": "arn:aws:secretsmanager:ap-northeast-2:123456789012:secret:rds!db-fixture-ABC123"
+            }
+          ]
+        },
+        "after_unknown": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "aws_secretsmanager_secret.dockerhub_push",
+      "mode": "managed",
+      "type": "aws_secretsmanager_secret",
+      "name": "dockerhub_push",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "after": {
+          "arn": "arn:aws:secretsmanager:ap-northeast-2:123456789012:secret:ddak-platform/dockerhub-push-ABC123",
+          "name": "ddak-platform/dockerhub-push"
+        },
+        "after_unknown": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "aws_secretsmanager_secret.dockerhub_pull",
+      "mode": "managed",
+      "type": "aws_secretsmanager_secret",
+      "name": "dockerhub_pull",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "after": {
+          "arn": "arn:aws:secretsmanager:ap-northeast-2:123456789012:secret:ddak-platform/dockerhub-pull-ABC123",
+          "name": "ddak-platform/dockerhub-pull"
+        },
+        "after_unknown": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "aws_secretsmanager_secret.app_secret_key",
+      "mode": "managed",
+      "type": "aws_secretsmanager_secret",
+      "name": "app_secret_key",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "after": {
+          "arn": "arn:aws:secretsmanager:ap-northeast-2:123456789012:secret:ddak/flaskr/SECRET_KEY-ABC123",
+          "name": "ddak/flaskr/SECRET_KEY"
+        },
+        "after_unknown": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "aws_secretsmanager_secret.app_database_url",
+      "mode": "managed",
+      "type": "aws_secretsmanager_secret",
+      "name": "app_database_url",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "after": {
+          "arn": "arn:aws:secretsmanager:ap-northeast-2:123456789012:secret:ddak/flaskr/DATABASE_URL-ABC123",
+          "name": "ddak/flaskr/DATABASE_URL"
+        },
+        "after_unknown": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "aws_iam_role.codebuild",
+      "mode": "managed",
+      "type": "aws_iam_role",
+      "name": "codebuild",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "after": {
+          "id": "ddak-codebuild",
+          "arn": "arn:aws:iam::123456789012:role/ddak/pipeline/ddak-codebuild",
+          "name": "ddak-codebuild",
+          "path": "/ddak/pipeline/",
+          "permissions_boundary": "arn:aws:iam::123456789012:policy/ddak/boundary/ddak-build-boundary",
+          "assume_role_policy": "{\"Version\": \"2012-10-17\", \"Statement\": [{\"Effect\": \"Allow\", \"Action\": \"sts:AssumeRole\", \"Principal\": {\"Service\": \"codebuild.amazonaws.com\"}, \"Condition\": {\"StringEquals\": {\"aws:SourceAccount\": \"123456789012\"}}}]}"
+        },
+        "after_unknown": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "aws_iam_role.task_execution",
+      "mode": "managed",
+      "type": "aws_iam_role",
+      "name": "task_execution",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "after": {
+          "id": "ddak-flaskr-exec",
+          "arn": "arn:aws:iam::123456789012:role/ddak/app/ddak-flaskr-exec",
+          "name": "ddak-flaskr-exec",
+          "path": "/ddak/app/",
+          "permissions_boundary": "arn:aws:iam::123456789012:policy/ddak/boundary/ddak-app-boundary",
+          "assume_role_policy": "{\"Version\": \"2012-10-17\", \"Statement\": [{\"Effect\": \"Allow\", \"Action\": \"sts:AssumeRole\", \"Principal\": {\"Service\": \"ecs-tasks.amazonaws.com\"}, \"Condition\": {\"StringEquals\": {\"aws:SourceAccount\": \"123456789012\"}}}]}"
+        },
+        "after_unknown": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "aws_iam_role.task",
+      "mode": "managed",
+      "type": "aws_iam_role",
+      "name": "task",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "after": {
+          "id": "ddak-flaskr-task",
+          "arn": "arn:aws:iam::123456789012:role/ddak/app/ddak-flaskr-task",
+          "name": "ddak-flaskr-task",
+          "path": "/ddak/app/",
+          "permissions_boundary": "arn:aws:iam::123456789012:policy/ddak/boundary/ddak-app-boundary",
+          "assume_role_policy": "{\"Version\": \"2012-10-17\", \"Statement\": [{\"Effect\": \"Allow\", \"Action\": \"sts:AssumeRole\", \"Principal\": {\"Service\": \"ecs-tasks.amazonaws.com\"}, \"Condition\": {\"StringEquals\": {\"aws:SourceAccount\": \"123456789012\"}}}]}"
+        },
+        "after_unknown": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "aws_iam_role.dbinit_execution",
+      "mode": "managed",
+      "type": "aws_iam_role",
+      "name": "dbinit_execution",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "after": {
+          "id": "ddak-flaskr-dbinit-exec",
+          "arn": "arn:aws:iam::123456789012:role/ddak/app/ddak-flaskr-dbinit-exec",
+          "name": "ddak-flaskr-dbinit-exec",
+          "path": "/ddak/app/",
+          "permissions_boundary": "arn:aws:iam::123456789012:policy/ddak/boundary/ddak-app-boundary",
+          "assume_role_policy": "{\"Version\": \"2012-10-17\", \"Statement\": [{\"Effect\": \"Allow\", \"Action\": \"sts:AssumeRole\", \"Principal\": {\"Service\": \"ecs-tasks.amazonaws.com\"}, \"Condition\": {\"StringEquals\": {\"aws:SourceAccount\": \"123456789012\"}}}]}"
+        },
+        "after_unknown": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "aws_iam_role_policy.task_execution",
+      "mode": "managed",
+      "type": "aws_iam_role_policy",
+      "name": "task_execution",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "after": {
+          "role": "ddak-flaskr-exec",
+          "policy": "{\"Version\": \"2012-10-17\", \"Statement\": [{\"Effect\": \"Allow\", \"Action\": [\"logs:CreateLogStream\", \"logs:PutLogEvents\"], \"Resource\": \"arn:aws:logs:ap-northeast-2:123456789012:log-group:/aws/ecs/flaskr:*\"}, {\"Effect\": \"Allow\", \"Action\": \"secretsmanager:GetSecretValue\", \"Resource\": [\"arn:aws:secretsmanager:ap-northeast-2:123456789012:secret:ddak-platform/dockerhub-pull-??????\", \"arn:aws:secretsmanager:ap-northeast-2:123456789012:secret:ddak/flaskr/SECRET_KEY-??????\", \"arn:aws:secretsmanager:ap-northeast-2:123456789012:secret:ddak/flaskr/DATABASE_URL-??????\"]}]}"
+        },
+        "after_unknown": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "aws_iam_role_policy.codebuild",
+      "mode": "managed",
+      "type": "aws_iam_role_policy",
+      "name": "codebuild",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "after": {
+          "role": "ddak-codebuild",
+          "policy": "{\"Version\": \"2012-10-17\", \"Statement\": [{\"Effect\": \"Allow\", \"Action\": [\"logs:CreateLogGroup\", \"logs:CreateLogStream\", \"logs:PutLogEvents\"], \"Resource\": \"arn:aws:logs:ap-northeast-2:123456789012:log-group:/aws/codebuild/ddak-flaskr-build:*\"}, {\"Effect\": \"Allow\", \"Action\": \"secretsmanager:GetSecretValue\", \"Resource\": \"arn:aws:secretsmanager:ap-northeast-2:123456789012:secret:ddak-platform/dockerhub-push-??????\"}]}"
+        },
+        "after_unknown": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "aws_s3_bucket.source",
+      "mode": "managed",
+      "type": "aws_s3_bucket",
+      "name": "source",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "after": {
+          "id": "ddak-flaskr-123456789012-source",
+          "bucket": "ddak-flaskr-123456789012-source"
+        },
+        "after_unknown": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "aws_s3_bucket_versioning.source",
+      "mode": "managed",
+      "type": "aws_s3_bucket_versioning",
+      "name": "source",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "after": {
+          "bucket": "ddak-flaskr-123456789012-source",
+          "versioning_configuration": [
+            {
+              "status": "Enabled"
+            }
+          ]
+        },
+        "after_unknown": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "aws_s3_bucket_server_side_encryption_configuration.source",
+      "mode": "managed",
+      "type": "aws_s3_bucket_server_side_encryption_configuration",
+      "name": "source",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "after": {
+          "bucket": "ddak-flaskr-123456789012-source",
+          "rule": [
+            {
+              "apply_server_side_encryption_by_default": [
+                {
+                  "sse_algorithm": "AES256"
+                }
+              ]
+            }
+          ]
+        },
+        "after_unknown": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "aws_s3_bucket_public_access_block.source",
+      "mode": "managed",
+      "type": "aws_s3_bucket_public_access_block",
+      "name": "source",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "after": {
+          "bucket": "ddak-flaskr-123456789012-source",
+          "block_public_acls": true,
+          "block_public_policy": true,
+          "ignore_public_acls": true,
+          "restrict_public_buckets": true
+        },
+        "after_unknown": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "aws_codebuild_project.main",
+      "mode": "managed",
+      "type": "aws_codebuild_project",
+      "name": "main",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "after": {
+          "name": "ddak-flaskr-build",
+          "service_role": "arn:aws:iam::123456789012:role/ddak/pipeline/ddak-codebuild",
+          "artifacts": [
+            {
+              "type": "NO_ARTIFACTS"
+            }
+          ],
+          "environment": [
+            {
+              "compute_type": "BUILD_GENERAL1_SMALL",
+              "image": "aws/codebuild/standard:7.0",
+              "type": "LINUX_CONTAINER",
+              "privileged_mode": true
+            }
+          ],
+          "source": [
+            {
+              "type": "GITHUB",
+              "location": "https://github.com/example/app",
+              "buildspec": "version: 0.2\nphases:\n  build:\n    commands:\n      - exit 1\n"
+            }
+          ]
+        },
+        "after_unknown": {},
+        "after_sensitive": {}
+      }
+    }
+  ]
+}

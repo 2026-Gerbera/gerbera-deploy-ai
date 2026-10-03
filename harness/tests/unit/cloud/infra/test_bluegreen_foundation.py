@@ -89,7 +89,9 @@ def sdk_clients(role=None):
             "create_policy_version",
         ]
     )
-    iam.get_policy.return_value = {"Policy": {"DefaultVersionId": "v1"}}
+    iam.get_policy.side_effect = lambda **kw: {
+        "Policy": {"Arn": kw["PolicyArn"], "DefaultVersionId": "v1"}
+    }
     iam.list_attached_role_policies.return_value = {"AttachedPolicies": [], "IsTruncated": False}
     iam.list_role_policies.return_value = {"PolicyNames": [], "IsTruncated": False}
     documents = {
@@ -97,7 +99,11 @@ def sdk_clients(role=None):
         SETTINGS.build_boundary_arn: template["build_boundary"],
     }
     iam.get_policy_version.side_effect = lambda **kw: {
-        "PolicyVersion": {"Document": documents[kw["PolicyArn"]]}
+        "PolicyVersion": {
+            "Document": documents[kw["PolicyArn"]],
+            "VersionId": "v1",
+            "IsDefaultVersion": True,
+        }
     }
     if role is None:
         iam.get_role.side_effect = error("NoSuchEntity")
@@ -109,8 +115,21 @@ def sdk_clients(role=None):
 
 
 def apply(sdk, marker, records=None):
+    template = foundation.foundation_template(SETTINGS)
+    snapshots = [
+        {
+            "policy_arn": arn,
+            "default_version_id": "v1",
+            "document_sha256": f.digest(f.canonical(document)),
+            "document": document,
+        }
+        for arn, document in (
+            (SETTINGS.boundary_arn, template["boundary"]),
+            (SETTINGS.build_boundary_arn, template["build_boundary"]),
+        )
+    ]
     if records is None:
-        sha = f.digest(f.canonical(foundation.foundation_template(SETTINGS)))
+        sha = foundation.foundation_approval_hash(SETTINGS, snapshots)
         records = [f.approval(sha, "foundation")]
     return foundation.apply_foundation(
         settings=SETTINGS,
@@ -122,6 +141,7 @@ def apply(sdk, marker, records=None):
         approvals=lambda: records,
         guard=Mock(),
         expected_bucket_exists=True,
+        expected_boundaries=snapshots,
     )
 
 
@@ -505,7 +525,8 @@ def test_approval_metadata_preserves_role_information_and_masks_account(tmp_path
     assert_no_sdk_writes(sdk)
 
 
-def test_sdk_and_reference_hcl_app_log_scope_match_narrow_ecs_prefix():
+@pytest.mark.parametrize("project", ["flaskr", "inventory-api"])
+def test_sdk_and_reference_hcl_app_log_scope_match_narrow_ecs_prefix(project):
     source = Path(foundation.__file__).parent / "terraform" / "foundation" / "main.tf"
     parsed = loads(source.read_text())
     app = next(
@@ -514,11 +535,14 @@ def test_sdk_and_reference_hcl_app_log_scope_match_narrow_ecs_prefix():
         if "app_boundary" in item.get("aws_iam_policy", {})
     )
     hcl_document = policy_json(app["policy"])
-    sdk_document = boundary_document(f.ACCOUNT)
+    sdk_document = boundary_document(f.ACCOUNT, project)
     expected = {
         "Effect": "Allow",
         "Action": ["logs:CreateLogStream", "logs:PutLogEvents"],
-        "Resource": f"arn:aws:logs:ap-northeast-2:{f.ACCOUNT}:log-group:/aws/ecs/ddak-*:*",
+        "Resource": [
+            f"arn:aws:logs:ap-northeast-2:{f.ACCOUNT}:log-group:/aws/ecs/{project}:*",
+            f"arn:aws:logs:ap-northeast-2:{f.ACCOUNT}:log-group:/aws/ecs/ddak-*:*",
+        ],
     }
     for document in (hcl_document, sdk_document):
         logs = [
@@ -531,12 +555,29 @@ def test_sdk_and_reference_hcl_app_log_scope_match_narrow_ecs_prefix():
         ]
         assert len(logs) == 1
         normalized = dict(logs[0])
-        normalized["Resource"] = normalized["Resource"].replace("${var.account_id}", f.ACCOUNT)
+        assert isinstance(normalized["Resource"], list)
+        normalized["Resource"] = [
+            ref.replace("${var.account_id}", f.ACCOUNT).replace("${var.project}", project)
+            for ref in normalized["Resource"]
+        ]
         assert normalized == expected
 
 
+@pytest.mark.parametrize("project", ["flaskr", "inventory-api"])
+def test_foundation_template_derives_log_scope_from_settings_project(project):
+    template = foundation.foundation_template(replace(SETTINGS, project=project))
+    logs = [
+        row for row in template["boundary"]["Statement"] if "logs:PutLogEvents" in row["Action"]
+    ]
+    assert len(logs) == 1
+    assert logs[0]["Resource"] == [
+        f"arn:aws:logs:ap-northeast-2:{f.ACCOUNT}:log-group:/aws/ecs/{project}:*",
+        f"arn:aws:logs:ap-northeast-2:{f.ACCOUNT}:log-group:/aws/ecs/ddak-*:*",
+    ]
+
+
 @pytest.mark.parametrize("boundary", ["boundary", "build_boundary"])
-def test_mismatched_boundary_is_rejected_without_creating_policy_version(tmp_path, boundary):
+def test_unapproved_boundary_drift_is_rejected_without_creating_policy_version(tmp_path, boundary):
     sdk, marker = sdk_clients(), tmp_path / "foundation-marker"
     template = foundation.foundation_template(SETTINGS)
     documents = {

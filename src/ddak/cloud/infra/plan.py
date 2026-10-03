@@ -368,6 +368,11 @@ def summarize_plan(
                 bool(rds_wildcard_statements(policy_json(after["policy"])))
                 or any(
                     stmt.get("Effect") == "Allow"
+                    and any(a.lower().startswith("logs:") for a in strings(stmt.get("Action")))
+                    for stmt in statements(policy_json(after["policy"]))
+                )
+                or any(
+                    stmt.get("Effect") == "Allow"
                     and {
                         "secretsmanager:getsecretvalue",
                         "secretsmanager:describesecret",
@@ -438,6 +443,7 @@ def summarize_plan(
                 trust=kind == "aws_iam_role",
                 account=account_id,
                 platform=path == "/ddak/pipeline/",
+                project=project,
             )
             bootstrap_dbinit = False
             if kind == "aws_iam_role_policy":

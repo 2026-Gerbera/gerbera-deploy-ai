@@ -4,6 +4,7 @@ from pydantic import Field, model_validator
 
 from ddak.core.contracts.base import ContractModel, LockToken, ToolInput
 from ddak.core.contracts.enums import Source
+from ddak.core.contracts.infra_evidence import BoundaryPolicyVersion
 from ddak.core.contracts.infra_outputs import checked_outputs
 from ddak.core.contracts.release import Sha256
 
@@ -19,6 +20,7 @@ class ApplyInfraOutput(ContractModel):
     outputs: dict[str, Any]
     elapsed_seconds: float = Field(ge=0)
     source: Source = Source.LIVE
+    boundary_versions: list[BoundaryPolicyVersion] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def safe_outputs(self) -> Self:

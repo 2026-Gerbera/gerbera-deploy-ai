@@ -1,0 +1,16 @@
+{
+  "source": "fixture",
+  "prompt_version": "infra-aws-v3-rolling",
+  "upstream_sha": "c4af8656c2a6b574311f37fe3f12d0272c99e66d",
+  "deployment_strategy": "ROLLING",
+  "target_group_count": 1,
+  "account_id": "123456789012",
+  "project": "flaskr",
+  "dockerhub_namespace": "example",
+  "app_boundary_arn": "arn:aws:iam::123456789012:policy/ddak/boundary/ddak-app-boundary",
+  "build_boundary_arn": "arn:aws:iam::123456789012:policy/ddak/boundary/ddak-build-boundary",
+  "limitations": [
+    "Representative HCL and synthetic plan; no Terraform or AWS execution.",
+    "Does not guarantee AI-generated output or Checkov/Access Analyzer acceptance."
+  ]
+}
