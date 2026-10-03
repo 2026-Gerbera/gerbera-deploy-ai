@@ -4,12 +4,15 @@
 {% block content %}
 <section class="page-heading"><div><h1>운영</h1><p>{{ project }}의 배포를 직접 준비하거나 멈춘 배포의 잠금을 풉니다. 평소에는 쓰지 않아도 됩니다.</p></div><a class="button secondary" href="/?project={{ project|urlencode }}">대시보드</a></section>
 {% if watch_warnings %}<section class="watch-warning"><h2>자동 감시 경고</h2><ul>{% for warning in watch_warnings %}<li>{{ warning }}</li>{% endfor %}</ul></section>{% endif %}
-<dl class="detail-list"><div><dt>배포가 멈춘 환경</dt><dd>{% for name in state.blocked_targets %}{{ target(name) }}{% if not loop.last %}, {% endif %}{% else %}없음{% endfor %}</dd></div><div><dt>진행 중인 실행</dt><dd>{% for id in state.active_runs %}<a href="/runs/{{ id }}/progress">{{ id }}</a>{% if not loop.last %}, {% endif %}{% else %}없음{% endfor %}</dd></div></dl>
+<dl class="detail-list" data-ops-state><div><dt>배포가 멈춘 환경</dt><dd>{% for name in state.blocked_targets %}{{ target(name) }}{% if not loop.last %}, {% endif %}{% else %}없음{% endfor %}</dd></div><div><dt>진행 중인 실행</dt><dd>{% for id in state.active_runs %}<a href="/runs/{{ id }}/progress">{{ id }}</a>{% if not loop.last %}, {% endif %}{% else %}없음{% endfor %}</dd></div></dl>
 <p class="note">감시 설정은 <a href="/settings?project={{ project|urlencode }}">프로젝트 설정</a>에서 바꿉니다.</p>
 {% include "_demo_reset.html" %}
 <section class="section">{% set ops_part = "plan" %}{% include '_ops.html' %}</section>
+<div data-live-region data-live-version="{{ live_version }}">
 <section class="section"><div class="card-header"><h2>준비 요청 기록</h2><a href="/ops?project={{ project|urlencode }}">상태 새로고침</a></div>
-{% if preparations %}<table><thead><tr><th scope="col">상태</th><th scope="col">결과·원인</th><th scope="col">실행</th></tr></thead><tbody>{% for item in preparations %}<tr><td data-label="상태">{{ state_badge(item.status) }}<small>{{ item.request_id }}</small></td><td data-label="원인">{{ item.detail or '기록 없음' }}</td><td data-label="실행">{% if item.url %}<a href="{{ item.url }}">실행 확인</a>{% else %}준비 중{% endif %}</td></tr>{% endfor %}</tbody></table>{% else %}<p>준비 요청이 없습니다.</p>{% endif %}</section>
+{% if preparations %}<table><thead><tr><th scope="col">상태</th><th scope="col">결과·원인</th><th scope="col">실행</th></tr></thead><tbody>{% for item in preparations %}<tr><td data-label="상태">{{ state_badge(item.status) }}<small>{{ item.request_id }}</small></td><td data-label="원인">{{ item.detail or '기록 없음' }}</td><td data-label="실행">{% if item.url %}<a href="{{ item.url }}">실행 확인</a>{% elif item.status == 'PREPARING' %}승인 자료 준비 중{% else %}실행 기록 없음{% endif %}</td></tr>{% endfor %}</tbody></table>{% else %}<p>준비 요청이 없습니다.</p>{% endif %}</section>
 <section class="section"><h2>실행 기록</h2>{% if runs %}<table><thead><tr><th scope="col">상태</th><th scope="col">실행 ID</th></tr></thead><tbody>{% for run in runs %}<tr><td data-label="상태"><a href="{{ run.url }}">{{ state_badge(run.status) }}</a></td><td data-label="실행"><code>{{ run.run_id }}</code></td></tr>{% endfor %}</tbody></table>{% else %}<p>아직 실행 기록이 없습니다.</p>{% endif %}</section>
+</div>
+{% include '_live_refresh.html' %}
 <section class="section">{% set ops_part = "unlock" %}{% include '_ops.html' %}</section>
 {% endblock %}

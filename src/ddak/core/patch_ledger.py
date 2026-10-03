@@ -276,6 +276,24 @@ def reuse_patches(
     return b"".join(patches[k] for k in sorted(patches)) or None, sorted(changed)
 
 
+class PatchLostError(DdakToolError):
+    """툴의 손실 판정을 위치만 담아 전달한다. 내용은 다시 판정하지 않는다."""
+
+    def __init__(self, review: PatchConfigOutput) -> None:
+        self.locations = tuple({"file": v.file, "line": v.line} for v in review.violations[:50])
+        locations = (
+            ", ".join(
+                f"{v.file}:{v.line}" if v.line else (v.file or "이전 패치")
+                for v in review.violations[:50]
+            )
+            or "이전 패치"
+        )
+        super().__init__(
+            ErrorCode.PRECONDITION_FAILED,
+            f"패치 툴 손실(patch_lost): {locations} (값 가림); 재제안 필요",
+        )
+
+
 def guard_patch_loss(
     review: PatchConfigOutput | None,
     *,
@@ -291,17 +309,7 @@ def guard_patch_loss(
     if review.run_id != run_id:
         raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "패치 툴 판정의 run ID가 다르다")
     if review.status == "patch_lost":
-        locations = (
-            ", ".join(
-                f"{v.file}:{v.line}" if v.line else (v.file or "이전 패치")
-                for v in review.violations[:50]
-            )
-            or "이전 패치"
-        )
-        raise DdakToolError(
-            ErrorCode.PRECONDITION_FAILED,
-            f"패치 툴 손실(patch_lost): {locations} (값 가림); 재제안 필요",
-        )
+        raise PatchLostError(review)
     accepted = review.status in {"proposed", "reused"}
     if (
         accepted

@@ -48,6 +48,74 @@
       "title": "By",
       "type": "string"
     },
+    "CodeProposal": {
+      "additionalProperties": false,
+      "properties": {
+        "edits": {
+          "items": {
+            "$ref": "#/$defs/ReviewEdit"
+          },
+          "maxItems": 20,
+          "minItems": 1,
+          "title": "Edits",
+          "type": "array"
+        },
+        "env_vars": {
+          "items": {
+            "pattern": "^[A-Z][A-Z0-9_]{1,63}$",
+            "type": "string"
+          },
+          "maxItems": 10,
+          "title": "Env Vars",
+          "type": "array"
+        },
+        "id": {
+          "pattern": "^[a-z0-9_-]{1,64}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "reason": {
+          "maxLength": 300,
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        },
+        "required": {
+          "default": false,
+          "title": "Required",
+          "type": "boolean"
+        },
+        "requires": {
+          "items": {
+            "pattern": "^[a-z0-9_-]{1,64}$",
+            "type": "string"
+          },
+          "maxItems": 10,
+          "title": "Requires",
+          "type": "array"
+        },
+        "revision": {
+          "default": 1,
+          "minimum": 1,
+          "title": "Revision",
+          "type": "integer"
+        },
+        "title": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "reason",
+        "edits"
+      ],
+      "title": "CodeProposal",
+      "type": "object"
+    },
     "EnvKey": {
       "additionalProperties": false,
       "properties": {
@@ -236,6 +304,46 @@
       "title": "PatchViolation",
       "type": "object"
     },
+    "ReviewEdit": {
+      "additionalProperties": false,
+      "description": "PatchEdit와 동일한 줄 범위·길이 제한. 번호는 변경 전 원본 기준이다.",
+      "properties": {
+        "end": {
+          "maximum": 100000,
+          "minimum": 0,
+          "title": "End",
+          "type": "integer"
+        },
+        "lines": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 40,
+          "title": "Lines",
+          "type": "array"
+        },
+        "path": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "start": {
+          "maximum": 100000,
+          "minimum": 1,
+          "title": "Start",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "start",
+        "end",
+        "lines"
+      ],
+      "title": "ReviewEdit",
+      "type": "object"
+    },
     "Source": {
       "description": "AI 결과의 출처. live가 아니면 관리 페이지가 라벨을 표시한다(목업은 목업이라고 밝힘).",
       "enum": [
@@ -331,6 +439,13 @@
       ],
       "default": null,
       "title": "Patch Sha256"
+    },
+    "proposals": {
+      "items": {
+        "$ref": "#/$defs/CodeProposal"
+      },
+      "title": "Proposals",
+      "type": "array"
     },
     "run_id": {
       "description": "실행 ID. 모든 툴의 필수 입력",

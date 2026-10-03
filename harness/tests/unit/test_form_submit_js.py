@@ -45,6 +45,7 @@ function field(name, value, type = 'text', disabled = false) {
 }
 function form(action, dataset = {}) {
   const f = Object.assign(new Node(), {action, method: 'post', dataset, listeners: []});
+  f.setAttribute('action', action);
   for (const key of Object.keys(dataset)) {
     f.setAttribute('data-' + key.replace(/[A-Z]/g, c => '-' + c.toLowerCase()), dataset[key]);
   }
@@ -61,8 +62,12 @@ function form(action, dataset = {}) {
   f.buttons = f.elements.filter(el => el.type === 'submit');
   f.buttons[2].setAttribute('aria-busy', 'false');
   f.nextElementSibling = errorBox();
+  f.nextElementSibling.replaceWith = box => { f.nextElementSibling = box; };
+  f.querySelector = selector => selector === '[name="_form_id"]'
+    ? f.elements.find(el => el.name === '_form_id') : null;
   f.addEventListener = (name, fn) => {
-    assert.equal(name, 'submit'); f.listeners.push(fn);
+    if (name === 'submit') f.listeners.push(fn);
+    else { assert.ok(['input', 'change'].includes(name)); f[name] = fn; }
   };
   f.insertAdjacentElement = (position, node) => {
     assert.equal(position, 'afterend'); f.nextElementSibling = node;
@@ -84,7 +89,7 @@ class FormData {
 const forms = [form('/setup/docker'), form('/settings'),
   form('/ops/plan', {deployForm: ''}), form('/runs/fixture/approval', {approvalForm: ''}),
   form('/setup/actions/apply'), form('/ops/unlock', {confirm: '잠금을 풀까요?'}),
-  form('/setup/env'), form('/setup/git-token')];
+  form('/setup/env'), form('/setup/git-token'), form('/runs/fixture/patch-review')];
 const calls = [], navigations = [], confirmations = [];
 let reloads = 0, confirmResult = true;
 let respond = async () => ({ok: false, status: 422, json: async () => ({error: {
@@ -142,6 +147,58 @@ async function run() {
     assert.ok(forms.every(f => f.listeners.length === 0));
     return;
   }
+  if (scenario === 'polling' || scenario === 'polling-input') {
+    const timeouts = new Map(), feedback = []; let timerId = 0, replacements = 0;
+    const originalQuery = document.querySelector;
+    let active = forms[0], region;
+    const makeRegion = (version, f) => ({dataset: {liveVersion: version},
+      contains: () => false, querySelectorAll: () => f ? [f] : [],
+      replaceWith(next) { region = next; replacements++; }});
+    region = makeRegion('one', active);
+    document.querySelector = selector => selector === '[data-live-region]' ? region
+      : selector === '[data-refresh-errors]' ? {append: box => feedback.push(box)}
+      : originalQuery(selector);
+    document.importNode = node => {
+      const f = node.querySelectorAll('form')[0];
+      if (f) forms[0] = f; else forms.splice(0,1);
+      return node;
+    };
+    window.setTimeout = fn => { timeouts.set(++timerId, fn); return timerId; };
+    window.clearTimeout = id => timeouts.delete(id);
+    window.setInterval = () => 1; window.clearInterval = () => {};
+    const replacementForm = form('/setup/docker');
+    let next = makeRegion('two', replacementForm);
+    class DOMParser { parseFromString() { return {querySelector: selector =>
+      selector === '[data-live-region]' ? next : null}; } }
+    const fetch = async () => ({ok: true, text: async () => '<html/>'});
+    vm.runInNewContext(source, {document, window, DOMParser, fetch, AbortController});
+    const tick = async () => {
+      const [key, fn] = [...timeouts][0]; timeouts.delete(key); await fn(); };
+    if (scenario === 'polling-input') {
+      active.input(); await tick(); assert.equal(replacements, 0); return;
+    }
+    let release;
+    respond = () => new Promise(resolve => { release = resolve; });
+    const pending = active.emit();
+    await tick(); assert.equal(replacements, 0);
+    release({ok: false, json: async () => ({error: {code: 'FAILED', message: '폼 오류'}})});
+    await pending.done;
+    const error = active.nextElementSibling;
+    await tick(); assert.equal(replacements, 1);
+    assert.equal(replacementForm.nextElementSibling, error); // still directly below its form
+    assert.equal(error.hidden, false); assert.equal(error.code.textContent, 'FAILED');
+    assert.equal(replacementForm.listeners.length, 1);
+    await tick(); assert.equal(replacementForm.listeners.length, 1);
+    const before = calls.length, retry = replacementForm.emit();
+    assert.equal(calls.length, before + 1);
+    release({ok: false, json: async () => ({error: {code: 'FAILED', message: '새 폼 오류'}})});
+    await retry.done; restored(replacementForm);
+    next = makeRegion('approval-ready', null); // server accepted request despite lost response
+    await tick(); assert.equal(replacements, 2);
+    assert.equal(region.dataset.liveVersion, 'approval-ready');
+    assert.equal(feedback.length, 1); assert.equal(feedback[0], error);
+    noNavigation(); return;
+  }
   vm.runInNewContext(source, {document, window});
   assert.ok(forms.every(f => f.listeners.length === 1));
   const f = forms[2];
@@ -189,6 +246,18 @@ async function run() {
     assert.equal(dockerBadge.dataset.status, 'red');
     assert.equal(dockerLabel.textContent, '확인 필요');
     assert.equal(dockerDetail.textContent, '<img src=x onerror=bad()> 서버 검증 실패');
+  } else if (scenario === 'named-action') {
+    const patch = forms.at(-1);
+    patch.action = {toString: () => '[object RadioNodeList]'};
+    patch.buttons[0].name = 'action'; patch.buttons[0].value = 'revise:cookie';
+    patch.elements.push(field('revision', '7', 'hidden'),
+      field('candidate_id', 'candidate-1', 'hidden'));
+    await patch.emit().done;
+    assert.equal(calls[0].url, 'https://admin.example/runs/fixture/patch-review');
+    const body = new URLSearchParams(calls[0].options.body);
+    assert.equal(body.get('action'), 'revise:cookie');
+    assert.equal(body.get('revision'), '7'); assert.equal(body.get('candidate_id'), 'candidate-1');
+    restored(patch);
   } else if (scenario === 'denied') {
     await forms[3].emit(forms[3].buttons[1]).done;
     assert.equal(confirmations.length, 1); assert.match(confirmations[0], /거절/);
@@ -241,7 +310,7 @@ async function run() {
     } else if (scenario === 'cross-origin') {
       respond = async () => ({ok: true, redirected: true, url: 'https://other.example/' + raw});
     } else if (scenario === 'cross-action') {
-      f.action = 'https://other.example/post';
+      f.setAttribute('action', 'https://other.example/post');
     } else throw Error('unknown scenario');
     await f.emit().done; genericError(f);
     if (scenario === 'cross-action') assert.equal(calls.length, 0);
@@ -270,6 +339,9 @@ run().catch(error => { console.error(error); process.exitCode = 1; });
         "prevented",
         "enter",
         "no-window",
+        "polling",
+        "polling-input",
+        "named-action",
     ],
 )
 def test_management_form_submission(scenario):

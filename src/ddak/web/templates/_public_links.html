@@ -1,5 +1,5 @@
 {% if public_links %}
-<section class="section"><h2>서비스 주소</h2><p class="note">실행 당시 기록된 주소입니다. 현재 서비스 상태는 접속해 확인하세요.</p>
+<section class="section" id="service-links"><h2>서비스 주소</h2><p class="note">실행 당시 기록된 주소입니다. 현재 서비스 상태는 접속해 확인하세요.</p>
 <dl class="detail-list">{% for link in public_links %}<div><dt>{{ link.label }}</dt><dd><a href="{{ link.url }}" target="_blank" rel="noopener noreferrer">{{ link.url }}</a> · <a href="{{ link.version_url }}" target="_blank" rel="noopener noreferrer">버전 확인</a></dd></div>{% endfor %}</dl>
 </section>
 {% endif %}

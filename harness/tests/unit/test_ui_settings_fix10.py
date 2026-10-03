@@ -30,6 +30,9 @@ class SettingsStore:
     def project_settings(self, project: str) -> dict[str, Any] | None:
         return self.rows.get(project)
 
+    def list_projects(self) -> list[str]:
+        return sorted(self.rows)
+
     def list_project_settings(self) -> list[dict[str, Any]]:
         return [{**row, "project": name} for name, row in sorted(self.rows.items())]
 

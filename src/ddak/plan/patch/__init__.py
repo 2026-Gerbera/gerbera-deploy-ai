@@ -21,6 +21,8 @@ from ddak.plan.patch.generate import (
 )
 from ddak.plan.patch.intents import EditIntent, render_intents
 from ddak.plan.patch.pipeline import PatchPreparation, PatchSession, patch_session, prepare_patch
+from ddak.plan.patch.review import combine_review as combine_review
+from ddak.plan.patch.review import proposal_diff as proposal_diff
 
 __all__ = [
     "EditIntent",

@@ -1,25 +1,32 @@
 {% extends 'base.html' %}
-{% from '_status.html' import label, target %}
+{% from '_status.html' import label, target, state %}
 {% block title %}배포 진행 · Gerbera{% endblock %}
-{% block breadcrumb %}Live deployment{% endblock %}
+{% block breadcrumb %}배포 · 실행 중{% endblock %}
 {% block content %}
 {% set ended = status in terminal_states %}
 <section class="page-heading"><div><h1 id="progress-title">{{ label(status) }}</h1><p>{{ project }} · <code>{{ run_id }}</code></p></div><div class="heading-actions"><a class="button secondary" href="/?project={{ project|urlencode }}">대시보드</a><a id="result-link" class="button{% if not ended %} hidden{% endif %}" href="/runs/{{ run_id }}/result">결과 보기</a></div></section>
 <section class="progress" data-run-id="{{ run_id }}" data-terminal-states='{{ terminal_states|tojson }}' data-status="{{ status }}" data-targets="{{ targets or 'unknown' }}" data-activity="{{ 'ended' if ended else 'running' }}" data-stream="connecting">
   <div class="live-activity" role="status" aria-live="polite">
     <span class="activity-dots" aria-hidden="true"><i></i><i></i><i></i></span>
-    <div><strong id="activity-title">{{ '실행 종료' if ended else '배포 처리 중' }}</strong><p id="current-activity">{% if ended %}실행이 끝났습니다. 환경별 최종 상태는 결과 화면에서 확인하세요.{% else %}실행 상태를 확인하고 있습니다. 상세 로그가 도착하면 여기에 표시합니다.{% endif %}</p></div>
+    <div><strong id="activity-title">{{ '실행 종료' if ended else '배포 처리 중' }}</strong><p id="current-activity">{% if ended %}실행이 끝났습니다. 환경별 최종 상태는 결과 화면에서 확인하세요.{% else %}승인된 순서대로 배포하고 있습니다. 각 단계의 작업과 경과 시간을 아래에서 확인하세요.{% endif %}</p></div>
   </div>
   <h2>환경별 진행</h2>
-  <div class="phase-grid" aria-label="환경별 실행 단계">
-    <span class="phase-head">환경</span>{% for phase in ('계획','인프라','빌드','배포','검증') %}<span class="phase-head">{{ phase }}</span>{% endfor %}
+  <div class="track-summaries">
     {% for track in ('local','cloud') %}{% set excluded = (track == 'cloud' and targets in ('onprem','local')) or (track == 'local' and targets == 'cloud') %}
-    <strong>{{ target(track) }}</strong>{% for phase in ('plan','infra','build','deploy','verify') %}<span class="flow-step" data-phase="{{ phase }}" data-track="{{ track }}" data-excluded="{{ 'true' if excluded else 'false' }}">{{ '대상 아님' if excluded else '결과 확인' if ended else '확인 중' }}</span>{% endfor %}{% endfor %}
+    <section class="track-summary"><h3>{{ target(track) }}</h3><p id="{{ track }}-activity">{% if excluded %}이번 배포 대상이 아닙니다.{% elif ended %}{{ state((result.tracks or {}).get(track,'UNKNOWN')) }}{% else %}첫 작업 기록을 기다립니다.{% endif %}</p><p id="{{ track }}-work-note" class="note">{% if not ended and not excluded %}이 환경의 작업이 시작되면 여기에 표시됩니다.{% endif %}</p><p id="{{ track }}-work-age" class="numeric note"></p></section>
+    {% endfor %}
+  </div>
+  <p class="common-activity"><strong>공통 작업</strong> <span id="common-activity">{{ '종료' if ended else '아직 수신한 작업 없음' }}</span><span id="common-work-note" class="note"></span><span id="common-work-age" class="numeric note"></span></p>
+  <div class="phase-grid" aria-label="환경별 실행 단계">
+    <span class="phase-head">환경</span>{% for phase in ('계획·승인','인프라','빌드','배포','검증') %}<span class="phase-head">{{ phase }}</span>{% endfor %}
+    {% for track in ('local','cloud') %}{% set excluded = (track == 'cloud' and targets in ('onprem','local')) or (track == 'local' and targets == 'cloud') %}
+    <strong>{{ target(track) }}</strong>{% for phase in ('plan','infra','build','deploy','verify') %}<span class="flow-step" data-phase="{{ phase }}" data-track="{{ track }}" data-excluded="{{ 'true' if excluded else 'false' }}">{{ '대상 아님' if excluded else '승인 완료' if phase == 'plan' and approved else '기록 없음' if ended else '이벤트 대기' }}</span>{% endfor %}{% endfor %}
   </div>
   <p class="note">움직이는 점은 진행 중인 작업입니다. 두 환경은 동시에 진행될 수 있습니다. 로그는 작업 단위로 갱신되며, 점의 움직임은 완료율을 뜻하지 않습니다. 수신 작업 성공은 해당 구간 전체의 완료를 뜻하지 않습니다.</p>
+  <p id="event-age" class="note" aria-live="off">{{ '최종 결과를 확인하세요.' if ended else '첫 이벤트를 기다립니다.' }}</p>
   <p id="connection-state" role="status">{% if ended %}실행 종료{% else %}실시간 연결을 준비합니다.{% endif %}</p>
-  <section class="section"><h2>온프렘 이벤트</h2><ol id="local-events" class="event-list"><li class="event-placeholder">{{ '최종 기록은 결과 화면에서 확인하세요.' if ended else '이벤트를 기다리는 중입니다.' }}</li></ol></section>
+  <details class="story-technical"><summary>기술 정보 · 작업별 이벤트</summary><section class="section"><h2>온프렘 이벤트</h2><ol id="local-events" class="event-list"><li class="event-placeholder">{{ '최종 기록은 결과 화면에서 확인하세요.' if ended else '이벤트를 기다리는 중입니다.' }}</li></ol></section>
   <section class="section"><h2>클라우드 이벤트</h2><ol id="cloud-events" class="event-list"><li class="event-placeholder">{{ '최종 기록은 결과 화면에서 확인하세요.' if ended else '이벤트를 기다리는 중입니다.' }}</li></ol></section>
-</section>
 <section class="section"><h2>공통 이벤트</h2><ol id="common-events" class="event-list"><li class="event-placeholder">{{ '최종 기록은 결과 화면에서 확인하세요.' if ended else '이벤트를 기다리는 중입니다.' }}</li></ol></section>
+</details></section>
 {% endblock %}

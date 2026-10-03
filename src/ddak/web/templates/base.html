@@ -4,26 +4,38 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="light">
+  {% block head %}{% endblock %}
   <title>{% block title %}Gerbera 배포 관리{% endblock %}</title>
-  <link rel="stylesheet" href="/static/app.css?v=ledger-live-20261003">
+  <link rel="stylesheet" href="/static/app.css?v=story-default-project-20261003">
 </head>
 <body>
   <a class="skip-link" href="#main">본문으로 이동</a>
   <header class="masthead">
-    <a class="brand" href="/{% if project %}?project={{ project|urlencode }}{% endif %}">Gerbera</a>
-    {% if project %}<span class="project-label">{{ project }}</span>{% endif %}
-    <nav aria-label="주 메뉴">
-      <a href="/{% if project %}?project={{ project|urlencode }}{% endif %}"{% if request.url.path == '/' %} aria-current="page"{% endif %}>대시보드</a>
-      <a href="/ops{% if project %}?project={{ project|urlencode }}{% endif %}"{% if request.url.path == '/ops' %} aria-current="page"{% endif %}>운영</a>
-      <a href="/settings{% if project %}?project={{ project|urlencode }}{% endif %}"{% if request.url.path == '/settings' %} aria-current="page"{% endif %}>프로젝트 설정</a>
-    </nav>
+    <button class="sidebar-toggle" type="button" data-sidebar-toggle aria-controls="sidebar" aria-expanded="true" hidden>메뉴 접기</button>
+    <a class="brand" href="/">Gerbera</a>
+    {% if project %}<span class="project-label" title="{{ project }}">{{ project }}</span>{% else %}<span class="scope-label">전체 프로젝트</span>{% endif %}
   </header>
   <div hidden>{% block breadcrumb %}{% endblock %}</div>
   {% from '_status.html' import error_box %}
-  <main id="main">{% block content %}{% endblock %}
-    {% set remaining_error = form_error_for(request) if form_error_for is defined and request.scope is defined else None %}{% if remaining_error %}{{ error_box(remaining_error) }}{% endif %}
-  </main>
+  <div class="app-shell" data-sidebar-open="true">
+    <aside id="sidebar" class="sidebar" aria-label="탐색 메뉴">
+      <nav aria-label="전체 탐색"><a class="sidebar-home" href="/projects"{% if request.url.path == '/projects' %} aria-current="page"{% endif %}>전체 프로젝트</a></nav>
+      <nav class="sidebar-group" aria-label="프로젝트 선택"><h2>프로젝트</h2>
+        {% set names = sidebar_projects|default([]) %}
+        {% if project and project not in names %}{% set names = names + [project] %}{% endif %}
+        {% if names %}<ul>{% for name in names %}<li><a href="/?project={{ name|urlencode }}"{% if name == project %} aria-current="true"{% endif %}>{{ name }}</a></li>{% endfor %}</ul>{% else %}<p class="note">등록된 프로젝트가 없습니다.</p>{% endif %}
+      </nav>
+      {% if project %}<nav class="sidebar-group" aria-label="현재 프로젝트 화면"><h2>현재 프로젝트</h2><p class="sidebar-current">{{ project }}</p>
+        <a href="/?project={{ project|urlencode }}"{% if request.url.path == '/' %} aria-current="page"{% endif %}>대시보드</a>
+        <a href="/ops?project={{ project|urlencode }}"{% if request.url.path == '/ops' %} aria-current="page"{% endif %}>운영</a>
+        <a href="/settings?project={{ project|urlencode }}"{% if request.url.path == '/settings' %} aria-current="page"{% endif %}>프로젝트 설정</a>
+      </nav>{% endif %}
+    </aside>
+    <main id="main">{% block content %}{% endblock %}
+      {% set remaining_error = form_error_for(request) if form_error_for is defined and request.scope is defined else None %}{% if remaining_error %}{{ error_box(remaining_error) }}{% endif %}
+    </main>
+  </div>
   <template id="form-error-template">{{ error_box(prototype=True) }}</template>
-  <script src="/static/app.js?v=inline-errors-20261003" defer></script>
+  <script src="/static/app.js?v=story-inline-errors-20261003" defer></script>
 </body>
 </html>
