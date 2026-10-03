@@ -34,6 +34,7 @@ from ddak.core.contracts.tools.smoke_test import (
     SmokeTestInput,
     SmokeTestOutput,
 )
+from ddak.verify.smoke.normalize import own_post, page_head
 
 MAX_BODY = 256 * 1024
 MAX_JSON_DEPTH = 32
@@ -313,12 +314,21 @@ def b2_create(p: Probe) -> SmokeScenario:
     shown = listed is not None and listed.status == 200 and p.title in listed.body
     ok = resp.status == 302 and location == "/" and shown
     detail = f"글쓰기 상태 {resp.status}, 이동 {location}, 목록 반영 {shown}"
+    # 정규화 비교(compare가 두 환경 값을 맞춰 본다). 판정(ok)에는 쓰지 않는다
+    body = listed.body if listed is not None and listed.status == 200 else ""
     return _scenario(
         "B2.create",
         ok,
         resp,
         detail,
-        {"status": resp.status, "location": location, "listed": shown, **cookie_attrs(resp)},
+        {
+            "status": resp.status,
+            "location": location,
+            "listed": shown,
+            **cookie_attrs(resp),
+            "page.head": page_head(body, smoke_title=p.title) if shown else None,
+            "page.post": own_post(body, p.title) if shown else None,
+        },
     )
 
 
@@ -331,6 +341,24 @@ def b2_empty_title(p: Probe) -> SmokeScenario:
         ok,
         resp,
         f"빈 제목 상태 {resp.status}, 오류 문구 {shown}",
+        {"status": resp.status, "error_shown": shown},
+    )
+
+
+# S13 대체(로그인이 없어 51자 아이디 대신 글 제목). post.title은 VARCHAR(200)이다. 앱이 길이를
+# 검사하지 않으면 엄격 sql_mode(온프렘)는 1406 오류, 비엄격(RDS 설정에 따라)은 잘린 채 저장된다
+LONG_TITLE_LEN = 201
+
+
+def b2_long_title(p: Probe) -> SmokeScenario:
+    resp = p.post("/create", {"title": "x" * LONG_TITLE_LEN, "body": "smoke"})
+    shown = "Title is too long." in resp.body
+    ok = resp.status == 200 and shown
+    return _scenario(
+        "B2.long",
+        ok,
+        resp,
+        f"긴 제목 상태 {resp.status}, 오류 문구 {shown}",
         {"status": resp.status, "error_shown": shown},
     )
 
@@ -367,6 +395,7 @@ GROUPS: dict[str, tuple[tuple[str, Check], ...]] = {
         ("B1", b1_index),
         ("B2.create", b2_create),
         ("B2.empty", b2_empty_title),
+        ("B2.long", b2_long_title),
     ),
     "v2": (("V2.box", v2_box),),
 }
