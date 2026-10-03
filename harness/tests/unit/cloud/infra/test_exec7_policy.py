@@ -8,6 +8,7 @@ import pytest
 from ddak.cloud.infra.policy import PolicyViolation, static_gate
 from ddak.core.contracts.errors import DdakToolError
 from ddak.core.contracts.infra_outputs import checked_cloud_outputs, checked_outputs
+from tests.unit.cloud.infra.test_bluegreen_policy import service_body, source
 from tests.unit.cloud.infra.test_pipeline_policy import summary
 from tests.unit.cloud.infra.test_runtime import SETTINGS, resource
 
@@ -59,15 +60,15 @@ def test_task_names_match_tiers_in_hcl_and_plan(names, valid):
 )
 def test_service_lifecycle_keeps_code_owned_revision_and_count(ignored, valid):
     lifecycle = "" if ignored is None else f"lifecycle {{ ignore_changes = {ignored} }}"
-    source = (
-        'resource "aws_ecs_service" "app" {\n'
-        + lifecycle
-        + "\ndeployment_circuit_breaker { enable = true\n rollback = true }\n}"
-    )
-    result = static_gate({"main.tf": source}, layer="platform")
+    body = service_body()
+    body.pop("lifecycle")
+    text = source("aws_ecs_service", body)[:-1] + lifecycle + "\n}"
+    result = static_gate({"main.tf": text}, layer="platform")
     assert result.passed is valid
     if not valid:
-        assert result.detail == "ECS_DEPLOYMENT_OWNED_BY_C2"
+        assert result.detail == (
+            "VARIABLE_NOT_ALLOWED" if ignored == "[var.fields]" else "ECS_DEPLOYMENT_OWNED_BY_C2"
+        )
 
 
 @pytest.mark.parametrize(
@@ -91,12 +92,12 @@ def test_circuit_breaker_is_required_in_hcl_and_resolved_plan(breaker):
         + "\n".join(key + " = " + json.dumps(value) for key, value in breaker.items())
         + "\n}"
     )
-    source = (
-        'resource "aws_ecs_service" "app" {\n'
-        "lifecycle { ignore_changes = [task_definition, desired_count] }\n" + block + "\n}"
-    )
-    assert static_gate({"main.tf": source}, layer="platform").passed is valid
-    body = {} if breaker is None else {"deployment_circuit_breaker": [breaker]}
+    body = service_body()
+    body.pop("deployment_circuit_breaker")
+    text = source("aws_ecs_service", body)[:-1] + block + "\n}"
+    assert static_gate({"main.tf": text}, layer="platform").passed is valid
+    if breaker is not None:
+        body["deployment_circuit_breaker"] = [breaker]
     item = resource("aws_ecs_service", "app", ["create"], body)
     if valid:
         assert summary(item)["counts"]["create"] == 1

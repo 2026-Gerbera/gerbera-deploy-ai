@@ -5,6 +5,10 @@ planner(생성)와 validate(검사)가 함께 읽는다. validate는 planner를 
 step id: build.<tier>, deploy.config|db|dbinit|storage.<env>, deploy.<tier>.<env>,
 deploy.tls|infra|secrets.cloud, verify.health|smoke.<env>, verify.tls.cloud,
 verify.compare|report|watch.cloud.
+
+deploy.<tier>.<env> 순서는 deploy.yaml 순서가 아니라 고정 의존 순서(db → was → web)다. 업스트림을
+먼저 올려 프런트 준비 확인이 새 업스트림을 보게 하고, 업스트림 실패 시 프런트는 건드리지 않는다.
+모르는 tier는 deploy.yaml 순서대로 뒤에 둔다. 롤백은 실행기가 실제 호출 순서의 역순으로 한다.
 """
 
 from __future__ import annotations
@@ -27,6 +31,14 @@ FORBIDDEN_PARAM_KEYS: frozenset[str] = frozenset(
         "image", "image_uri", "digest", "arn", "command", "cmd", "args", "shell",
     }
 )  # fmt: skip
+
+
+# 업스트림 먼저. 여기 없는 tier는 deploy.yaml 순서대로 뒤에 붙는다.
+_DEPLOY_ORDER: tuple[str, ...] = ("db", "was", "web")
+
+
+def _deploy_order(tiers: Sequence[TierName]) -> list[TierName]:
+    return [t for t in _DEPLOY_ORDER if t in tiers] + [t for t in tiers if t not in _DEPLOY_ORDER]
 
 
 class StepDef(ContractModel):
@@ -84,7 +96,7 @@ def _env_steps(env: Literal["local", "cloud"], tiers: Sequence[TierName]) -> lis
     out += [
         d(f"deploy.{t}.{env}", "deploy_tier", C, S, tier=t, wait_for=image_ready,
           skip_rule="digest_deployed")
-        for t in tiers
+        for t in _deploy_order(tiers)
     ]  # fmt: skip
     out.append(d(f"verify.health.{env}", "health_check", M, R))
     if cloud:

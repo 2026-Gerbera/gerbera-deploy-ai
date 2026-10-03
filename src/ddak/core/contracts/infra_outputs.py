@@ -55,8 +55,11 @@ def output_kind(layer: str, name: str) -> str:
             return "string"
         if name in APP_OUTPUTS:
             return APP_OUTPUTS[name]
-    elif layer == "platform" and name in PLATFORM_OUTPUTS:
-        return PLATFORM_OUTPUTS[name]
+    elif layer == "platform":
+        if name in PLATFORM_OUTPUTS:
+            return PLATFORM_OUTPUTS[name]
+        if APP_SECRET_OUTPUT.fullmatch(name):
+            return "string"
     raise ValueError("허용되지 않은 인프라 출력 이름/층")
 
 

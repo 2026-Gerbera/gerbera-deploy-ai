@@ -7,14 +7,48 @@ devpi-guardian의 privacy.py 개념만 참고해 새로 작성했다(코드 복�
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 REDACTED = "[REDACTED]"
 MAX_LEN = 4096
 
+# 코드 속 비밀 이름 판정. 환경 키 분류 규칙(plan/analyze/rules.py)과 같은 단어를 쓴다.
+# 단어는 대소문자 무시, PRIVATE와 이름 끝 _KEY는 대문자 설정 키만 본다(cache_key 같은 일반
+# 변수는 가리지 않는다). TOKENS(input_tokens 등)는 아래 key=value 규칙처럼 제외한다.
+_SECRET_WORD = re.compile(
+    r"secret|password|passwd|token(?!s)|credential|api_?key|access_?key", re.IGNORECASE
+)
+_SECRET_UPPER = re.compile(r"PRIVATE|_KEY$")
+# 따옴표로 감싼 키 이름. JSON 안에 다시 담긴 코드(\"...\")도 같은 따옴표 짝으로 본다.
+_QUOTED_NAME = r"(?P<q>\\?[\"'])(?P<name>[A-Za-z0-9_.-]{1,128})(?P=q)"
+# 문자열 리터럴 값(한 줄). f-string은 계산 값이라 가리지 않는다(접두사 f 제외).
+_LITERAL = (
+    r"(?P<value>(?:[rRbBuU]{1,2})?"
+    r"(?:\"(?:\\.|[^\"\\\n])*\"|'(?:\\.|[^'\\\n])*'"
+    r"|\\\"(?:(?!\\\")[^\n])*\\\"|\\'(?:(?!\\')[^\n])*\\'))"
+)
+
+
+def _is_secret_name(name: str) -> bool:
+    return bool(_SECRET_WORD.search(name) or _SECRET_UPPER.search(name))
+
+
+def _mask_literal(match: re.Match[str]) -> str:
+    """비밀 이름의 문자열 값만 따옴표를 남기고 가린다. 빈 값과 일반 키는 그대로 둔다."""
+    value = match.group("value")
+    body = value.lstrip("rRbBuU")
+    prefix = value[: len(value) - len(body)]  # b"..."·r"..."의 접두사는 그대로 둔다
+    quote = body[:2] if body.startswith("\\") else body[:1]
+    if not _is_secret_name(match.group("name")) or len(body) <= 2 * len(quote):
+        return match.group(0)
+    return f"{match.group('head')}{prefix}{quote}{REDACTED}{quote}"
+
+
+_Replacement = str | Callable[[re.Match[str]], str]
+
 # (패턴, 치환). 순서가 중요하다: 블록 -> URL 자격증명 -> 헤더 -> ARN -> key=value -> 토큰 모양.
-_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
+_RULES: tuple[tuple[re.Pattern[str], _Replacement], ...] = (
     # PEM 개인키 블록
     (
         re.compile(
@@ -36,6 +70,18 @@ _RULES: tuple[tuple[re.Pattern[str], str], ...] = (
             re.IGNORECASE,
         ),
         rf'\1"{REDACTED}"',
+    ),
+    # 코드의 첨자 대입: app.config["SECRET_KEY"] = "...", os.environ['API_TOKEN'] = '...'
+    (re.compile(rf"(?P<head>\[\s*{_QUOTED_NAME}\s*\]\s*=\s*){_LITERAL}"), _mask_literal),
+    # 비밀 이름 키의 기본값: os.environ.get("SECRET_KEY", "..."), getenv("X_TOKEN", "..."),
+    # setdefault·pop·env(...)·getattr(obj, "SECRET_KEY", "...")와 default= 키워드
+    (
+        re.compile(
+            r"(?P<head>\b(?:(?:get|getenv|setdefault|pop|env)\s*\("
+            r"|getattr\s*\(\s*[A-Za-z_][A-Za-z0-9_.]*\s*,)"
+            rf"\s*{_QUOTED_NAME}\s*,\s*(?:default\s*=\s*)?){_LITERAL}"
+        ),
+        _mask_literal,
     ),
     # ARN의 12자리 계정 ID(에러 메시지에 계정 ID를 남기지 않는다)
     (re.compile(r"\b(arn:aws[a-z-]*:[a-z0-9-]+:[a-z0-9-]*:)\d{12}(?=:)"), r"\1************"),
