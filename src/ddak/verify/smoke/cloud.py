@@ -2,16 +2,12 @@
 
 from __future__ import annotations
 
-import re
 from typing import Literal
 
 from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.enums import Target
-from ddak.core.contracts.errors import DdakToolError, ErrorCode
+from ddak.core.domain import require_cloud_domain
 from ddak.verify.smoke.logic import HttpClient, UrlClient
-
-_LABEL = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
-_DOMAIN = re.compile(rf"^(?=.{{1,253}}$){_LABEL}(?:\.{_LABEL})+$")
 
 
 class CloudSmokeAdapter:
@@ -23,9 +19,5 @@ class CloudSmokeAdapter:
         return Target.CLOUD
 
     def client(self, ctx: RunContext) -> HttpClient:
-        domain = ctx.cloud_domain or ""
-        if not _DOMAIN.fullmatch(domain):
-            raise DdakToolError(
-                ErrorCode.CONFIG_INVALID, "클라우드 도메인이 설정되지 않았거나 형식 오류"
-            )
+        domain = require_cloud_domain(ctx.cloud_domain)
         return UrlClient(f"https://{domain}")
