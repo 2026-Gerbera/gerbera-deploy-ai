@@ -95,9 +95,20 @@ def run_plan(inp: PlanInfraInput, ctx: RunContext) -> PlanInfraOutput:
             **summary,
             "headline": summary["headline"] + f" · HCL source={binding.generation_source.value}",
         }
-    if len(json.dumps(summary, ensure_ascii=False, sort_keys=True).encode()) > 8192:
+    if len(json.dumps(summary, ensure_ascii=False, sort_keys=True).encode()) > 16384:
+        from .plan import summary_size_detail
+
+        # 진단용: 값 없이 크기와 IAM 항목별 동작·크기만 붙인다.
+        iam = ", ".join(
+            f"{d.get('address')}:{d.get('action')}="
+            f"{len(json.dumps(d, ensure_ascii=False, sort_keys=True).encode())}B"
+            for d in summary.get("iam_diff") or []
+            if isinstance(d, dict)
+        )
         raise DdakToolError(
-            ErrorCode.CONFIG_INVALID, "출처를 포함한 인프라 요약은 8KiB 이하여야 한다"
+            ErrorCode.CONFIG_INVALID,
+            f"출처를 포함한 인프라 요약은 16KiB 이하여야 한다 "
+            f"({summary_size_detail(summary)}; IAM {iam})"[:900],
         )
     return PlanInfraOutput(
         passed=True,

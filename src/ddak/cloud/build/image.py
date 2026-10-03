@@ -9,14 +9,23 @@
 - REAL은 호출마다 선택 프로필의 계정을 확인한다(AWS_REGION, 서울 기본). FAKE는 FakeCodeBuild이고
   AWS를 부르지 않는다. FAKE는 저장소 URL을 쓰지 않고(고정 가짜 URL), 커밋은 ctx.candidate_sha를
   쓰되 40자가 아니면 가짜 값으로, 빠진 인프라 출력도 결정적 가짜 값으로 채운다.
+- 성공 이미지 재사용(서윤 0bcb397을 10/3 복원): 같은 프로젝트·tier·저장소·이미지 저장소·승인
+  스냅샷(파일 내용 해시)으로 성공한 빌드가 있으면 빌드(CodeBuild·local 모두)를 하지 않고 그
+  digest를 쓴다. 두 백엔드는 같은 Docker Hub 저장소에 같은 buildspec 결과를 올리므로 같은 키를
+  쓴다. 결과 source는 cache(관리 페이지 라벨). 캐시 파일은 DDAK_BUILD_CACHE_DIR(기본
+  harness/var/build-cache, 실행 cwd와 무관)에
+  tier digest와 그때의 후보 커밋만 둔다. 실행기는 결과의 release_artifacts만 컨텍스트에 쓰고
+  이번 run의 candidate_sha는 바꾸지 않는다. 읽을 수 없거나 형식이 다르면 무시하고 새로 빌드한다.
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import time
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 import boto3
@@ -31,6 +40,7 @@ from ddak.core.config import AdapterMode
 from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.enums import Source
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
+from ddak.core.contracts.release import ImageArtifact, ReleaseArtifacts
 from ddak.core.contracts.tools.build_image import BuildImageOutput
 
 DEFAULT_REGION = "ap-northeast-2"
@@ -38,6 +48,8 @@ DEFAULT_BUDGET_S = 900.0  # 카탈로그 build_image 제한과 같다. ctx.deadl
 FAKE_REPO_URL = "https://github.com/ddak-fake/app"
 FAKE_PROJECT = "ddak-fake-build"
 FAKE_IMAGE_REPOSITORY = "ddak-fake/app"
+CACHE_SCHEMA = "ddak.build-cache/v1"
+CACHE_ROOT = Path(__file__).resolve().parents[4] / "harness" / "var" / "build-cache"
 
 
 def build_image(tier: str, ctx: RunContext) -> BuildImageOutput:
@@ -47,13 +59,19 @@ def build_image(tier: str, ctx: RunContext) -> BuildImageOutput:
         raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "승인 스냅샷(source_binding)이 없다")
     backend = ctx.build_backend
     if backend == "local":
+        local_repo = None if fake else _local_repo(ctx)
+        if local_repo and (cached := _cached_build(tier, ctx, local_repo)) is not None:
+            return cached
         local = build_local_tier(tier, ctx)
-        return BuildImageOutput(
+        built = BuildImageOutput(
             release_artifacts=local.artifacts,
             candidate_sha=local.revision,
             build_id=local.build_id,
             source=Source.FIXTURE if fake else Source.LIVE,
         )
+        if local_repo:
+            _save_build(tier, ctx, local_repo, built)
+        return built
     if backend != "codebuild":
         raise DdakToolError(ErrorCode.CONFIG_INVALID, "build_backend은 codebuild/local만 허용한다")
     cloud = _cloud(ctx)
@@ -75,6 +93,9 @@ def build_image(tier: str, ctx: RunContext) -> BuildImageOutput:
             ErrorCode.INFRA_MISSING,
             "인프라 출력 codebuild_project_name 또는 image_repository가 없다",
         )
+    image_repo = docker_hub_repo(repository)
+    if not fake and (cached := _cached_build(tier, ctx, image_repo)) is not None:
+        return cached
     client: CodeBuildClient = FakeCodeBuild() if fake else _codebuild(cloud, ctx)
     result = build_tier(
         client,
@@ -83,17 +104,95 @@ def build_image(tier: str, ctx: RunContext) -> BuildImageOutput:
         project=project,
         source=GitSource(repository_url=repo_url, commit_sha=commit),
         release_id=ctx.run_id,
-        image_repo=docker_hub_repo(repository),
+        image_repo=image_repo,
         snapshot=ctx.source_binding,
         deadline=ctx.deadline if ctx.deadline is not None else time.monotonic() + DEFAULT_BUDGET_S,
         **({"poll_s": 0.0, "sleep": lambda _s: None} if fake else {}),
     )
-    return BuildImageOutput(
+    output = BuildImageOutput(
         release_artifacts=result.artifacts,
         candidate_sha=result.revision,
         build_id=result.build_id,
         source=Source.FIXTURE if fake else Source.LIVE,
     )
+    if not fake:
+        _save_build(tier, ctx, image_repo, output)
+    return output
+
+
+def _cache_path(tier: str, ctx: RunContext, image_repo: str) -> Path:
+    binding = ctx.source_binding
+    if binding is None:  # build_image의 선행 검사가 먼저 막지만 타입을 좁힌다.
+        raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "승인 스냅샷이 없다")
+    identity = json.dumps(
+        {
+            "project": ctx.project,
+            "tier": tier,
+            "repo_url": ctx.repo_url,
+            "image_repo": image_repo,
+            "snapshot": binding.model_dump(mode="json"),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    digest = hashlib.sha256(identity.encode()).hexdigest()
+    root = Path(os.environ.get("DDAK_BUILD_CACHE_DIR") or CACHE_ROOT)
+    return root / ctx.project / f"{tier}-{digest}.json"
+
+
+def _cached_build(tier: str, ctx: RunContext, image_repo: str) -> BuildImageOutput | None:
+    """동일 승인 스냅샷의 성공 digest를 재사용해 CodeBuild 호출 전체를 건너뛴다."""
+    path = _cache_path(tier, ctx, image_repo)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if data.get("schema") != CACHE_SCHEMA:
+            return None
+        artifact = ImageArtifact.model_validate(data["artifact"])
+        built_sha = str(data["candidate_sha"])
+        if not artifact.ref.startswith(f"{image_repo}@"):
+            return None
+        current = ctx.release_artifacts
+        if current is not None and current.snapshot != ctx.source_binding:
+            return None
+        images = dict(current.images) if current else {}
+        images[tier] = artifact
+        artifacts = ReleaseArtifacts(snapshot=ctx.source_binding, images=images)
+        return BuildImageOutput(
+            release_artifacts=artifacts,
+            candidate_sha=built_sha,
+            build_id=None,
+            source=Source.CACHE,
+        )
+    except (OSError, KeyError, TypeError, ValueError):
+        return None
+
+
+def _save_build(tier: str, ctx: RunContext, image_repo: str, output: BuildImageOutput) -> None:
+    """성공한 tier digest만 원자적으로 저장한다. 토큰·환경변수·AWS 식별자는 저장하지 않는다."""
+    artifact = output.release_artifacts.images.get(tier)
+    if artifact is None:
+        return
+    path = _cache_path(tier, ctx, image_repo)
+    temporary = path.with_suffix(f".tmp-{os.getpid()}")
+    payload = {
+        "schema": CACHE_SCHEMA,
+        "candidate_sha": output.candidate_sha,
+        "artifact": artifact.model_dump(mode="json"),
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+        temporary.replace(path)
+    except OSError:
+        temporary.unlink(missing_ok=True)
+
+
+def _local_repo(ctx: RunContext) -> str | None:
+    """local 백엔드의 이미지 저장소(캐시 키). 형식이 틀리면 None(검사는 build_local_tier가 한다)."""
+    try:
+        return docker_hub_repo(ctx.image_repository) if ctx.image_repository else None
+    except DdakToolError:
+        return None
 
 
 def _cloud(ctx: RunContext) -> Mapping[str, Any]:

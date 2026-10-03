@@ -26,6 +26,7 @@ KEY_SECURITY_GROUP = "app_security_group_id"
 KEY_RDS_ENDPOINT = "rds_endpoint"  # host:port
 KEY_RDS_MASTER_SECRET = "rds_master_secret_arn"  # noqa: S105 (출력 이름, 비밀값 아님)
 KEY_REGION = "region"  # _aws.client가 읽는다(출력 아님, 앱이 주입)
+KEY_TARGET_GROUP = "target_group_arn"  # 선택. 있으면 롤링 배포를 트래픽 전환 시점에 끝낸다(ecs.py)
 OUTPUT_SECRET_ARN_PREFIX = "app_secret_arn_"  # noqa: S105 (출력 이름 접두사, 비밀값 아님)
 
 DESIRED_COUNT = 2  # 💭 R11 제안값. 첫 배포(Terraform이 0개로 만든 서비스) 때 올릴 태스크 수
@@ -56,7 +57,12 @@ def _texts(platform: Mapping[str, Any], key: str) -> list[str]:
 
 def service(ctx: RunContext) -> EcsService:
     platform = cloud(ctx)
-    return EcsService(cluster=_text(platform, KEY_CLUSTER), service=_text(platform, KEY_SERVICE))
+    group = platform.get(KEY_TARGET_GROUP)
+    return EcsService(
+        cluster=_text(platform, KEY_CLUSTER),
+        service=_text(platform, KEY_SERVICE),
+        target_group=group if isinstance(group, str) and group.strip() else None,
+    )
 
 
 def container(tier: str) -> str:

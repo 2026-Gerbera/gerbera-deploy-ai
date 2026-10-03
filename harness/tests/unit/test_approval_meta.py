@@ -136,7 +136,7 @@ def test_saved_metadata_tampering_blocks_execution(rig: Any, tamper_after_approv
 @pytest.mark.parametrize(
     "change",
     [
-        {"headline": "한" * 3000},
+        {"headline": "한" * 6000},
         {"counts": {"create": -1, "update": 0, "delete": 0, "replace": 0}},
         {"headline": "password=" + "do-not-log-this-value"},
         {"iam_diff": [{"credential": "do-not-log-this-value"}]},
@@ -180,13 +180,13 @@ def test_summary_requires_corresponding_subject(rig: Any) -> None:
         prepare(rig, infra_summary=summary())
 
 
-@pytest.mark.parametrize("size", [8192, 8193])
+@pytest.mark.parametrize("size", [16384, 16385])
 def test_exact_utf8_byte_limit(size: int) -> None:
     value = summary()
     value["headline"] = "한"
     base_size = len(json.dumps(value, ensure_ascii=False, sort_keys=True).encode())
     value["headline"] += "x" * (size - base_size)
-    if size == 8192:
+    if size == 16384:
         assert len(encode_meta(value, infra=True).encode()) == size
     else:
         with pytest.raises(DdakToolError, match="CONFIG_INVALID"):

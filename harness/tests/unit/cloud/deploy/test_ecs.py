@@ -503,3 +503,195 @@ def test_rollback_failure_is_reported(client: Any, stub: Stubber) -> None:
     with pytest.raises(DdakToolError) as err:
         _rollback(client)
     assert err.value.code is ErrorCode.ADAPTER_FAILED
+
+
+# 트래픽 전환 시점 완료(10/3 시연 시간 단축): 대상 그룹을 알면 이전 태스크 정리를 기다리지 않는다.
+TG_ARN = "arn:aws:elasticloadbalancing:ap-northeast-2:111122223333:targetgroup/flaskr/0123abcd"
+TG_TARGET = EcsService(cluster="ddak", service="flaskr", target_group=TG_ARN)
+NEW_IPS = ("10.0.1.10", "10.0.2.20")
+OLD_IP = "10.0.1.30"
+
+
+@pytest.fixture
+def elb() -> Any:
+    return boto3.client(
+        "elbv2",
+        region_name="ap-northeast-2",
+        aws_access_key_id="test" + "ing",
+        aws_secret_access_key="test" + "ing",
+    )
+
+
+@pytest.fixture
+def elb_stub(elb: Any) -> Iterator[Stubber]:
+    with Stubber(elb) as stubber:
+        yield stubber
+        stubber.assert_no_pending_responses()
+
+
+def _rolling(running: int = 2, pending: int = 0, old_desired: int = 0) -> dict[str, Any]:
+    new = {**_deployment(NEW_ARN, "PRIMARY", "IN_PROGRESS"), "desiredCount": 2}
+    new.update(runningCount=running, pendingCount=pending)
+    old = {**_deployment(OLD_ARN, "ACTIVE", "COMPLETED"), "desiredCount": old_desired}
+    return _service(NEW_ARN, deployments=[new, old])
+
+
+def _tasks(stub: Stubber, ips: tuple[str, ...] = NEW_IPS) -> None:
+    arns = [f"arn:aws:ecs:ap-northeast-2:111122223333:task/ddak/{i}" for i in range(len(ips) + 1)]
+    stub.add_response(
+        "list_tasks",
+        {"taskArns": arns},
+        {"cluster": "ddak", "serviceName": "flaskr", "desiredStatus": "RUNNING"},
+    )
+
+    def task(arn: str, definition: str, ip: str, status: str = "RUNNING") -> dict[str, Any]:
+        eni = {"name": "privateIPv4Address", "value": ip}
+        return {
+            "taskArn": arn,
+            "taskDefinitionArn": definition,
+            "lastStatus": status,
+            "attachments": [{"type": "ElasticNetworkInterface", "details": [eni]}],
+        }
+
+    tasks = [task(a, NEW_ARN, ip) for a, ip in zip(arns, ips, strict=False)]
+    tasks.append(task(arns[-1], OLD_ARN, OLD_IP))  # 정리 중인 이전 태스크(새 IP 집합에 넣지 않음)
+    stub.add_response("describe_tasks", {"tasks": tasks}, {"cluster": "ddak", "tasks": arns})
+
+
+def _health(elb_stub: Stubber, states: dict[str, str]) -> None:
+    elb_stub.add_response(
+        "describe_target_health",
+        {
+            "TargetHealthDescriptions": [
+                {"Target": {"Id": ip, "Port": 8080}, "TargetHealth": {"State": state}}
+                for ip, state in states.items()
+            ]
+        },
+        {"TargetGroupArn": TG_ARN},
+    )
+
+
+def _wait(client: Any, elb: Any) -> None:
+    ticks = iter(range(0, 1000, 5))  # clock 호출마다 5초씩 흐른다
+    wait_stable(
+        client,
+        TG_TARGET,
+        NEW_ARN,
+        1000.0,
+        elb=elb,
+        clock=lambda: float(next(ticks)),
+        sleep=lambda _s: None,
+    )
+
+
+SWITCHED = {NEW_IPS[0]: "healthy", NEW_IPS[1]: "healthy", OLD_IP: "draining"}
+
+
+def _switched(stub: Stubber, elb_stub: Stubber) -> None:
+    _describe(stub, _rolling())
+    _tasks(stub)
+    _health(elb_stub, SWITCHED)
+
+
+def test_wait_ends_when_only_new_tasks_take_traffic_for_settle_time(
+    client: Any, stub: Stubber, elb: Any, elb_stub: Stubber
+) -> None:
+    _switched(stub, elb_stub)  # t=0 전환 확인
+    _switched(stub, elb_stub)  # t=10 계속 유지 -> 끝(이전 배포가 남아 있어도, COMPLETED 전)
+    _wait(client, elb)
+
+
+def test_wait_restarts_settle_time_when_switch_breaks(
+    client: Any, stub: Stubber, elb: Any, elb_stub: Stubber
+) -> None:
+    _switched(stub, elb_stub)  # t=0
+    _describe(stub, _rolling())  # t=10 이전 대상이 다시 healthy(ALB 반영 전) -> 다시 잰다
+    _tasks(stub)
+    _health(elb_stub, {**SWITCHED, OLD_IP: "healthy"})
+    _switched(stub, elb_stub)  # t=20 다시 시작
+    _switched(stub, elb_stub)  # t=30 유지 -> 끝
+    _wait(client, elb)
+
+
+@pytest.mark.parametrize("old_state", ["healthy", "initial", "unhealthy"])
+def test_wait_continues_while_old_target_can_take_traffic(
+    client: Any, stub: Stubber, elb: Any, elb_stub: Stubber, old_state: str
+) -> None:
+    _describe(stub, _rolling())
+    _tasks(stub)
+    _health(elb_stub, {NEW_IPS[0]: "healthy", NEW_IPS[1]: "healthy", OLD_IP: old_state})
+    _describe(stub, _service(NEW_ARN, deployments=[_deployment(NEW_ARN, "PRIMARY", "COMPLETED")]))
+    _wait(client, elb)
+
+
+def test_wait_continues_until_every_new_target_is_healthy(
+    client: Any, stub: Stubber, elb: Any, elb_stub: Stubber
+) -> None:
+    _describe(stub, _rolling())
+    _tasks(stub)
+    _health(elb_stub, {NEW_IPS[0]: "healthy", NEW_IPS[1]: "initial", OLD_IP: "draining"})
+    _switched(stub, elb_stub)
+    _switched(stub, elb_stub)
+    _wait(client, elb)
+
+
+def test_wait_continues_when_new_target_is_not_registered_yet(
+    client: Any, stub: Stubber, elb: Any, elb_stub: Stubber
+) -> None:
+    _describe(stub, _rolling())
+    _tasks(stub)
+    _health(elb_stub, {NEW_IPS[0]: "healthy", OLD_IP: "draining"})
+    _describe(stub, _service(NEW_ARN, deployments=[_deployment(NEW_ARN, "PRIMARY", "COMPLETED")]))
+    _wait(client, elb)
+
+
+@pytest.mark.parametrize(
+    "counts",
+    [{"running": 1}, {"pending": 1}, {"old_desired": 1}],
+    ids=["running", "pending", "old"],
+)
+def test_wait_skips_target_check_until_ecs_counts_settle(
+    client: Any, stub: Stubber, elb: Any, elb_stub: Stubber, counts: dict[str, int]
+) -> None:
+    _describe(stub, _rolling(**counts))  # 태스크·대상 그룹을 읽지 않는다(스텁에 없음)
+    _describe(stub, _service(NEW_ARN, deployments=[_deployment(NEW_ARN, "PRIMARY", "COMPLETED")]))
+    _wait(client, elb)
+
+
+def test_wait_still_fails_on_circuit_breaker_with_target_group(
+    client: Any, stub: Stubber, elb: Any
+) -> None:
+    _describe(stub, _service(NEW_ARN, deployments=[_deployment(NEW_ARN, "PRIMARY", "FAILED")]))
+    with pytest.raises(DdakToolError, match="회로 차단기") as exc:
+        _wait(client, elb)
+    assert exc.value.code is ErrorCode.ADAPTER_FAILED
+
+
+def test_replace_refuses_when_service_drifted_from_last_release(client: Any, stub: Stubber) -> None:
+    _describe(stub, _service(OLD_ARN))
+    _read_definition(stub)  # 실행 중: OLD_WEB·OLD_WAS
+    stub.add_response(
+        "register_task_definition", {"taskDefinition": {"taskDefinitionArn": NEW_ARN}}, None
+    )
+    with pytest.raises(DdakToolError, match="직전 성공 기록과 다른 이미지") as exc:
+        _run(  # 기록은 web=NEW_WEB인데 서비스는 OLD_WEB(자동 롤백 등). update_service 전에 멈춘다
+            client,
+            {"web": NEW_WEB, "was": NEW_WAS},
+            expected_current={"web": NEW_WEB, "was": OLD_WAS},
+        )
+    assert exc.value.code is ErrorCode.PRECONDITION_FAILED
+
+
+def test_replace_accepts_last_release_or_requested_images(client: Any, stub: Stubber) -> None:
+    _describe(stub, _service(OLD_ARN))
+    _read_definition(stub, web=NEW_WEB)  # web은 같은 run의 앞 tier 호출이 이미 바꿨다
+    stub.add_response(
+        "register_task_definition", {"taskDefinition": {"taskDefinitionArn": NEW_ARN}}, None
+    )
+    _describe(stub, _service(OLD_ARN))
+    stub.add_response("update_service", {"service": {}}, None)
+    _done(stub)
+    got = _run(
+        client, {"web": NEW_WEB, "was": NEW_WAS}, expected_current={"web": OLD_WEB, "was": OLD_WAS}
+    )
+    assert got.changed is True

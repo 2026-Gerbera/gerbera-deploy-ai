@@ -38,6 +38,7 @@ from ddak.cd.interface import ProviderName, ProviderResult
 from ddak.cloud.deploy import _aws, _platform
 from ddak.cloud.deploy.database import run_migration_phases
 from ddak.cloud.deploy.ecs import (
+    EcsService,
     Running,
     register_revision,
     replace_images,
@@ -88,6 +89,8 @@ def deploy_service(tier: str, ctx: RunContext) -> ProviderResult:
         desired_count=_platform.DESIRED_COUNT,
         environment=_runtime_environment(ctx, ctx.run_id, ctx.source_sha),
         secrets=_runtime_secrets(ctx),
+        elb=_elb(ctx, target),
+        expected_current=_previous_images(ctx),
     )
     running = running_image(ecs, target, name, revision.task_definition)
     return ProviderResult(
@@ -125,6 +128,7 @@ def rollback_service(tier: str, ctx: RunContext) -> ProviderResult:
         desired_count=_platform.DESIRED_COUNT,
         environment=_runtime_environment(ctx, release_id, source_sha),
         secrets=_runtime_secrets(ctx),
+        elb=_elb(ctx, target),
     )
     name = _platform.container(tier)
     return ProviderResult(
@@ -142,6 +146,24 @@ def rollback_service(tier: str, ctx: RunContext) -> ProviderResult:
 
 def _join(*parts: str | None) -> str:
     return "; ".join(p for p in parts if p)
+
+
+def _elb(ctx: RunContext, target: EcsService) -> Any:
+    """대상 그룹 출력이 있을 때만 ALB 클라이언트(트래픽 전환 시점 완료 판정용)."""
+    return _aws.client("elbv2", ctx) if target.target_group else None
+
+
+def _previous_images(ctx: RunContext) -> dict[str, str] | None:
+    """직전 성공 클라우드 릴리스의 {컨테이너: 참조}. 첫 배포면 None(확인하지 않음)."""
+    previous: Any = ctx.previous_release.get("cloud")
+    images = previous.get("images") if isinstance(previous, Mapping) else None
+    if not isinstance(images, Mapping):
+        return None
+    return {
+        _platform.container(t): ref
+        for t, ref in images.items()
+        if _platform.has_container(t) and isinstance(ref, str)
+    }
 
 
 def put_secret_values(keys: Sequence[str], ctx: RunContext) -> ProviderResult:
