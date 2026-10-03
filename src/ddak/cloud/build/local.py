@@ -29,6 +29,7 @@ from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.contracts.infra_outputs import IMAGE_REPOSITORY_PATTERN
 from ddak.core.contracts.release import ReleaseArtifacts
+from ddak.core.docker_auth import docker_hub_auth
 from ddak.core.pem import UnsupportedPemError
 from ddak.core.private_values import private_directory, read_private
 from ddak.core.redact import redact
@@ -122,12 +123,12 @@ def _local_paths(config: Mapping[str, str] | None) -> dict[str, str]:
             with private_directory(config[key]) as fd:
                 if key == "docker_config":
                     metadata = json.loads(read_private(fd, "config.json"))
-                    if (
-                        not metadata.get("auths")
-                        or metadata.get("credsStore")
-                        or metadata.get("credHelpers")
-                    ):
+                    if metadata.get("credsStore") or metadata.get("credHelpers"):
                         raise ValueError
+                    if not docker_hub_auth(metadata):
+                        raise DdakToolError(
+                            ErrorCode.PRECONDITION_FAILED, "설정 필요: Docker Hub 로그인"
+                        )
     except (OSError, ValueError, TypeError, AttributeError):
         raise DdakToolError(ErrorCode.CONFIG_INVALID, "제품 로컬 빌드 경로 검사 실패") from None
     return dict(config)

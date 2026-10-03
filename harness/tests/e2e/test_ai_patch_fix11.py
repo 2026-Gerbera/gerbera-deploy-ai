@@ -553,6 +553,8 @@ async def test_admin_only_setup_reaches_patch_build_and_release(rig):
         post("test", provider_id="claude-api")
         post("build-apply", plan_hash=manager.build_plan("demo")["hash"])
         post("docker", username="fixture", token="fixture-private-token")
+        docker_row = next(r for r in manager.view("demo")["checklist"] if r["id"] == "docker")
+        assert docker_row["status"] == "green"
         post("env", key="APP_ENV", value="production")
         page = client.get("/setup?project=demo")
         assert "fixture-private-value" not in page.text

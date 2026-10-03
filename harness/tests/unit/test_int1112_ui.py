@@ -75,6 +75,8 @@ def test_patch_explanation_and_decision_basis_display_without_raw_diff(rig):
         request={"url": {"path": "/approval"}},
     )
     visible = html.split("<details>")[0]
+    # 판정 근거 요약은 화면에 보이고, 단계별 근거·제외·무효화 원문은 접힌 기술 정보에 둔다.
+    technical = html.split('<details id="approval-technical">', 1)[1].split("</details>", 1)[0]
     for text in (
         "check_patch: 통과",
         "새 환경 키: APP_BASE_URL",
@@ -82,12 +84,21 @@ def test_patch_explanation_and_decision_basis_display_without_raw_diff(rig):
         "loopback",
         "b" * 64,
         "계획 판정 근거",
+        "fixture-provider · fixture-model",
+        'data-label="포함 단계">1개',
+        'data-label="제외 단계">1개',
+    ):
+        assert text in visible
+    assert "계획 판정 근거 원문" in technical
+    for text in (
         "fixture-provider",
         "fact:tree_changed.was",
         "unchanged web",
         "required step restored",
     ):
-        assert text in visible
+        assert text in technical
+    for raw in ("fact:tree_changed.was", "unchanged web", "required step restored"):
+        assert raw not in visible
     assert view["patch"] not in html
     forms = Forms()
     forms.feed(html)

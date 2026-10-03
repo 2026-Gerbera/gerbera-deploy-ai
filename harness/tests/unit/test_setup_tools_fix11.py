@@ -381,6 +381,7 @@ def test_login_rejects_symlink_helpers_and_invalid_input_before_runner(tmp_path:
 def test_preflight_config_env_isolated_builder_and_warning_retained(prepared) -> None:
     helper, runner, _downloader = prepared
     apply(helper)
+    helper.login("test-team", "fixture-value")
     runner.username = ""
     runner.calls.clear()
     warnings = local.preflight_local_build(
@@ -400,6 +401,7 @@ def test_preflight_config_env_isolated_builder_and_warning_retained(prepared) ->
 def test_ctx_platform_local_paths_used_and_config_invalid_blocks(prepared) -> None:
     helper, runner, _downloader = prepared
     apply(helper)
+    helper.login("test-team", "fixture-value")
     local.configure_local_build(runner=runner, config=helper.plan()["paths"])
     try:
         env = local._environment(helper.plan()["paths"])
@@ -427,7 +429,7 @@ def test_runtime_context_paths_reach_actual_local_build_entry(tmp_path: Path) ->
     for directory in (helper.tool_dir, helper.docker_config):
         with private_directory(directory, create=True):
             pass
-    DockerConfig(helper.docker_config, runner=FakeRunner())._initialize()
+    helper.login("test-team", "fixture-value")
     runner = BuildRunner()
     runner.builder = runner.builder.replace("test-builder", helper.builder_name)
     local.configure_local_build(runner=runner)
@@ -469,7 +471,9 @@ def test_managed_scanner_without_system_path(prepared, monkeypatch: pytest.Monke
 
 
 @pytest.mark.parametrize("kind", ["empty", "stale"])
-def test_login_command_success_without_matching_saved_credentials_gray(tmp_path: Path, kind: str):
+def test_login_command_success_without_matching_saved_credentials_rejected(
+    tmp_path: Path, kind: str
+):
     def no_confirm(argv, *, cwd, env, input, timeout):
         if kind == "stale":
             auth = base64.b64encode(b"test-team:fake-old-value").decode()
@@ -479,11 +483,8 @@ def test_login_command_success_without_matching_saved_credentials_gray(tmp_path:
             (cwd / "config.json").chmod(0o600)
         return subprocess.CompletedProcess(argv, 0, "ignored", "ignored")
 
-    result = DockerConfig(tmp_path / "docker", runner=no_confirm).login(
-        "test-team", "fake-new-value"
-    )
-    assert result["status"] == "gray" and result["login_confirmed"] is False
-    assert result["verified"] is False
+    with pytest.raises(DdakToolError, match="로그인 저장 결과"):
+        DockerConfig(tmp_path / "docker", runner=no_confirm).login("test-team", "fake-new-value")
 
 
 def test_login_generated_hardlink_rejected_before_chmod(tmp_path: Path) -> None:
@@ -520,6 +521,7 @@ def test_partial_setup_retry_does_not_recreate_matching_builder(prepared) -> Non
 def test_false_or_mismatched_builder_is_blocking_in_preflight(prepared) -> None:
     helper, runner, _downloader = prepared
     apply(helper)
+    helper.login("test-team", "fixture-value")
     original_runner = runner
 
     def mismatch(argv, **kwargs):

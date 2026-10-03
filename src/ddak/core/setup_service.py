@@ -533,9 +533,18 @@ class SetupService:
         return result
 
     def login_docker(self, project: str, username: str, token: str) -> dict:
-        result = self._builder(project).login(username, token)
-        self._write_json(self._path(project) / "docker-user.json", {"username": username})
-        return self._record(project, "docker", result)
+        try:
+            result = self._builder(project).login(username, token)
+            if result.get("status") != "green":
+                raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "설정 필요: Docker Hub 로그인")
+            self._write_json(self._path(project) / "docker-user.json", {"username": username})
+            result = self.probe(project, "docker")
+            if result["status"] != "green":
+                raise DdakToolError(ErrorCode.PRECONDITION_FAILED, result["detail"])
+            return result
+        except DdakToolError as error:
+            self._record(project, "docker", {"status": "red", "detail": error.message})
+            raise
 
     def probe(self, project: str, kind: str) -> dict:
         if kind not in {"ai", "inventory", "repository", "build", "docker"}:
@@ -553,8 +562,13 @@ class SetupService:
                 result = self._builder(project).probe()
             elif kind in self._probes:
                 result = self._probes[kind](project, self._saved(project))
+            elif kind == "docker":
+                settings = self._selected(project, self._saved(project))
+                result = self._builder(project).probe_repository(settings.get("image_repository"))
             else:
                 result = {"status": "gray", "detail": "실제 연결 확인 전"}
+        except DdakToolError as error:
+            result = {"status": "red", "detail": error.message}
         except Exception:
             result = {"status": "red", "detail": "검사 실패. 연결 설정을 확인하세요"}
         return self._record(project, kind, result)

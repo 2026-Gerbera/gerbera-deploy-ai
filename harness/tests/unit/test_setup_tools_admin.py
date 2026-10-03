@@ -244,10 +244,18 @@ def test_setup_and_local_build_share_connection_environment_without_display(prep
     monkeypatch.setenv("BASH_ENV", "/do-not-inherit")
     monkeypatch.setenv("DDAK_PRIVATE", "do-not-inherit")
     result = apply(helper)
+    setup_calls = list(runner.calls)
+    # 로컬 빌드 경로 검사는 제품 Docker 설정에 Hub 로그인이 저장된 뒤에만 통과한다.
+    # 로그인 명령은 레지스트리 인증만 하므로 연결 환경을 싣지 않고, 준비 단계 명령만 비교한다.
+    login = helper.login("test-team", "fixture-value")
     assert helper._env() == local._environment(helper.plan()["paths"])
-    assert all(c["env"]["DOCKER_CONTEXT"] == "private-fixture-context" for c in runner.calls)
+    assert setup_calls
+    assert all(c["env"]["DOCKER_CONTEXT"] == "private-fixture-context" for c in setup_calls)
+    assert all("DOCKER_CONTEXT" not in c["env"] for c in runner.calls[len(setup_calls) :])
     assert "BASH_ENV" not in helper._env() and "DDAK_PRIVATE" not in helper._env()
-    assert "private-fixture" not in json.dumps(result) + json.dumps(helper.plan())
+    assert "private-fixture" not in json.dumps(result) + json.dumps(helper.plan()) + json.dumps(
+        login
+    )
 
 
 @pytest.mark.parametrize("failure", ["nonzero", "exception", "timeout"])

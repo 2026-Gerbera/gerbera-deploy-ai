@@ -228,7 +228,8 @@ async def test_effective_local_red_blocks_all_entrypoints(
     if kind == "build":
         setup_service.probe(PROJECT, kind)
     else:
-        setup_service.login_docker(PROJECT, "fixture-user", "fixture-token")
+        with pytest.raises(DdakToolError, match="Docker Hub 로그인"):
+            setup_service.login_docker(PROJECT, "fixture-user", "fixture-token")
     view = setup_service.view(PROJECT)
     assert view["settings"]["build_backend"] == "local"
     assert next(row for row in view["checklist"] if row["id"] == kind)["status"] == "red"
@@ -261,7 +262,8 @@ async def test_effective_local_red_blocks_all_entrypoints(
 def test_effective_codebuild_does_not_require_local_build_or_docker(tmp_path):
     service, _ = coordinator(tmp_path)
     service.onboarding.probe(PROJECT, "build")
-    service.onboarding.login_docker(PROJECT, "fixture-user", "fixture-token")
+    with pytest.raises(DdakToolError, match="Docker Hub 로그인"):
+        service.onboarding.login_docker(PROJECT, "fixture-user", "fixture-token")
     assert service.onboarding.view(PROJECT)["settings"]["build_backend"] == "codebuild"
     service.onboarding.require_ready(PROJECT, "onprem")
 
