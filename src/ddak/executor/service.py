@@ -298,7 +298,9 @@ class DeploymentService:
                 {
                     k: v
                     for k, v in settings.items()
-                    if k in ProjectSettings.model_fields and v is not None
+                    if k in ProjectSettings.model_fields
+                    and k != "ai_answer_language"
+                    and v is not None
                 }
             )
             validated = ProjectSettings.model_validate(settings_data)
@@ -931,6 +933,12 @@ class DeploymentService:
 
     def get_project_settings(self, project: str) -> dict[str, Any] | None:
         return self.store.project_settings(project)
+
+    def get_answer_language(self, project: str) -> str:
+        return self.store.answer_language(self.resolve_project(project))
+
+    def remember_answer_language(self, project: str, language: str) -> None:
+        self.store.remember_answer_language(self.resolve_project(project), language)
 
     def get_platform_outputs(self, project: str, mode: AdapterMode) -> dict[str, Any]:
         return checked_cloud_outputs(self.store.platform_outputs(project, mode.value))

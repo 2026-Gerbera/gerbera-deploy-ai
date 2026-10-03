@@ -22,11 +22,11 @@ async def test_detected_commit_is_pinned_and_prepared(rig, monkeypatch, language
         {
             "cloud_domain": "demo.example.test",
             "default_targets": "cloud",
-            "ai_answer_language": language,
         },
         updated_by="operator",
         expected_version=0,
     )
+    service.remember_answer_language("demo", language)
     inventory = {"public_url": "https://onprem.example.test"}
     monkeypatch.setenv("DDAK_ONPREM_INVENTORY", "/fixture/inventory.yaml")
     monkeypatch.setattr(app, "load_inventory", lambda path: inventory)

@@ -131,7 +131,12 @@ def test_language_saved_only_after_safe_post(rig, monkeypatch):
     service.store.save_project_settings(
         PROJECT, {"auto_detect": False}, updated_by="operator", expected_version=0
     )
-    monkeypatch.setattr(service, "enqueue_deployment", lambda *a, **k: {"request_id": "fixture"})
+    before = service.get_project_settings(PROJECT)
+    monkeypatch.setattr(
+        service,
+        "enqueue_deployment",
+        lambda *a, **k: {"request_id": "fixture", "status": "PREPARING", "run_id": None},
+    )
     with client_for(service) as client:
         client.get(f"/?project={PROJECT}&lang=ja")
         denied = client.post(
@@ -140,10 +145,11 @@ def test_language_saved_only_after_safe_post(rig, monkeypatch):
             headers={"origin": "http://127.0.0.1:8765"},
         )
         assert denied.status_code == 403
-        assert service.get_project_settings(PROJECT).get("ai_answer_language", "ko") == "ko"
+        assert service.get_answer_language(PROJECT) == "ko"
         result = post(client, "/ops/plan", project=PROJECT)
         assert result.status_code == 303
-        assert service.get_project_settings(PROJECT)["ai_answer_language"] == "ja"
+        assert service.get_answer_language(PROJECT) == "ja"
+        assert service.get_project_settings(PROJECT) == before
 
 
 def test_post_language_link_uses_safe_get():

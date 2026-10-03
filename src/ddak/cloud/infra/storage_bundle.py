@@ -138,6 +138,9 @@ def storage_bundle(
         "evidence": evidence,
         "source": storage_source(source),
     }
+    # 저장 함수는 ctx 없이 번들을 받는다. JA만 언어를 기록해 KO 기존 바이트를 보존한다.
+    if ctx.project_settings.get("ai_answer_language") == "ja":
+        metadata["ai_answer_language"] = "ja"
     header = json.dumps(metadata, ensure_ascii=False, separators=(",", ":"))
     files = {_FILE: _HEADER + header + "\n" + hcl}
     _read_bundle(files)
@@ -160,7 +163,9 @@ def _read_bundle(files: Mapping[str, str]) -> tuple[dict[str, Any], str]:
         raise DdakToolError(ErrorCode.CONFIG_INVALID, "저장소 번들 근거 형식 오류") from None
     if (
         not isinstance(metadata, dict)
-        or set(metadata) != {"version", "intent", "binding", "rationale", "evidence", "source"}
+        or set(metadata) - {"ai_answer_language"}
+        != {"version", "intent", "binding", "rationale", "evidence", "source"}
+        or metadata.get("ai_answer_language", "ko") not in ("ko", "ja")
         or metadata["version"] != STORAGE_PROMPT_VERSION
         or metadata["intent"] not in ("create", "remove")
         or not isinstance(metadata["binding"], dict)
@@ -218,10 +223,14 @@ def storage_summary(
     return summary
 
 
-def _baseline_path(root: Path, platform: str, binding: dict[str, str]) -> Path:
+def _baseline_path(
+    root: Path, platform: str, binding: dict[str, str], language: str = "ko"
+) -> Path:
     if platform != binding["platform"]:
         raise DdakToolError(ErrorCode.CONFIG_INVALID, "저장소 기준본 플랫폼이 다르다")
     key = digest_bytes(json.dumps(binding, sort_keys=True).encode()).removeprefix("sha256:")
+    if language == "ja":
+        key += "-ja"
     path = Path(root) / "infra-baselines" / platform / STORAGE_PROMPT_VERSION / key
     if any(parent.is_symlink() for parent in (path, *path.parents)):
         raise DdakToolError(ErrorCode.CONFIG_INVALID, "저장소 기준본 symlink 경로 오류")
@@ -233,7 +242,8 @@ def load_storage_baseline(root: Path, ctx: RunContext) -> dict[str, str] | None:
     intent, binding, _ = storage_request(ctx)
     if intent != "create":
         return None
-    path = _baseline_path(root, binding["platform"], binding)
+    language = "ja" if ctx.project_settings.get("ai_answer_language") == "ja" else "ko"
+    path = _baseline_path(root, binding["platform"], binding, language)
     if not path.exists():
         return None
     if not path.is_dir() or {p.name for p in path.iterdir()} != {_FILE}:
@@ -246,7 +256,11 @@ def load_storage_baseline(root: Path, ctx: RunContext) -> dict[str, str] | None:
     except (OSError, UnicodeError):
         raise DdakToolError(ErrorCode.CONFIG_INVALID, "저장소 기준본을 읽을 수 없다") from None
     metadata, _ = _read_bundle(files)
-    if metadata["binding"] != binding or metadata["intent"] != "create":
+    if (
+        metadata["binding"] != binding
+        or metadata["intent"] != "create"
+        or metadata.get("ai_answer_language", "ko") != language
+    ):
         return None
     if metadata["source"] != Source.LIVE:
         return None
@@ -259,7 +273,9 @@ def save_storage_baseline(root: Path, platform: str, files: Mapping[str, str]) -
     metadata, _ = _read_bundle(files)
     if metadata["intent"] != "create" or metadata["source"] != Source.LIVE:
         raise DdakToolError(ErrorCode.CONFIG_INVALID, "LIVE create만 저장소 기준본으로 저장한다")
-    path = _baseline_path(root, platform, metadata["binding"])
+    path = _baseline_path(
+        root, platform, metadata["binding"], metadata.get("ai_answer_language", "ko")
+    )
     try:
         path.mkdir(parents=True, exist_ok=True)
         destination = path / _FILE

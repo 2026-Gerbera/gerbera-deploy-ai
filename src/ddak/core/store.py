@@ -41,6 +41,8 @@ CREATE TABLE IF NOT EXISTS env_release (
 CREATE TABLE IF NOT EXISTS project_settings (
  project TEXT PRIMARY KEY, version INTEGER NOT NULL, data TEXT NOT NULL,
  updated_by TEXT NOT NULL, updated_at REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS answer_languages (
+ project TEXT PRIMARY KEY, language TEXT NOT NULL CHECK(language IN ('ko', 'ja')));
 CREATE TABLE IF NOT EXISTS project_settings_history (
  project TEXT NOT NULL, version INTEGER NOT NULL, data TEXT NOT NULL,
  displayed TEXT,
@@ -218,6 +220,24 @@ class Store:
                 (run_id, project, time.time(), time.time(), _json(result)),
             )
             return cursor.rowcount == 1
+
+    def answer_language(self, project: str) -> str:
+        with self.connection() as db:
+            row = db.execute(
+                "SELECT language FROM answer_languages WHERE project=?", (project,)
+            ).fetchone()
+        return row[0] if row else "ko"
+
+    def remember_answer_language(self, project: str, language: str) -> None:
+        """표시 선호만 기록한다. 프로젝트 설정·버전·수정 시각은 보존한다."""
+        if language not in {"ko", "ja"}:
+            raise ValueError("지원하지 않는 답변 언어")
+        with self.connection() as db:
+            db.execute(
+                "INSERT INTO answer_languages VALUES (?, ?) "
+                "ON CONFLICT(project) DO UPDATE SET language=excluded.language",
+                (project, language),
+            )
 
     def save_prepared(self, run_id: str, payload: dict[str, Any]) -> None:
         # 실행 입력의 해시가 바뀌면 안 된다. 표시용 redact 데이터와 구분해 0600 DB에 보관한다.

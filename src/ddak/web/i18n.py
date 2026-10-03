@@ -189,27 +189,21 @@ class LanguageMiddleware:
             request_language.reset(token)
 
 
-def remember_run_language(request: Request) -> None:
-    """CSRF 검사 뒤 실행을 만드는 요청의 답변 언어만 저장한다."""
-    if request.url.path not in {"/ops/plan", "/settings/deploy"} and not re.fullmatch(
-        r"/ops/demo/(?:reset-v1|prepare-v2|prepare-v3)", request.url.path
+def enqueue_localized(request: Request, service: Any, project: str, **kwargs: Any) -> dict:
+    """새 준비 요청이 접수된 뒤에만 마지막 답변 언어를 기록한다."""
+    known = (
+        {item["request_id"] for item in service.list_preparations(project)}
+        if hasattr(service, "list_preparations")
+        else set()
+    )
+    result = service.enqueue_deployment(project, **kwargs)
+    if (
+        result.get("status") == "PREPARING"
+        and result.get("run_id") is None
+        and result.get("request_id") not in known
     ):
-        return
-    from ddak.web.dependencies import deployment, selected_project
-
-    service = deployment(request)
-    if not hasattr(service, "save_project_settings") or not hasattr(
-        service, "get_project_settings"
-    ):
-        return
-    form = getattr(request.state, "submitted_form", {})
-    project = selected_project(request, form.get("project"))
-    saved = service.get_project_settings(project) or {}
-    selected = language(request)
-    if saved.get("ai_answer_language", "ko") != selected:
-        service.save_project_settings(
-            project,
-            {"ai_answer_language": selected},
-            updated_by="local-operator",
-            expected_version=saved.get("version", 0),
-        )
+        try:
+            service.remember_answer_language(project, language(request))
+        except Exception:
+            _log.warning("답변 언어 저장 실패: 준비 요청은 계속 진행")
+    return result

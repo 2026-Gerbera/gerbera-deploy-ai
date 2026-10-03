@@ -17,6 +17,7 @@ from ddak.web.dependencies import (
 )
 from ddak.web.form_errors import FormRoute
 from ddak.web.forms import parse_form
+from ddak.web.i18n import enqueue_localized
 from ddak.web.routes.approvals import approval_page as canonical_approval_page
 from ddak.web.security import csrf_token, issue_csrf, require_safe_post
 
@@ -90,7 +91,7 @@ async def operate(request: Request, action: str):
     project = selected_project(request, form.get("project"))
     try:
         if action == "plan":
-            result = service.enqueue_deployment(project, ref=form.get("ref") or None)
+            result = enqueue_localized(request, service, project, ref=form.get("ref") or None)
             if "text/html" in request.headers.get("accept", ""):
                 return RedirectResponse(f"/ops?project={project}", status_code=303)
             result["status_url"] = f"/ops/preparations/{result['request_id']}"
@@ -146,5 +147,5 @@ async def demo_action(request: Request, action: str):
     result = await run_in_threadpool(_demo(request).create, project, action)
     if action == "reset-v1" and result.get("already_source"):
         # prod 트리만 v1인 경우에도 실제 배포는 별도로 승인받는다.
-        deployment(request).enqueue_deployment(project, ref="prod")
+        enqueue_localized(request, deployment(request), project, ref="prod")
     return RedirectResponse(f"/ops?project={project}", status_code=303)

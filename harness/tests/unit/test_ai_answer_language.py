@@ -29,7 +29,9 @@ from ddak.verify.report import logic as report
 from tests.unit.cloud.infra.test_generate_storage import context as storage_context
 
 JA_LINE = (
-    "自由記述のフィールドは日本語で書いてください。JSONのキー・列挙値・構造は変更しないでください。"
+    "上記で韓国語と指定された自由記述フィールド(conclusion・changes・checks・next_action・"
+    "reason・summary・answer・rationale)も含め、すべて日本語で書いてください。"
+    "JSONのキー・列挙値・構造・文字数/バイト上限は変更しないでください。"
 )
 # 언어 연결 전 KO 프롬프트의 UTF-8 바이트 해시.
 KO_HASHES = {
@@ -204,13 +206,14 @@ def test_saved_language_survives_unrelated_settings_update_and_snapshot(tmp_path
 
     store = Store(tmp_path / "store.sqlite")
     first = store.save_project_settings(
-        "demo", {"ai_answer_language": language}, updated_by="operator", expected_version=0
+        "demo", {"auto_detect": False}, updated_by="operator", expected_version=0
     )
     store.save_project_settings(
         "demo", {"code_patch": False}, updated_by="operator", expected_version=first["version"]
     )
+    store.remember_answer_language("demo", language)
     saved = store.project_settings("demo")
-    values = project_values(saved)
+    values = {**project_values(saved), "ai_answer_language": store.answer_language("demo")}
     ctx = RunContext("run-language", project_settings=values, trigger="auto")
     assert ctx.to_json_dict()["project_settings"]["ai_answer_language"] == language
     assert values["code_patch"] is False
