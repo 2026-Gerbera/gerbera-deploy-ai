@@ -396,3 +396,23 @@ pre, .diff-panel { background: var(--surface-code); }
 .sidebar-language { margin-block-start: auto; padding-block: 1rem; }
 :lang(ja) .heading-actions { flex-wrap: wrap; }
 :lang(ja) .button, :lang(ja) .state { max-width: 100%; overflow-wrap: anywhere; }
+
+/* JA는 224px 탐색 폭을 유지하고 긴 동작명·상태를 줄바꿈한다. */
+body:lang(ja) { word-break: normal; line-break: strict; }
+:lang(ja) .sidebar, :lang(ja) .sidebar a, :lang(ja) .sidebar-current { min-width: 0; }
+:lang(ja) .sidebar a, :lang(ja) .sidebar-current { white-space: normal; overflow-wrap: anywhere; }
+:lang(ja) .heading-actions, :lang(ja) .save-panel, :lang(ja) .approval-bar,
+:lang(ja) .card-header, :lang(ja) .proposal-heading { flex-wrap: wrap; min-width: 0; max-width: 100%; }
+:lang(ja) .heading-actions > form, :lang(ja) .approval-bar .heading-actions { min-width: 0; max-width: 100%; flex-shrink: 1; }
+:lang(ja) .button, :lang(ja) .sidebar-toggle, :lang(ja) .state,
+:lang(ja) .actor, :lang(ja) .source-badge, :lang(ja) .patch-pick {
+  min-width: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere;
+}
+:lang(ja) .button, :lang(ja) .sidebar-toggle { text-align: center; }
+:lang(ja) .state > span { min-width: 0; }
+:lang(ja) .patch-pick input { flex-shrink: 0; }
+:lang(ja) .pipeline-step.complete [data-step-summary] { grid-template-columns: minmax(0,auto) minmax(0,1fr) minmax(0,auto); }
+:lang(ja) .pipeline-step.complete [data-step-status] { min-width: 0; white-space: normal; }
+@media (max-width: 720px) {
+  :lang(ja) .masthead { flex-wrap: wrap; height: auto; min-height: var(--header-height); padding-block: var(--s2); gap: var(--s2); }
+}

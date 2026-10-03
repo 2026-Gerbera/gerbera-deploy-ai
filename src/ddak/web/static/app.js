@@ -1,6 +1,19 @@
 (() => {
   // 서버 사전이 없는 기존 페이지와 최소 Node VM에서는 한국어를 유지한다.
   const fallbackWording = {
+    "demo.ready": "v3 시연 PR 준비",
+    "demo.missing": "v3 태그 없음",
+    "demo.failed": "v3 태그 확인 실패",
+    "demo.status_failed": "⚠ 시연 상태 확인 실패. 프로젝트 연결 설정을 확인하세요.",
+    "qa.required": "질문을 입력하세요.",
+    "qa.unsupported": "이 브라우저에서는 질문을 보낼 수 없습니다.",
+    "qa.loading": "소스를 읽고 답을 만드는 중입니다… {seconds}초",
+    "qa.failed": "질문을 처리하지 못했습니다. 다시 시도해 주세요.",
+    "qa.commit": "기준 커밋 ",
+    "qa.context": " · {branch} 브랜치 · 파일 {files}개 참고{truncated}",
+    "qa.truncated": "(크기 상한으로 일부만)",
+    "qa.sources": "근거 파일: ",
+    "qa.network": "요청을 보내지 못했습니다. 연결 상태를 확인하고 다시 시도해 주세요.",
     "menu.close": "메뉴 접기",
     "menu.open": "메뉴 펼치기",
     "form.error": "작업을 완료하지 못했습니다. 기술 정보에서 원인을 확인하세요.",

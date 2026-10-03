@@ -2,6 +2,28 @@
    답과 오류는 textContent로만 그린다(AI 출력의 HTML·링크를 해석하지 않는다). */
 (function () {
   if (typeof document === "undefined" || typeof window === "undefined") return;
+  const fallbackWording = {
+    "qa.required": "질문을 입력하세요.",
+    "qa.unsupported": "이 브라우저에서는 질문을 보낼 수 없습니다.",
+    "qa.loading": "소스를 읽고 답을 만드는 중입니다… {seconds}초",
+    "qa.failed": "질문을 처리하지 못했습니다. 다시 시도해 주세요.",
+    "qa.commit": "기준 커밋 ",
+    "qa.context": " · {branch} 브랜치 · 파일 {files}개 참고{truncated}",
+    "qa.truncated": "(크기 상한으로 일부만)",
+    "qa.sources": "근거 파일: ",
+    "qa.network": "요청을 보내지 못했습니다. 연결 상태를 확인하고 다시 시도해 주세요."
+};
+  let appWording = {};
+  try { appWording = JSON.parse(document.getElementById("app-wording")?.textContent || "{}"); } catch { /* KO 기본값 유지 */ }
+  const t = (key, params = {}) => {
+    const value = appWording?.[key];
+    const template = typeof value === "string" ? value : fallbackWording[key] ?? key;
+    return template.split(/(\{[a-z]+\})/).map((part) => {
+      const name = part.slice(1, -1);
+      return part.startsWith("{") && Object.prototype.hasOwnProperty.call(params, name)
+        ? String(params[name]) : part;
+    }).join("");
+  };
   const text = (tag, value) => {
     const element = document.createElement(tag);
     element.textContent = value;
@@ -48,22 +70,22 @@
       if (busy) return;
       const question = input.value.trim();
       if (!question) {
-        fail("CONFIG_INVALID", "질문을 입력하세요.");
+        fail("CONFIG_INVALID", t("qa.required"));
         input.focus();
         return;
       }
       if (typeof window.fetch !== "function") {
-        fail("REQUEST_FAILED", "이 브라우저에서는 질문을 보낼 수 없습니다.");
+        fail("REQUEST_FAILED", t("qa.unsupported"));
         return;
       }
       busy = true;
       submit.disabled = true;
       submit.setAttribute("aria-busy", "true");
       const started = Date.now();
-      const status = text("p", "소스를 읽고 답을 만드는 중입니다… 0초");
+      const status = text("p", t("qa.loading", { seconds: 0 }));
       show("running", (b) => b.append(status));
       const timer = window.setInterval(() => {
-        status.textContent = `소스를 읽고 답을 만드는 중입니다… ${Math.round((Date.now() - started) / 1000)}초`;
+        status.textContent = t("qa.loading", { seconds: Math.round((Date.now() - started) / 1000) });
       }, 1000);
       try {
         const body = new window.URLSearchParams();
@@ -81,17 +103,17 @@
           const error = data?.error;
           const valid = typeof error?.code === "string" && typeof error?.message === "string";
           fail(valid ? error.code : "REQUEST_FAILED",
-            valid ? error.message : "질문을 처리하지 못했습니다. 다시 시도해 주세요.");
+            valid ? error.message : t("qa.failed"));
           return;
         }
         show("", (b) => {
           const meta = document.createElement("p");
           meta.className = "note";
-          meta.append("기준 커밋 ", text("code", String(data.commit)),
-            ` · ${data.branch} 브랜치 · 파일 ${data.files}개 참고${data.truncated ? "(크기 상한으로 일부만)" : ""}`);
+          meta.append(t("qa.commit"), text("code", String(data.commit)),
+            t("qa.context", { branch: data.branch, files: data.files, truncated: data.truncated ? t("qa.truncated") : "" }));
           b.append(meta, text("pre", String(data.answer)));
           if (Array.isArray(data.sources) && data.sources.length) {
-            const sources = text("p", "근거 파일: ");
+            const sources = text("p", t("qa.sources"));
             data.sources.forEach((path, index) => {
               if (index) sources.append(", ");
               sources.append(text("code", String(path)));
@@ -100,7 +122,7 @@
           }
         });
       } catch {
-        fail("REQUEST_FAILED", "요청을 보내지 못했습니다. 연결 상태를 확인하고 다시 시도해 주세요.");
+        fail("REQUEST_FAILED", t("qa.network"));
       } finally {
         window.clearInterval(timer);
         busy = false;

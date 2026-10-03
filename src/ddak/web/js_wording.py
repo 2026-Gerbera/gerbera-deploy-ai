@@ -6,6 +6,19 @@ Unsupported languages fall back to Korean. Each call returns a fresh flat dict.
 
 APP_WORDING: dict[str, dict[str, str]] = {
     "ko": {
+        "demo.ready": "v3 시연 PR 준비",
+        "demo.missing": "v3 태그 없음",
+        "demo.failed": "v3 태그 확인 실패",
+        "demo.status_failed": "⚠ 시연 상태 확인 실패. 프로젝트 연결 설정을 확인하세요.",
+        "qa.required": "질문을 입력하세요.",
+        "qa.unsupported": "이 브라우저에서는 질문을 보낼 수 없습니다.",
+        "qa.loading": "소스를 읽고 답을 만드는 중입니다… {seconds}초",
+        "qa.failed": "질문을 처리하지 못했습니다. 다시 시도해 주세요.",
+        "qa.commit": "기준 커밋 ",
+        "qa.context": " · {branch} 브랜치 · 파일 {files}개 참고{truncated}",
+        "qa.truncated": "(크기 상한으로 일부만)",
+        "qa.sources": "근거 파일: ",
+        "qa.network": "요청을 보내지 못했습니다. 연결 상태를 확인하고 다시 시도해 주세요.",
         "menu.close": "메뉴 접기",
         "menu.open": "메뉴 펼치기",
         "form.error": ("작업을 완료하지 못했습니다. 기술 정보에서 원인을 확인하세요."),
@@ -99,6 +112,21 @@ APP_WORDING: dict[str, dict[str, str]] = {
         "locale": "ko-KR",
     },
     "ja": {
+        "demo.ready": "v3 デモPRを準備",
+        "demo.missing": "v3 タグなし",
+        "demo.failed": "v3 タグの確認に失敗",
+        "demo.status_failed": (
+            "⚠ デモの状態を確認できませんでした。プロジェクトの接続設定を確認してください。"
+        ),
+        "qa.required": "質問を入力してください。",
+        "qa.unsupported": "このブラウザーでは質問を送信できません。",
+        "qa.loading": "ソースを読み取り、回答を作成しています… {seconds}秒",
+        "qa.failed": "質問を処理できませんでした。もう一度お試しください。",
+        "qa.commit": "基準コミット ",
+        "qa.context": " · ブランチ {branch} · {files}件のファイルを参照{truncated}",
+        "qa.truncated": "(サイズ上限により一部のみ)",
+        "qa.sources": "参照ファイル: ",
+        "qa.network": "リクエストを送信できませんでした。接続状態を確認して再試行してください。",
         "menu.close": "メニューを閉じる",
         "menu.open": "メニューを開く",
         "form.error": ("処理を完了できませんでした。技術情報で原因を確認してください。"),
