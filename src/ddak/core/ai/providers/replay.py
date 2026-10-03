@@ -47,8 +47,12 @@ class ReplayProvider:
             raise DdakToolError(
                 ErrorCode.AI_UNAVAILABLE, f"저장된 응답 없음: {req.purpose}/{short}"
             )
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return AIResponse(text=json.dumps(data["output"], ensure_ascii=False), source=Source.REPLAY)
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            output = data["output"]
+        except (OSError, ValueError, KeyError, TypeError):
+            raise DdakToolError(ErrorCode.AI_OUTPUT_INVALID, "저장된 응답 형식 오류") from None
+        return AIResponse(text=json.dumps(output, ensure_ascii=False), source=Source.REPLAY)
 
     def save(self, req: AIRequest, output: Mapping[str, Any]) -> Path:
         """live 응답을 저장해 두는 도우미(리허설 녹화용, 사람이 부른다)."""

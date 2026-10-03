@@ -84,6 +84,17 @@ def test_length_is_limited() -> None:
     assert out.endswith("[truncated 50 chars]")
 
 
+def test_unbounded_redaction_masks_secrets_beyond_default_limit() -> None:
+    prefix = "x" * MAX_LEN + "\n"
+    tail = "\nKeep this final requirement."
+    text = prefix + f"password=fake-password\n{FAKE_AWS_KEY_ID}" + tail
+    out = redact(text, max_len=None)
+    assert out == prefix + f"password={REDACTED}\n{REDACTED}" + tail
+    assert "fake-password" not in out
+    assert FAKE_AWS_KEY_ID not in out
+    assert "[truncated" not in out
+
+
 def test_redact_obj_masks_secret_keys_and_nested_strings() -> None:
     data = {
         "api_key": "plain-looking",

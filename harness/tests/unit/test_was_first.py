@@ -19,6 +19,7 @@ from ddak.core.contracts.plan import Plan
 from ddak.core.contracts.plan_facts import EnvKey, Facts
 from ddak.core.contracts.release import CarriedImageSource, ImageObservation, ReleaseArtifacts
 from ddak.core.contracts.step_catalog import catalog_steps
+from ddak.core.contracts.tools.smoke_test import SmokeTestInput
 from ddak.core.contracts.tools.validate_plan import ValidatePlanInput
 from ddak.core.registry import Registry, spec_for
 from ddak.core.snapshots import digest_bytes, preview
@@ -182,7 +183,7 @@ def rig(tmp_path: Path) -> Iterator[tuple[DeploymentService, Rig]]:
         return Output()
 
     @registry.tool("smoke_test")
-    async def smoke(inp: Input, ctx: RunContext) -> Output:
+    async def smoke(inp: SmokeTestInput, ctx: RunContext) -> Output:
         return Output(passed=not state.fail_smoke)
 
     @registry.tool("rollback_tier")

@@ -177,6 +177,7 @@ async def test_save_onprem_without_domain(
         "repo_url": "https://github.com/org/app.git",
         "watch_branch": "prod",
         "auto_detect": True,
+        "code_patch": False,
         "default_targets": "onprem",
         "cloud_domain": None,
         "dns_mode": "external",

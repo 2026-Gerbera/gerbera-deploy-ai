@@ -1,4 +1,4 @@
-# plan/intake (담당: 김준석)
+# plan/intake (담당: 정준우/O1, 2026-10-03 O2 승계)
 
 `receive_deploy_request`: GitHub URL + ref를 코드로 검증하고, run 전용 checkout을 만들어 커밋을 고정하고,
 저장소 루트 `deploy.yaml`을 읽고, 소스를 해시한다. AI 없음(import-linter 계약). 받은 코드는 실행하지 않는다.

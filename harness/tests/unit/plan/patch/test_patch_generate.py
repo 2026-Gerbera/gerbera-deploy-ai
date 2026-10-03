@@ -51,6 +51,7 @@ GOOD_EDITS = [
     },
 ]
 REASON = "서명 키·쿠키 Secure·기본 주소를 환경변수에서 읽게 바꿨다"
+CHECKED_REASON = "환경변수 전환: 쿠키 Secure·개발 주소·서명 키"
 CFG = Settings(ai_retries=0, llm_backend=LLMBackend.API, llm_model="m-claude")
 ON = RunContext("run-1", toggles={"code_patch": True})
 # 가림 확인용 가짜 값. 비밀값 스캐너에 걸리지 않게 이어 붙여 만든다(AGENTS 4절)
@@ -173,7 +174,7 @@ def test_ai_edits_become_a_checked_patch_for_the_executor(source: Path) -> None:
     assert out.check is not None and out.check.passed, out.check
     assert out.patch is not None and out.patch.startswith(b"--- a/flaskr/__init__.py\n")
     assert b"+import os\n" in out.patch and b'-        SECRET_KEY="dev",\n' in out.patch
-    assert out.meta == {"reason": REASON, "reuse": False, "source": "replay"}
+    assert out.meta == {"reason": CHECKED_REASON, "reuse": False, "source": "replay"}
     encode_meta(out.meta)  # 실행기 prepare(patch_meta=)가 받는 모양이다
     assert out.env_vars == ["APP_BASE_URL", "SECRET_KEY"]  # 패치가 실제로 읽는 이름만
     assert set(out.target_hashes) == {APP} and out.target_hashes[APP].startswith("sha256:")
@@ -207,7 +208,7 @@ def test_previous_patch_is_reused_without_ai_when_it_still_fits(source: Path) ->
     previous = PreviousPatch(patch=first.patch, reason=REASON, source=Source.LIVE)
     out = propose(source, FakeProvider(), previous=previous)  # AI를 부르면 AssertionError
     assert out.status == "reused" and out.patch == first.patch and out.attempts == 0
-    assert out.meta == {"reason": REASON, "reuse": True, "source": "live"}
+    assert out.meta == {"reason": CHECKED_REASON, "reuse": True, "source": "live"}
 
 
 def test_previous_patch_that_no_longer_fits_is_proposed_again(source: Path) -> None:
@@ -261,13 +262,14 @@ def test_edit_outside_targets_or_range_is_retried(source: Path) -> None:
     assert out.status == "rejected" and out.patch is None and out.attempts == 2
 
 
-def test_masking_that_changes_line_count_stops_before_ai(
+def test_masking_that_changes_line_count_returns_rejected_before_ai(
     source: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("ddak.plan.patch.generate.redact", lambda text: "[REDACTED]")
-    with pytest.raises(DdakToolError) as caught:
-        propose(source, FakeProvider())
-    assert caught.value.code is ErrorCode.PRECONDITION_FAILED
+    provider = FakeProvider()
+    out = propose(source, provider)
+    assert out.status == "rejected" and out.patch is None and out.meta is None
+    assert out.attempts == 0 and provider.seen == []
 
 
 def test_ai_is_only_called_inside_the_patch_config_tool(source: Path) -> None:

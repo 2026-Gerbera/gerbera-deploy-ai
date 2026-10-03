@@ -12,7 +12,8 @@
         "rollback.started",
         "rollback.finished",
         "ai.call",
-        "report.ready"
+        "report.ready",
+        "stage.finished"
       ],
       "title": "EventType",
       "type": "string"
@@ -57,6 +58,19 @@
       "default": null,
       "title": "Detail"
     },
+    "elapsed_ms": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Elapsed Ms"
+    },
     "elapsed_s": {
       "anyOf": [
         {
@@ -68,6 +82,18 @@
       ],
       "default": null,
       "title": "Elapsed S"
+    },
+    "preparation_stage": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Preparation Stage"
     },
     "run_id": {
       "description": "실행 ID. 모든 툴의 필수 입력",

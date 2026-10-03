@@ -125,7 +125,19 @@ def _env(policy: FetchPolicy, url: str) -> dict[str, str]:
         "GIT_TERMINAL_PROMPT": "0",
         "GIT_LFS_SKIP_SMUDGE": "1",
     }
-    if policy.token and url.startswith("https://"):
+    if policy.credentials:
+        from ddak.core.git_credentials import helper_options, isolated_git_env
+
+        if policy.credentials[2] != url:
+            raise DdakToolError(ErrorCode.CONFIG_INVALID, "접수 인증 저장소가 다르다")
+        options = helper_options(*policy.credentials)
+        env = isolated_git_env(env)
+        env["GIT_CONFIG_COUNT"] = str(len(options))
+        for index, option in enumerate(options):
+            key, value = option.split("=", 1)
+            env[f"GIT_CONFIG_KEY_{index}"] = key
+            env[f"GIT_CONFIG_VALUE_{index}"] = value
+    elif policy.token and url.startswith("https://"):
         host = url.split("/")[2]
         cred = base64.b64encode(f"x-access-token:{policy.token.get_secret_value()}".encode())
         env |= {

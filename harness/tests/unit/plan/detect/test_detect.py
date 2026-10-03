@@ -37,11 +37,12 @@ def _manifest(root: Path) -> dict[str, FileMeta]:
     return {k: FileMeta.model_validate(v) for k, v in file_manifest(root).items()}
 
 
-def _run(root: Path, previous, cfg=CFG):
+def _run(root: Path, previous, cfg=CFG, target=None):
+    target = target or ("both" if len(previous) == 2 else next(iter(previous)))
     h = digest_json(file_manifest(root))
     inp = DetectChangedTiersInput(
         run_id="run-1",
-        request=DeployRequest(project="demo", repo_url="https://github.com/o/r", target="both"),
+        request=DeployRequest(project="demo", repo_url="https://github.com/o/r", target=target),
         source_dir="src",
         snapshot=SnapshotBinding(source_snapshot_hash=h, build_snapshot_hash=h),
         previous=previous,
@@ -158,3 +159,9 @@ def test_modified_applied_migration(src: Path) -> None:
     out = _run(src, {"local": v1})
     assert out.modified_migrations == ("0001",) and out.new_migrations == ("0002",)
     assert _run(src, {"local": None}).modified_migrations == ()
+
+
+def test_local_request_ignores_unrequested_cloud_without_success(src: Path) -> None:
+    out = _run(src, {"local": _manifest(src), "cloud": None}, target="local")
+    assert out.changed == {"local": {"web": False, "was": False}}
+    assert out.changed_paths == out.new_migrations == out.modified_migrations == ()

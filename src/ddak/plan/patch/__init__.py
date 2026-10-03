@@ -1,13 +1,8 @@
-"""plan/patch: AI 코드 수정 P0(토글 ON 전용). 담당 장민영(O3).
+"""설정 패치 공개 API. 제품은 tool.py에 한 번 등록된 patch_config를 호출한다.
 
-공개 함수: patch_config(툴 진입점, tool.py가 등록),
-patch_db_access·patch_storage(빈 구현, 등록 안 함),
-propose_config_patch(patch_config 제안 로직, generate.py).
-다른 디렉토리는 이 파일의 공개 이름만 쓴다.
-AI 호출은 ddak.core.ai(call_ai, ask_jev)로만 한다(허용 디렉토리, import-linter 계약 2).
-patch_config 입출력은 core/contracts/tools/patch_config.py(초안, 정준우 승인 대기).
-계획 흐름은 tool_context("patch_config", run_id) 안에서 patch_config를 부르고,
-passed=True일 때 patch(UTF-8로 인코딩)·meta를 실행기 prepare(patch=, patch_meta=)에 넘긴다.
+등록 툴은 intents 생성과 검사·성공 원장 재사용을 함께 수행한다.
+patch_session은 조립부의 실행별 설정·경로만 주입하며 툴을 직접 호출하지 않는다.
+propose_config_patch는 이전 제안 API 호환용이다.
 """
 
 from __future__ import annotations
@@ -21,18 +16,28 @@ from ddak.plan.patch.generate import (
     find_targets,
     patch_config,
     propose_config_patch,
+    propose_intents,
 )
+from ddak.plan.patch.intents import EditIntent, render_intents
+from ddak.plan.patch.pipeline import PatchPreparation, PatchSession, patch_session, prepare_patch
 
 __all__ = [
+    "EditIntent",
     "PatchDraft",
     "PatchEdit",
+    "PatchPreparation",
     "PatchProposal",
+    "PatchSession",
     "PreviousPatch",
     "find_targets",
     "patch_config",
     "patch_db_access",
+    "patch_session",
     "patch_storage",
+    "prepare_patch",
     "propose_config_patch",
+    "propose_intents",
+    "render_intents",
 ]
 
 _TODO = "plan/patch 미구현: 담당 장민영"

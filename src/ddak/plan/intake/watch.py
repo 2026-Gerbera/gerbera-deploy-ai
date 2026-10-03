@@ -8,20 +8,27 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 import os
 import re
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.logging import get_logger
-from ddak.plan.intake.fetch import resolve_head, warm_cache
+from ddak.plan.intake.fetch import check_ref, check_url, resolve_head, warm_cache
 from ddak.plan.intake.policy import FetchPolicy
 
-__all__ = ["WatchTarget", "Watcher", "load_watch_targets"]
+__all__ = [
+    "WatchTarget",
+    "Watcher",
+    "initial_trigger_from_env",
+    "interval_from_env",
+    "load_watch_targets",
+]
 
 _log = get_logger("plan")
 PLACEHOLDER_URL = "https://github.com/<owner>/<repo>"
@@ -29,6 +36,25 @@ _SHA = re.compile(r"[0-9a-f]{40}")
 _PROJECT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 MAX_BACKOFF_S = 60.0
 HANDLER_RETRIES = 3
+_TRANSIENT = {
+    ErrorCode.AI_UNAVAILABLE,
+    ErrorCode.ADAPTER_TIMEOUT,
+    ErrorCode.ADAPTER_FAILED,
+    ErrorCode.INTERNAL,
+    ErrorCode.LOCK_HELD,
+}
+
+
+def _deterministic(error: Exception) -> bool:
+    return isinstance(error, DdakToolError) and error.code not in _TRANSIENT
+
+
+def initial_trigger_from_env(environ: Mapping[str, str] | None = None) -> bool:
+    env = os.environ if environ is None else environ
+    raw = (env.get("DDAK_WATCH_INITIAL_TRIGGER") or "true").lower()
+    if raw not in {"true", "false", "1", "0"}:
+        raise DdakToolError(ErrorCode.CONFIG_INVALID, "초기 감시 트리거는 true/false여야 한다")
+    return raw in {"true", "1"}
 
 
 @dataclass(frozen=True)
@@ -73,7 +99,7 @@ def interval_from_env(environ: Mapping[str, str] | None = None) -> float:
         value = float(raw)
     except ValueError:
         value = 0.0
-    if value <= 0:
+    if not math.isfinite(value) or value <= 0:
         raise DdakToolError(ErrorCode.CONFIG_INVALID, "DDAK_WATCH_INTERVAL_S는 양수여야 한다")
     return value
 
@@ -153,10 +179,17 @@ class Watcher:
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         resolve: Resolve = _default_resolve,
         warm: Warm = _default_warm,
+        initial_trigger: bool = True,
+        get_state: Callable[[str], Mapping[str, Any]] | None = None,
+        policy_for: Callable[[WatchTarget], FetchPolicy] | None = None,
     ):
         self.targets, self.on_new_commit, self.policy = targets, on_new_commit, policy
+        self.policy_for = policy_for or (lambda _: self.policy)
         self.interval_s, self.clock, self._sleep = interval_s, clock, sleep
+        if not math.isfinite(interval_s) or interval_s <= 0:
+            raise DdakToolError(ErrorCode.CONFIG_INVALID, "감시 주기는 유한한 양수여야 한다")
         self.resolve, self.warm = resolve, warm
+        self.initial_trigger, self.get_state = initial_trigger, get_state
         self._stop = asyncio.Event()
 
     async def run(self) -> None:
@@ -178,13 +211,35 @@ class Watcher:
         pending: str | None = None
         handler: asyncio.Task[str] | None = None  # 처리 중인 SHA를 결과로 돌려준다
         fails = 0
+        first_poll = True
         try:
             while not self._stop.is_set():
                 delay = self.interval_s
                 try:
-                    head = await asyncio.to_thread(self.resolve, t.repo_url, t.ref, self.policy)
+                    policy = self.policy_for(t)
+                    check_url(t.repo_url, policy)
+                    check_ref(t.ref)
+                    head = await asyncio.to_thread(self.resolve, t.repo_url, t.ref, policy)
+                    if not isinstance(head, str) or not _SHA.fullmatch(head):
+                        raise DdakToolError(ErrorCode.CONFIG_INVALID, "감시 커밋 응답 형식 오류")
                     fails = 0
-                    if last is None:  # 기준선: 기록만 하고 트리거하지 않는다
+                    selected = ("local", "cloud") if t.target == "both" else (t.target,)
+                    successes = (
+                        self.get_state(t.project).get("last_success", {}) if self.get_state else {}
+                    )
+                    no_success = not all(successes.get(e, False) for e in selected)
+                    trigger_initial = (
+                        first_poll
+                        and self.initial_trigger
+                        and (no_success if self.get_state else last is None)
+                    )
+                    first_poll = False
+                    if trigger_initial:
+                        last = (
+                            None  # 기존 처리 기준선이 있어도 실제 성공 기록 없으면 다시 계획한다.
+                        )
+                        pending = head
+                    elif last is None and handler is None and pending is None:
                         last = head
                         write_last_commit(self.policy, t, head, self.clock)
                         await self._warm(t)
@@ -195,7 +250,9 @@ class Watcher:
                 except Exception as e:  # 폴링 오류가 루프를 죽이면 안 된다
                     fails += 1
                     delay = min(self.interval_s * 2**fails, MAX_BACKOFF_S)
-                    _log.warning("감시 폴링 실패", project=t.project, error=str(e)[:200])
+                    _log.warning("감시 폴링 실패", project=t.project, error_type=type(e).__name__)
+                    if _deterministic(e):
+                        break  # 설정·응답 형식 오류는 변경된 설정으로 재시작할 때 다시 확인한다.
                 if handler is not None and handler.done():
                     last = handler.result()
                     handler = None
@@ -209,9 +266,9 @@ class Watcher:
 
     async def _warm(self, t: WatchTarget) -> None:
         try:
-            await asyncio.to_thread(self.warm, t, self.policy)
+            await asyncio.to_thread(self.warm, t, self.policy_for(t))
         except Exception as e:  # 캐시 예열 실패는 감시를 막지 않는다
-            _log.warning("캐시 예열 실패", project=t.project, error=str(e)[:200])
+            _log.warning("캐시 예열 실패", project=t.project, error_type=type(e).__name__)
 
     async def _handle(self, t: WatchTarget, sha: str) -> str:
         """핸들러를 최대 3회 시도. 성공이든 포기든 처리 완료로 저장하고 SHA를 돌려준다."""
@@ -223,8 +280,13 @@ class Watcher:
                 raise
             except Exception as e:
                 _log.error(
-                    "새 커밋 처리 실패", project=t.project, attempt=attempt, error=str(e)[:200]
+                    "새 커밋 처리 실패",
+                    project=t.project,
+                    attempt=attempt,
+                    error_type=type(e).__name__,
                 )
+                if _deterministic(e):
+                    break
                 if attempt < HANDLER_RETRIES:
                     await self._nap(self.interval_s)
                     if self._stop.is_set():
@@ -232,5 +294,5 @@ class Watcher:
         try:
             write_last_commit(self.policy, t, sha, self.clock)
         except OSError as e:
-            _log.warning("감시 상태 저장 실패", project=t.project, error=str(e)[:200])
+            _log.warning("감시 상태 저장 실패", project=t.project, error_type=type(e).__name__)
         return sha

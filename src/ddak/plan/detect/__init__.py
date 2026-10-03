@@ -1,4 +1,4 @@
-"""plan/detect: 변경 탐지·스냅샷 해시. 담당 김준석(O2). AI를 import하지 않는다.
+"""plan/detect: 변경 탐지·스냅샷 해시. 담당 정준우(O1, O2 승계). AI를 import하지 않는다.
 
 공개: detect_changed_tiers(툴 본체), facts_reader(DeploymentService.prepare 용).
 """
@@ -33,11 +33,13 @@ def detect_changed_tiers(
         inp.snapshot.source_snapshot_hash
     ):
         raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "접수 이후 소스가 변경됐다")
+    envs = ("local", "cloud") if inp.request.target == "both" else (inp.request.target,)
+    previous = {env: inp.previous.get(env) for env in envs}
     return DetectChangedTiersOutput(
-        changed=logic.changed_tiers(cfg, manifest, inp.previous),
-        new_migrations=logic.new_migrations(cfg, manifest, inp.previous),
-        modified_migrations=logic.modified_migrations(cfg, manifest, inp.previous),
-        changed_paths=logic.changed_paths(manifest, inp.previous),
+        changed=logic.changed_tiers(cfg, manifest, previous),
+        new_migrations=logic.new_migrations(cfg, manifest, previous),
+        modified_migrations=logic.modified_migrations(cfg, manifest, previous),
+        changed_paths=logic.changed_paths(manifest, previous),
         facts_hash=logic.facts_hash(manifest),
         manifest=manifest,
     )

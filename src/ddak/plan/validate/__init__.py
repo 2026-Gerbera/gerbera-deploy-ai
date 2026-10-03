@@ -1,4 +1,4 @@
-"""plan/validate: 계획 검증·조립(결정적, AI 금지). 담당 김준석(O2).
+"""plan/validate: 계획 검증·조립(결정적, AI 금지). 담당 정준우(O1, O2 승계).
 
 공개 함수: validate_plan. ddak.core.ai·plan/planner·plan/dockerfile 생성기를 import하지 않는다
 (import-linter 계약 5). 툴 등록은 tool.py.

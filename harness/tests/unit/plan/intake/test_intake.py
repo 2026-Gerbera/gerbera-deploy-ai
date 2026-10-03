@@ -7,8 +7,8 @@ import errno
 import fcntl
 import os
 import shutil
+import signal
 import subprocess
-import sys
 import time
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -315,19 +315,33 @@ def test_f5_timeout_cleans_partial(repo: Path, tmp_path: Path) -> None:
     assert not (pol.root / "runs").exists() or not list((pol.root / "runs").rglob("run1"))
 
 
-def test_f5_run_git_kills_process_group(tmp_path: Path) -> None:
-    pidfile = tmp_path / "pid"
-    script = (
-        "import subprocess,sys,time;"
-        f"p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)']);"
-        f"open({str(pidfile)!r},'w').write(str(p.pid));time.sleep(60)"
+def test_f5_run_git_kills_process_group(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 수정11·12는 실제 kill 금지다. Popen/killpg 경로를 대역으로 검증하고 프로세스를 만들지 않는다.
+    calls = []
+
+    class Process:
+        pid = 424242
+
+        def communicate(self, timeout=None):
+            calls.append(("communicate", timeout))
+            if timeout is not None:
+                raise subprocess.TimeoutExpired("fixture", timeout)
+            return b"", b""
+
+    def popen(args, **kwargs):
+        calls.append(("popen", args, kwargs["start_new_session"]))
+        return Process()
+
+    monkeypatch.setattr("ddak.plan.intake.fetch.subprocess.Popen", popen)
+    monkeypatch.setattr(
+        "ddak.plan.intake.fetch.os.killpg", lambda pid, sig: calls.append(("killpg", pid, sig))
     )
     with pytest.raises(subprocess.TimeoutExpired):
-        run_git([sys.executable, "-c", script], dict(os.environ), None, 1.5)
-    pid = int(pidfile.read_text())
-    time.sleep(0.3)
-    with pytest.raises(ProcessLookupError):
-        os.kill(pid, 0)
+        run_git(["fixture-git"], {}, None, 1.5)
+    assert calls[0] == ("popen", ["fixture-git"], True)
+    assert calls[1] == ("communicate", 1.5)
+    assert calls[2] == ("killpg", 424242, signal.SIGKILL)
+    assert calls[3] == ("communicate", None)
 
 
 # ---- F6·F7·F18 오류 분류 ----------------------------------------------------------------------

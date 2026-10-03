@@ -27,6 +27,7 @@ class EventType(StrEnum):
     ROLLBACK_FINISHED = "rollback.finished"
     AI_CALL = "ai.call"
     REPORT_READY = "report.ready"
+    STAGE_FINISHED = "stage.finished"
 
 
 class RunEvent(ContractModel):
@@ -42,4 +43,6 @@ class RunEvent(ContractModel):
     target: Target | None = None
     status: str | None = None  # succeeded | failed | check_failed | skipped | waiting | ...
     elapsed_s: float | None = None
+    elapsed_ms: int | None = Field(default=None, ge=0)
+    preparation_stage: str | None = None
     detail: str | None = Field(default=None, max_length=4096)  # 표시용(redact 후)

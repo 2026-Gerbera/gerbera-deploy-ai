@@ -37,6 +37,7 @@ def summarize(facts: Facts) -> str:
     return (
         f"project {facts.project}; tiers {', '.join(facts.tiers)}; "
         f"changed tiers {', '.join(changed) or 'none'}; "
+        f"smoke groups {', '.join(facts.smoke_groups) or 'base'}; "
         f"{len(facts.new_migrations)} new migrations; "
         f"{sum(k.is_new for k in facts.env_keys)} new env keys."
     )
@@ -74,7 +75,14 @@ def _jev(
                 reason=f"{provider_name} 확률 {a.probability:.2f}",
             )
         )
-    planner = Planner(by=By.AI, provider=provider_name, model=model, attempts=1)
+    source = getattr(actual, "source", None)
+    planner = Planner(
+        by=By.AI,
+        provider=provider_name,
+        model=model,
+        attempts=1,
+        source=source if isinstance(source, Source) else Source.LIVE,
+    )
     return PlanDraft(decisions=tuple(decisions), planner=planner)
 
 

@@ -11,6 +11,7 @@ from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from ddak.core.contracts.base import ContractModel
 from ddak.core.contracts.deploy_request import RepoUrl
+from ddak.core.contracts.infra_outputs import IMAGE_REPOSITORY_PATTERN
 
 
 class ProjectSettings(ContractModel):
@@ -18,10 +19,42 @@ class ProjectSettings(ContractModel):
     repo_url: RepoUrl | None = None
     watch_branch: str = Field(default="prod", pattern=r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$")
     auto_detect: bool = False
+    code_patch: bool = True
     default_targets: Literal["onprem", "cloud", "both"] = "onprem"
+    generation_provider: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9-]{0,63}$")
+    generation_model: str | None = Field(
+        default=None, max_length=160, pattern=r"^[A-Za-z0-9._:/-]+$"
+    )
+    judgment_provider: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9-]{0,63}$")
+    judgment_model: str | None = Field(default=None, max_length=160, pattern=r"^[A-Za-z0-9._:/-]+$")
+    llm_effort: Literal["low", "medium"] | None = None
+    ai_timeout_s: float | None = Field(default=None, gt=0, le=300, allow_inf_nan=False)
+    build_backend: Literal["codebuild", "local"] | None = None
+    image_repository: str | None = Field(default=None, pattern="^" + IMAGE_REPOSITORY_PATTERN + "$")
+    buildx_builder: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+    git_author_name: str | None = Field(default=None, max_length=120)
+    git_author_email: str | None = Field(default=None, max_length=254)
+    inventory_path: str | None = Field(default=None, max_length=4096)
     cloud_domain: str | None = None
     dns_mode: Literal["route53", "external"] = "external"
     hosted_zone_id: str | None = Field(default=None, pattern=r"^Z[A-Z0-9]{5,31}$")
+
+    @field_validator("git_author_name", "git_author_email")
+    @classmethod
+    def author_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value or any(ord(c) < 32 or c in "<>" for c in value):
+            raise ValueError("커밋 작성자 형식 오류")
+        return value
+
+    @field_validator("git_author_email")
+    @classmethod
+    def author_email(cls, value: str | None) -> str | None:
+        if value is not None and not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", value):
+            raise ValueError("커밋 작성자 이메일 형식 오류")
+        return value
 
     @field_validator("repo_url")
     @classmethod

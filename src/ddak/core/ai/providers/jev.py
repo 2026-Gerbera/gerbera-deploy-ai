@@ -13,8 +13,9 @@ from typing import Any, Literal, Protocol
 
 from pydantic import Field
 
-from ddak.core.ai.providers.api import groq_chat
+from ddak.core.ai.providers.groq_api import groq_chat
 from ddak.core.contracts.base import ContractModel
+from ddak.core.contracts.enums import Source
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 
 GROQ_JEV_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
@@ -77,6 +78,7 @@ class GroqJevClient:
     name = "groq"
 
     def __init__(self, api_key: str | None, *, model: str | None, timeout_s: float) -> None:
+        self.source: Source | None = None
         self._key = api_key
         self._model = model
         self._timeout_s = timeout_s
@@ -89,6 +91,7 @@ class GroqJevClient:
         return f"{type(self).__name__}(model={self._model!r}, key=***)"
 
     def ask(self, *, state: str, questions: Sequence[JevQuestion]) -> list[JevAnswer]:
+        self.source = None
         if not self._key:
             raise DdakToolError(ErrorCode.AI_UNAVAILABLE, "DDAK_GROQ_API_KEY가 없다")
         if not self._model:
@@ -106,7 +109,9 @@ class GroqJevClient:
             timeout_s=self._timeout_s,
             max_tokens=2048,
         )
-        return _parse(text, questions)
+        answers = _parse(text, questions)
+        self.source = Source.LIVE
+        return answers
 
 
 def _parse(text: str, questions: Sequence[JevQuestion]) -> list[JevAnswer]:

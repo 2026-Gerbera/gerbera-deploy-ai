@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import re
 import signal
@@ -29,6 +30,7 @@ from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.contracts.infra_outputs import IMAGE_REPOSITORY_PATTERN
 from ddak.core.contracts.release import ReleaseArtifacts
 from ddak.core.pem import UnsupportedPemError
+from ddak.core.private_values import private_directory, read_private
 from ddak.core.redact import redact
 from ddak.core.snapshots import digest_json, excluded, file_manifest
 
@@ -46,6 +48,7 @@ class LocalBuildRunner(Protocol):
 
 
 _configured_runner: LocalBuildRunner | None = None
+_configured_paths: dict[str, str] = {}
 _META_PATH = '"/tmp/ddak-meta-$t.json"'
 _GITHUB = re.compile(r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 _REGISTRY_AUTH_FAILURE = re.compile(
@@ -56,10 +59,16 @@ _REGISTRY_AUTH_FAILURE = re.compile(
 )
 
 
-def configure_local_build(*, runner: LocalBuildRunner | None = None) -> None:
-    """앱 조립에서 fake runner를 주입한다. None은 제품 subprocess 경로로 되돌린다."""
-    global _configured_runner
+def configure_local_build(
+    *,
+    runner: LocalBuildRunner | None = None,
+    config: Mapping[str, str] | None = None,
+) -> None:
+    """앱 조립의 runner·제품 경로 주입. 실행별 경로는 ctx.platform.local_build 우선."""
+    global _configured_runner, _configured_paths
+    paths = _local_paths(config)
     _configured_runner = runner
+    _configured_paths = paths
 
 
 def _image_repo(repository: str) -> str:
@@ -97,11 +106,43 @@ def _subprocess_runner(
     return subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
 
 
-def _environment() -> dict[str, str]:
+def _local_paths(config: Mapping[str, str] | None) -> dict[str, str]:
+    if config is None:
+        return {}
+    if not isinstance(config, Mapping) or set(config) != {"docker_config", "builder", "tool_dir"}:
+        raise DdakToolError(ErrorCode.CONFIG_INVALID, "제품 로컬 빌드 경로 형식 오류")
+    if not all(isinstance(value, str) and value for value in config.values()) or not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", config["builder"]
+    ):
+        raise DdakToolError(ErrorCode.CONFIG_INVALID, "제품 로컬 빌드 경로 형식 오류")
+    try:
+        for key in ("docker_config", "tool_dir"):
+            if not Path(config[key]).is_absolute():
+                raise ValueError
+            with private_directory(config[key]) as fd:
+                if key == "docker_config":
+                    metadata = json.loads(read_private(fd, "config.json"))
+                    if (
+                        not metadata.get("auths")
+                        or metadata.get("credsStore")
+                        or metadata.get("credHelpers")
+                    ):
+                        raise ValueError
+    except (OSError, ValueError, TypeError, AttributeError):
+        raise DdakToolError(ErrorCode.CONFIG_INVALID, "제품 로컬 빌드 경로 검사 실패") from None
+    return dict(config)
+
+
+def _environment(config: Mapping[str, str] | None = None) -> dict[str, str]:
     # 로그인은 Docker CLI가 기존 설정으로 처리한다. 비밀 환경값·BASH_ENV·셸 옵션은 상속하지 않는다.
     allowed = ("PATH", "HOME", "DOCKER_CONFIG", "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CERT_PATH")
     env = {key: os.environ[key] for key in allowed if key in os.environ}
     env.setdefault("PATH", os.defpath)
+    paths = _local_paths((_configured_paths or None) if config is None else config)
+    if paths:
+        env["DOCKER_CONFIG"] = paths["docker_config"]
+        env["BUILDX_BUILDER"] = paths["builder"]
+        env["PATH"] = paths["tool_dir"] + os.pathsep + env["PATH"]
     return env
 
 
@@ -198,7 +239,14 @@ def _preflight(
             # '*'는 실제 탐지가 아닌 수동 선언이므로 능력 증거로 쓰지 않는다.
             platforms.update(p.strip() for p in line.split(":", 1)[1].split(",") if "*" not in p)
     arm64 = any(p == "linux/arm64" or p.startswith("linux/arm64/v") for p in platforms)
-    if name is None or driver is None or "linux/amd64" not in platforms or not arm64:
+    expected_builder = env.get("BUILDX_BUILDER")
+    if (
+        name is None
+        or driver is None
+        or "linux/amd64" not in platforms
+        or not arm64
+        or (expected_builder is not None and name.group(1) != expected_builder)
+    ):
         raise DdakToolError(
             ErrorCode.PRECONDITION_FAILED,
             "실행 중인 기존 Buildx 빌더의 linux/amd64·linux/arm64 지원을 확인할 수 없다",
@@ -209,7 +257,12 @@ def _preflight(
     return warnings
 
 
-def preflight_local_build(repository: str, *, runner: LocalBuildRunner | None = None) -> list[str]:
+def preflight_local_build(
+    repository: str,
+    *,
+    runner: LocalBuildRunner | None = None,
+    config: Mapping[str, str] | None = None,
+) -> list[str]:
     """승인 전 검사. repository는 namespace/repository 공통 형식이다.
 
     Username은 기존 로그인 흔적이며 토큰 유효성·push 권한의 증명은 아니다.
@@ -220,7 +273,7 @@ def preflight_local_build(repository: str, *, runner: LocalBuildRunner | None = 
             repository,
             runner or _configured_runner or _subprocess_runner,
             Path(temp),
-            _environment(),
+            _environment(config),
             time.monotonic() + 60,
         )
 
@@ -355,7 +408,10 @@ def build_local_tier(tier: str, ctx: RunContext) -> ReleaseBuild:
         )
     runner = runner or _subprocess_runner
     deadline = ctx.deadline if ctx.deadline is not None else time.monotonic() + 900
-    env = _environment()
+    local_config = ctx.platform.get("local_build")
+    if local_config is not None and not isinstance(local_config, Mapping):
+        raise DdakToolError(ErrorCode.CONFIG_INVALID, "제품 로컬 빌드 경로 형식 오류")
+    env = _environment(local_config)
     try:
         with tempfile.TemporaryDirectory(prefix="ddak-local-build-") as temp:
             root = Path(temp)

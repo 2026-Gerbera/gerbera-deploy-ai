@@ -13,7 +13,7 @@ from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.enums import RunMode, Source
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.contracts.tools.generate_infra import GenerateInfraInput
-from ddak.core.redact import MAX_LEN
+from ddak.core.redact import MAX_LEN, redact
 
 
 def context(run_id: str = "run-1") -> RunContext:
@@ -130,10 +130,10 @@ def test_repair_replaces_only_returned_files_and_preserves_others(gateway_provid
     previous.mkdir(parents=True)
     current.mkdir()
     old_network = 'resource "aws_default_security_group" "main" {}\n'
-    old_iam = 'resource "aws_iam_role" "task" {}\n'
+    old_iam = '# IAM 역할\r\nresource "aws_iam_role" "task" {}  '
     fixed_network = 'resource "aws_vpc" "main" {}\n'
     (previous / "network.tf").write_text(old_network)
-    (previous / "iam.tf").write_text(old_iam)
+    (previous / "iam.tf").write_bytes(old_iam.encode("utf-8"))
     gateway_provider.queue(**{"network.tf": fixed_network})
     base = context()
     ctx = replace(
@@ -148,12 +148,17 @@ def test_repair_replaces_only_returned_files_and_preserves_others(gateway_provid
         GenerateInfraInput(run_id="run-1", directory=str(current), layer="platform"), ctx
     )
     assert (current / "network.tf").read_text() == fixed_network
-    assert (current / "iam.tf").read_text() == old_iam
+    assert (current / "iam.tf").read_bytes() == old_iam.encode("utf-8")
+    assert (previous / "iam.tf").read_bytes() == old_iam.encode("utf-8")
+    assert (previous / "network.tf").read_bytes() == old_network.encode("utf-8")
     assert set(result.files) == {"network.tf", "iam.tf"}
     request = gateway_provider.requests[0]
-    assert request.user.startswith(logic._REPAIR_INSTRUCTION)
+    # 공용 마스킹은 유지하되, 정제된 지시문 전체가 잘림 없이 전달되어야 한다.
+    instruction = request.user.split(f"\n\n{gateway.DATA_OPEN}\n", 1)[0]
+    assert instruction == redact(logic._REPAIR_INSTRUCTION, max_len=None)
     assert request.user.startswith(logic._REPAIR_PROMPT)
-    assert logic._PROMPT in request.user
+    assert redact(logic._PROMPT, max_len=None) in instruction
+    assert instruction.endswith(logic._PROMPT.rsplit("\n\n", 1)[-1])
     assert request.timeout_s == 240
     assert request.prompt_version == f"{logic.PROMPT_VERSION}-repair"
     assert "validation_error=RESOURCE_NOT_ALLOWED" in request.user
@@ -259,7 +264,7 @@ def test_tool_timeout_does_not_change_other_gateway_calls(gateway_provider, tmp_
 @pytest.mark.parametrize("mode", ["draft", "repair"])
 @pytest.mark.parametrize("data_size", [MAX_LEN, MAX_LEN + 1])
 def test_gateway_data_limit_preserves_or_rejects_complete_context(
-    gateway_provider, tmp_path, mode, data_size
+    gateway_provider, monkeypatch, tmp_path, mode, data_size
 ):
     ctx = replace(context(), repo_url="https://github.com/example/app")
     directory = tmp_path / "bundles" / "run-1-retry-2"
@@ -294,6 +299,11 @@ def test_gateway_data_limit_preserves_or_rejects_complete_context(
     assert len(expected_data) == data_size
     inp = GenerateInfraInput(run_id="run-1", directory=str(directory), layer="platform")
     if data_size > MAX_LEN:
+
+        def unexpected_call(**_kwargs):
+            pytest.fail("4096자 초과 data는 call_ai 호출 전에 거부해야 한다")
+
+        monkeypatch.setattr(logic, "call_ai", unexpected_call)
         with pytest.raises(DdakToolError, match=r"NEEDS_CONTEXT.*4096") as error:
             logic.generate_infra(inp, ctx)
         assert error.value.code is ErrorCode.CONFIG_INVALID
@@ -309,17 +319,48 @@ def test_gateway_data_limit_preserves_or_rejects_complete_context(
         assert request.timeout_s == 240
 
 
-def test_data_limit_checks_length_after_redaction(gateway_provider, tmp_path):
+def test_data_limit_checks_length_after_redaction(gateway_provider, monkeypatch, tmp_path):
     ctx = replace(context(), repo_url="https://github.com/example/app?api_key=x")
     padding = MAX_LEN - len(logic._safe_data(ctx, "example"))
     ctx = replace(ctx, repo_url=ctx.repo_url.replace("?api_key=x", "x" * padding + "?api_key=x"))
     assert len(logic._safe_data(ctx, "example")) == MAX_LEN
-    with pytest.raises(DdakToolError, match="NEEDS_CONTEXT"):
+
+    def unexpected_call(**_kwargs):
+        pytest.fail("정제 후 4096자 초과 data는 call_ai 호출 전에 거부해야 한다")
+
+    monkeypatch.setattr(logic, "call_ai", unexpected_call)
+    with pytest.raises(DdakToolError, match=r"NEEDS_CONTEXT.*4096") as error:
         logic.generate_infra(
             GenerateInfraInput(run_id="run-1", directory=str(tmp_path), layer="platform"), ctx
         )
+    assert error.value.code is ErrorCode.CONFIG_INVALID
+    assert error.value.needs_human
     assert not gateway_provider.requests
+    assert not gateway_provider.settings
     assert not any(tmp_path.iterdir())
+
+
+def test_generate_passes_redacted_data_to_gateway(gateway_provider, monkeypatch, tmp_path):
+    ctx = replace(context(), repo_url="https://github.com/example/app?api_key=" + "x" * MAX_LEN)
+    raw_data = logic._safe_data(ctx, "example")
+    safe_data = redact(raw_data)
+    assert len(raw_data) > MAX_LEN
+    assert len(safe_data) < MAX_LEN
+    captured = {}
+
+    def call(**kwargs):
+        captured.update(kwargs)
+        return gateway.call_ai(**kwargs)
+
+    monkeypatch.setattr(logic, "call_ai", call)
+    gateway_provider.queue(**{"main.tf": 'resource "aws_vpc" "main" {}\n'})
+    logic.generate_infra(
+        GenerateInfraInput(run_id="run-1", directory=str(tmp_path), layer="platform"), ctx
+    )
+    assert captured["data"] == safe_data
+    assert f"{gateway.DATA_OPEN}\n{safe_data}\n{gateway.DATA_CLOSE}" in (
+        gateway_provider.requests[0].user
+    )
 
 
 def test_generate_rejects_symlink_directory_before_resolve(gateway_provider, tmp_path):

@@ -34,6 +34,7 @@ from ddak.core.contracts.tools.smoke_test import (
     SmokeTestInput,
     SmokeTestOutput,
 )
+from ddak.core.smoke import V2_BOX_MARK
 from ddak.verify.smoke.normalize import own_post, page_head
 
 MAX_BODY = 256 * 1024
@@ -364,7 +365,6 @@ def b2_long_title(p: Probe) -> SmokeScenario:
 
 
 # v2(앱 태그 v2, 1차 데모): 목록 페이지에 이미지(인라인 SVG)와 박스를 추가했다. 템플릿만 바뀐다.
-V2_BOX_MARK = 'class="release-box"'
 V2_BOX_TEXT = "v2: image and box added"
 
 

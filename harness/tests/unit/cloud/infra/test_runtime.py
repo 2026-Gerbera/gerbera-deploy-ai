@@ -888,16 +888,22 @@ def test_refresh_has_fresh_read_budget(runtime):
     assert instance.deadline > time.monotonic()
 
 
-def test_timeout_sends_interrupt_before_kill(tmp_path):
-    script = """import signal,time,pathlib,sys
-signal.signal(signal.SIGINT,lambda *_: (pathlib.Path("interrupted").write_text("yes"), sys.exit(0)))
-time.sleep(10)
-"""
+def test_timeout_sends_interrupt_before_kill(tmp_path, monkeypatch):
+    import signal
+    import subprocess
+
+    process = Mock(pid=123456)
+    process.poll.return_value = None
+    process.wait.side_effect = [subprocess.TimeoutExpired("fixture", 1), 0, 0]
+    interrupt = Mock(side_effect=[None, ProcessLookupError()])
+    monkeypatch.setattr("ddak.cloud.infra.runtime.subprocess.Popen", Mock(return_value=process))
+    monkeypatch.setattr("ddak.cloud.infra.runtime.os.killpg", interrupt)
     with pytest.raises(DdakToolError, match="ADAPTER_TIMEOUT"):
-        CommandRunner().run(
-            [sys.executable, "-c", script], cwd=tmp_path, deadline=time.monotonic() + 0.3
-        )
-    assert (tmp_path / "interrupted").read_text() == "yes"
+        CommandRunner().run(["fixture-cli"], cwd=tmp_path, deadline=time.monotonic() + 1)
+    assert [call.args for call in interrupt.call_args_list] == [
+        (process.pid, signal.SIGINT),
+        (process.pid, 0),
+    ]
 
 
 @pytest.mark.parametrize("delimiter", ["<<EOT", "<<-EOT"])

@@ -83,7 +83,9 @@ async def test_local_build_login_warning_reaches_persisted_approval_page(rig, mo
     runner = FakeRunner()
     runner.info = "Client:\nServer:\n"
     monkeypatch.setattr(
-        app, "preflight_local_build", lambda repo: preflight_local_build(repo, runner=runner)
+        app,
+        "preflight_local_build",
+        lambda repo, **kwargs: preflight_local_build(repo, runner=runner, **kwargs),
     )
     # app adapter의 REAL 분기만 검증하고 실제 배포 인벤토리는 이 준비에서 요구하지 않는다.
     ctx = RunContext(

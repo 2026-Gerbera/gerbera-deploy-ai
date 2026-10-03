@@ -58,6 +58,7 @@ async def save_settings(request: Request):
                 "repo_url": form.get("repo_url", "").strip() or None,
                 "watch_branch": form.get("watch_branch", "prod").strip() or "prod",
                 "auto_detect": form.get("auto_detect") == "on",
+                "code_patch": form.get("code_patch") == "on",
                 "default_targets": targets,
                 "cloud_domain": domain,
                 "dns_mode": dns_mode,

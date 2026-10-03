@@ -54,6 +54,9 @@ async def dashboard(request: Request, project: str | None = None):
             "public_links": list(links.values()),
             "watch_warnings": watch_warnings(request),
             "csrf_token": token,
+            "setup_checklist": service.onboarding.view(project)["checklist"]
+            if service.onboarding is not None
+            else [],
         },
     )
     issue_csrf(request, response, token)

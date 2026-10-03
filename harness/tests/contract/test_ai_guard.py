@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import pytest
 from pydantic import BaseModel
 
 from ddak.core.ai.gateway import DATA_CLOSE, DATA_OPEN, ask_jev, call_ai
 from ddak.core.ai.providers import AIRequest, AIResponse
-from ddak.core.ai.providers.jev import JevQuestion
+from ddak.core.ai.providers.jev import JevAnswer, JevQuestion
 from ddak.core.config import Settings
 from ddak.core.contracts.enums import Source
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
+from ddak.core.redact import MAX_LEN, REDACTED
 from ddak.core.runtime import tool_context
 
 SETTINGS = Settings(ai_retries=1)
@@ -86,6 +89,86 @@ def test_operator_message_is_not_wrapped_as_untrusted() -> None:
         _call(provider, operator_message="로그인 기능 배포해줘")
     user = provider.seen[0].user
     assert user.index("로그인 기능 배포해줘") < user.index(DATA_OPEN)
+
+
+def test_long_instruction_is_complete_and_masks_pattern_and_settings_keys() -> None:
+    provider = FakeProvider()
+    opaque_keys = ["opaque-test-" + name for name in ("custom", "anthropic", "groq", "llm", "jev")]
+    settings = Settings(
+        ai_retries=0,
+        provider_keys={"custom_token": opaque_keys[0]},
+        anthropic_api_key=opaque_keys[1],
+        groq_api_key=opaque_keys[2],
+        llm_api_key=opaque_keys[3],
+        jev_api_key=opaque_keys[4],
+    )
+    prefix = "x" * MAX_LEN + "\n"
+    tail = "\nKeep this final requirement."
+    instruction = prefix + "password=fake-password\n" + "\n".join(opaque_keys) + tail
+    expected = prefix + f"password={REDACTED}\n" + "\n".join([REDACTED] * 5) + tail
+    with tool_context("generate_infra", "run-1"):
+        call_ai(
+            instruction=instruction,
+            data="diff",
+            output_model=_Answer,
+            settings=settings,
+            provider=provider,
+        )
+    user = provider.seen[0].user
+    assert user == f"{expected}\n\n{DATA_OPEN}\ndiff\n{DATA_CLOSE}"
+    assert "fake-password" not in user
+    assert all(key not in user for key in opaque_keys)
+    assert "[truncated" not in user
+
+
+def test_data_and_operator_message_keep_default_length_limit() -> None:
+    provider = FakeProvider()
+    with tool_context("generate_plan", "run-1"):
+        _call(
+            provider,
+            data="d" * MAX_LEN + "DATA_END",
+            operator_message="o" * MAX_LEN + "OPERATOR_END",
+        )
+    user = provider.seen[0].user
+    data = user.split(f"{DATA_OPEN}\n", 1)[1].removesuffix(f"\n{DATA_CLOSE}")
+    operator = user.split("운영자 요청: ", 1)[1].split(f"\n\n{DATA_OPEN}", 1)[0]
+    assert data.startswith("d" * MAX_LEN + "...[truncated ")
+    assert operator.startswith("o" * MAX_LEN + "...[truncated ")
+    assert "DATA_END" not in user
+    assert "OPERATOR_END" not in user
+
+
+def test_judgment_state_questions_and_choices_keep_default_length_limit() -> None:
+    seen: list[tuple[str, Sequence[JevQuestion]]] = []
+
+    class Judgment:
+        def ask(self, *, state: str, questions: Sequence[JevQuestion]) -> list[JevAnswer]:
+            seen.append((state, questions))
+            return [JevAnswer(id="q", choice=questions[0].choices[0])]
+
+    # 질문은 2000자 계약 이내여도 마스킹 후에는 4096자를 넘을 수 있다.
+    question = JevQuestion(
+        id="q",
+        kind="choice",
+        text="token=x\n" * 250,
+        choices=("c" * MAX_LEN + "CHOICE_END",),
+    )
+    with tool_context("generate_plan", "run-1"):
+        ask_jev(
+            state="s" * MAX_LEN + "STATE_END",
+            questions=[question],
+            settings=SETTINGS,
+            client=Judgment(),
+        )
+    state, questions = seen[0]
+    safe_question = questions[0]
+    assert state.startswith("s" * MAX_LEN + "...[truncated ")
+    assert "STATE_END" not in state
+    expected_text = (f"token={REDACTED}\n" * 250)[:MAX_LEN]
+    assert safe_question.text.startswith(expected_text + "...[truncated ")
+    assert "token=x" not in safe_question.text
+    assert safe_question.choices[0].startswith("c" * MAX_LEN + "...[truncated ")
+    assert "CHOICE_END" not in safe_question.choices[0]
 
 
 def test_data_cannot_close_the_untrusted_block() -> None:

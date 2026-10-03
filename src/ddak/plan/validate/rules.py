@@ -132,12 +132,16 @@ def _changed(facts: Facts, env: str, tier: str | None) -> bool:
 
 
 def _tier_keys(facts: Facts, tier: str | None) -> list[EnvKey]:
-    return [k for k in facts.env_keys if k.is_new and (k.tier is None or k.tier == tier)]
+    return [
+        k for k in facts.env_keys if k.is_new and k.required and (k.tier is None or k.tier == tier)
+    ]
 
 
 def new_keys(facts: Facts, *, secret_only: bool = False) -> list[str]:
     return sorted(
-        k.name for k in facts.env_keys if k.is_new and (k.kind == "secret" or not secret_only)
+        k.name
+        for k in facts.env_keys
+        if k.is_new and k.required and (k.kind == "secret" or not secret_only)
     )
 
 
@@ -182,6 +186,28 @@ def rule_eval(step: StepDef, facts: Facts) -> RuleResult:
 
 def couple_targets(facts: Facts, tiers: Iterable[str]) -> list[str]:
     """R-couple(V6): secrets.cloud 포함 시 같이 포함해야 하는 step id."""
-    secret_tiers = {k.tier for k in facts.env_keys if k.is_new and k.kind == "secret"}
+    secret_tiers = {
+        k.tier for k in facts.env_keys if k.is_new and k.required and k.kind == "secret"
+    }
     hit = set(tiers) if None in secret_tiers else {t for t in tiers if t in secret_tiers}
     return ["deploy.config.cloud", *(f"deploy.{t}.cloud" for t in tiers if t in hit)]
+
+
+def evidence(step: StepDef) -> list[str]:
+    """판정에 실제 사용하는 Facts 필드를 가리키는 표시용 참조."""
+    if step.skip_rule == "tree_unchanged":
+        return [f"fact:tree_changed.{step.tier}"]
+    if step.skip_rule == "digest_deployed":
+        return [f"fact:changed.{step.target.value}.{step.tier}", "fact:env_keys"]
+    field = {
+        "no_new_migrations": "new_migrations",
+        "db_initialized": "db_initialized",
+        "no_new_keys": "env_keys",
+        "no_new_secret": "env_keys",
+        "no_infra_change": "infra_inputs_changed",
+    }.get(step.skip_rule or "")
+    if field:
+        return [f"fact:{field}"]
+    if step.tool == "smoke_test":
+        return ["catalog:mandatory", "fact:smoke_groups"]
+    return ["catalog:mandatory" if step.layer.value == "mandatory" else f"decision:{step.id}"]

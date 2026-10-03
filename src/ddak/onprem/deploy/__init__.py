@@ -16,15 +16,60 @@ from __future__ import annotations
 from ddak.onprem.deploy.containers import DockerHost
 from ddak.onprem.deploy.demo import reset_demo
 from ddak.onprem.deploy.preflight import preflight_inventory
+from ddak.onprem.deploy.preparation import (
+    ApprovalCheck,
+    ContainerObservation,
+    ContainerObserver,
+    ContainerTransfer,
+    DatabaseAccount,
+    DatabaseAction,
+    DatabaseObservation,
+    DatabasePreparationPlan,
+    DatabasePreparationResult,
+    DatabasePreparationSession,
+    OwnerTransferPlan,
+    TableObservation,
+    apply_db_preparation,
+    apply_owner_transfer,
+    plan_db_preparation,
+    plan_owner_transfer,
+)
 from ddak.onprem.deploy.provider import OnPremProvider
 from ddak.onprem.deploy.provider import _Inventory as InventoryConfig
 from ddak.onprem.deploy.provider import _Tier as TierConfig
+from ddak.onprem.deploy.registration import (
+    read_inventory,
+    register_onprem_inventory,
+    write_inventory,
+)
+from ddak.onprem.deploy.setup import OnPremPreparationManager, StdinRunner
 
 __all__ = [
+    "ApprovalCheck",
+    "ContainerObservation",
+    "ContainerObserver",
+    "ContainerTransfer",
+    "DatabaseAccount",
+    "DatabaseAction",
+    "DatabaseObservation",
+    "DatabasePreparationPlan",
+    "DatabasePreparationResult",
+    "DatabasePreparationSession",
     "DockerHost",
     "InventoryConfig",
+    "OnPremPreparationManager",
     "OnPremProvider",
+    "OwnerTransferPlan",
+    "StdinRunner",
+    "TableObservation",
     "TierConfig",
+    "apply_db_preparation",
+    "apply_owner_transfer",
+    "plan_db_preparation",
+    "plan_owner_transfer",
     "preflight_inventory",
+    "read_inventory",
+    "register_onprem_inventory",
     "reset_demo",
+    "write_inventory",
 ]

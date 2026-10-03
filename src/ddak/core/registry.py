@@ -84,10 +84,10 @@ _S, _L = Stage, Layer
 # 담당: "공통/local/cloud/ui" 순서의 역할 코드, "-"는 없음. 실명은 ROLES
 _ROWS: tuple[tuple[str, Module, Stage, Layer, str, str, str], ...] = (
     # ── plan: ① 플랜 + ② 계획 검증. 계획을 만드는 쪽이라 step 층은 "계획 밖"
-    ("receive_deploy_request", _PL, _S.PLAN, _L.OUTSIDE, "", "", "O2/-/-/C3"),
-    ("analyze_project", _PL, _S.PLAN, _L.OUTSIDE, "ai ro", "", "O2"),  # 환경 키 분류(Jev/Claude)
-    ("detect_changed_tiers", _PL, _S.PLAN, _L.OUTSIDE, "ro", "", "O2"),
-    ("generate_plan", _PL, _S.PLAN, _L.OUTSIDE, "ai ro", "", "O2"),  # step 선택(Jev/Claude)
+    ("receive_deploy_request", _PL, _S.PLAN, _L.OUTSIDE, "", "", "O1/-/-/C3"),
+    ("analyze_project", _PL, _S.PLAN, _L.OUTSIDE, "ai ro", "", "O1"),  # 환경 키 분류(Jev/Claude)
+    ("detect_changed_tiers", _PL, _S.PLAN, _L.OUTSIDE, "ro", "", "O1"),
+    ("generate_plan", _PL, _S.PLAN, _L.OUTSIDE, "ai ro", "", "O1"),  # step 선택(Jev/Claude)
     # generate_dockerfile: Dockerfile이 없을 때만 AI가 초안을 만든다(✅ 9/30, 조건: 없을 때).
     # 검사(validate_dockerfile)·사람 승인 뒤 저장·재사용. 담당은 💭
     ("generate_dockerfile", _PL, _S.PLAN, _L.OUTSIDE, "ai ro", "", "O3"),
@@ -96,7 +96,7 @@ _ROWS: tuple[tuple[str, Module, Stage, Layer, str, str, str], ...] = (
     ("patch_storage", _PL, _S.PLAN, _L.OUTSIDE, "ai ok", "", "O3"),
     ("patch_config", _PL, _S.PLAN, _L.OUTSIDE, "ai ok", "", "O3"),
     # ② 계획 검증: 결정적 검사기. AI·생성기 import 금지(import-linter 계약 5)
-    ("validate_plan", _PL, _S.VALIDATE, _L.OUTSIDE, "ro", "", "O2"),
+    ("validate_plan", _PL, _S.VALIDATE, _L.OUTSIDE, "ro", "", "O1"),
     # validate_dockerfile: 정적 검사(hadolint 등 + 보안 기본값) + 실제 빌드 성공 확인(push 없음)
     ("validate_dockerfile", _PL, _S.VALIDATE, _L.OUTSIDE, "", "", "O3/-/-/C3"),
     # ── cloud.infra: AI Terraform(✅ 장부 21~23). 툴 이름·개수·배치는 💭.
@@ -140,7 +140,7 @@ _ROWS: tuple[tuple[str, Module, Stage, Layer, str, str, str], ...] = (
     ("record_deploy_log", _VE, _S.VERIFY_REPORT, _L.BUILTIN, "", "", "O1"),  # 입력 redact
     ("post_report", _VE, _S.VERIFY_REPORT, _L.MANDATORY, "ai ro", "", "C3"),  # AI 요약은 선택
     # ── 공통 (core). call_ai는 관문 자체라 ai 플래그가 없다(ai = 관문을 부르는 툴)
-    ("call_ai", _CO, _S.COMMON, _L.OUTSIDE, "", "", "O2"),
+    ("call_ai", _CO, _S.COMMON, _L.OUTSIDE, "", "", "O1"),
     ("request_approval", _CO, _S.COMMON, _L.BUILTIN, "", "", "O1/-/-/C3"),  # 배포 클릭
     ("stream_progress", _CO, _S.COMMON, _L.BUILTIN, "", "", "O1/-/-/C3"),  # JSONL -> SSE
     # ── 운영 (ops). 계획에 넣지 않는다. cleanup은 사람만 실행한다

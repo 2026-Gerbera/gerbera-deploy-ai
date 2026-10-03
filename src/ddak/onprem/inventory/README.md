@@ -1,4 +1,4 @@
-# onprem/inventory (담당: 김준석)
+# onprem/inventory (담당: 정준우/O1, 2026-10-03 O2 승계)
 
 - `load_inventory(path)`: YAML을 검증하여 `RunContext.platform["onprem"]`용 dict를 반환한다. flow가 컨텍스트에 넣는다.
 - tier·SSH·readiness·공개 설정·MySQL 볼륨 보호 검증은 `onprem/deploy`의 공개 `InventoryConfig`·`TierConfig`를 재사용한다. 모델 필드를 복사하지 않는다.

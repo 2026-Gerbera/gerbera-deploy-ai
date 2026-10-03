@@ -53,6 +53,7 @@ class CarriedImageSource(ContractModel):
     candidate_sha: str | None = None
     snapshot: SnapshotBinding | None = None
     observation: ImageObservation | None = None
+    tier_tree_hash: Sha256 | None = None
     carried_forward: Literal[True] = True
 
     @model_validator(mode="after")

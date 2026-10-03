@@ -15,3 +15,7 @@
 {{ {'build.was':'앱 서버 이미지 빌드','build.web':'웹 서버 이미지 빌드','deploy.config':'환경 설정 넣기','deploy.migrate':'DB 마이그레이션','deploy.dbinit':'DB 초기화','deploy.was':'앱 서버 배포','deploy.web':'웹 서버 배포','deploy.app':'앱 배포','deploy.infra':'클라우드 인프라 적용','deploy.tls':'HTTPS 인증서 준비','deploy.secrets':'비밀값 동기화','verify.health':'응답 확인','verify.smoke':'기본 동작 확인','verify.tls':'HTTPS 확인','verify.compare':'두 환경 결과 비교','verify.report':'결과 보고','verify.watch':'배포 후 지켜보기'}.get(name, id) }}
 {%- endmacro %}
 {% macro duration(value) -%}{% if value is not none %}{% set seconds = value|int %}{% if seconds >= 60 %}{{ seconds // 60 }}분 {% endif %}{{ seconds % 60 }}초{% else %}기록 없음{% endif %}{%- endmacro %}
+
+{% macro connection(code) -%}
+<span class="state {{ 'success' if code == 'green' else 'failure' if code == 'red' else 'neutral' }}" data-status="{{ code if code in ('green','red','gray') else 'gray' }}"><i aria-hidden="true"></i><span>{{ '확인됨' if code == 'green' else '확인 필요' if code == 'red' else '미확인' }}</span></span>
+{%- endmacro %}
