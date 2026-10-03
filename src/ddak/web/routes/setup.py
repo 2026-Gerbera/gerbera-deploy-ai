@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
+import re
 from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlencode
@@ -37,8 +39,27 @@ async def _input(request: Request) -> tuple[str, dict[str, str], Any]:
     return project, form, _coordinator(request)
 
 
-def _redirect(project: str) -> RedirectResponse:
-    return RedirectResponse("/setup?" + urlencode({"project": project}), status_code=303)
+def transferred_names(value: Any) -> list[str]:
+    """저장 결과에서 공개 프로젝트 이름만 알림으로 전달한다."""
+    if not isinstance(value, list):
+        return []
+    return [
+        name
+        for name in value
+        if isinstance(name, str) and re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", name)
+    ]
+
+
+def _redirect(project: str, result: Any = None) -> RedirectResponse:
+    params: dict[str, Any] = {"project": project}
+    names = (
+        transferred_names(result.get("transferred_watchers")) if isinstance(result, dict) else []
+    )
+    if names:
+        params["transferred"] = names
+    response = RedirectResponse("/setup?" + urlencode(params, doseq=True), status_code=303)
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @router.get("")
@@ -49,7 +70,12 @@ async def setup_page(request: Request, project: str | None = None):
     response = templates.TemplateResponse(
         request=request,
         name="setup.html",
-        context={"project": project, "setup": view, "csrf_token": token},
+        context={
+            "project": project,
+            "setup": view,
+            "csrf_token": token,
+            "transferred_watchers": transferred_names(request.query_params.getlist("transferred")),
+        },
     )
     response.headers["Cache-Control"] = "no-store"
     issue_csrf(request, response, token)
@@ -61,8 +87,14 @@ async def save_choices(request: Request):
     project, form, coordinator = await _input(request)
     try:
         version = int(form.get("version") or "0")
+        if version < 0:
+            raise ValueError
     except ValueError:
-        raise HTTPException(400, "설정 버전 형식 오류") from None
+        raise HTTPException(
+            400,
+            "설정 버전 형식이 올바르지 않습니다. "
+            "입력을 보관하고 최신 설정을 다시 불러온 뒤 재시도하세요.",
+        ) from None
     data = {
         field: form.get(field, "").strip() or None
         for field in (
@@ -76,18 +108,32 @@ async def save_choices(request: Request):
             "buildx_builder",
             "git_author_name",
             "git_author_email",
+            "aws_profile",
         )
     }
-    for added in ("buildx_builder", "git_author_name", "git_author_email"):
+    for added in ("buildx_builder", "git_author_name", "git_author_email", "aws_profile"):
         if added not in form:
             data.pop(added, None)  # 이전 화면의 제출은 새 설정을 지우지 않는다.
     if "ai_timeout_s" in form:
         try:
-            data["ai_timeout_s"] = float(form["ai_timeout_s"]) if form["ai_timeout_s"] else None
+            raw = form["ai_timeout_s"].strip()
+            timeout = float(raw) if raw else None
+            if timeout is not None and (not math.isfinite(timeout) or not 0 < timeout <= 300):
+                raise ValueError
+            data["ai_timeout_s"] = timeout
         except ValueError:
-            raise HTTPException(400, "AI 제한 시간은 양수 초 단위로 입력하세요") from None
-    await _call(coordinator.save_choices, project, data, expected_version=version)
-    return _redirect(project)
+            raise HTTPException(
+                400,
+                "AI 제한 시간은 0보다 크고 300 이하인 초 단위 숫자로 수정한 뒤 다시 저장하세요.",
+            ) from None
+    result = await _call(
+        coordinator.save_choices,
+        project,
+        data,
+        expected_version=version,
+        **({"view_token": form["settings_view"]} if form.get("settings_view") else {}),
+    )
+    return _redirect(project, result)
 
 
 @router.post("/key")

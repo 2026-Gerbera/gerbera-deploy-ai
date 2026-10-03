@@ -11,8 +11,8 @@ AI 없음(import-linter 계약 1).
 - build_image 본체는 image.build_image → release.build_tier
   (step 하나 = tier 하나 = CodeBuild 한 번).
   툴 등록은 tools/build_image/tool.py.
-- AWS 호출은 툴 호출마다 새 boto3 Session(자격증명 파일 교체 반영). 읽기 전용 검증 프로필은
-  DDAK_AWS_READONLY_PROFILE(값이 없으면 ddak-readonly로 고정).
+- AWS 호출은 툴 호출마다 사용자 선택 프로필의 키를 고정하고 STS 기대 계정을 확인한다.
+  프로필·기대 계정은 run 설정 우선이며 누락 시 제품 기본값을 쓴다.
 """
 
 from ddak.cloud.build.image import build_image

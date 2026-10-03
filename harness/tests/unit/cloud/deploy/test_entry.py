@@ -338,7 +338,7 @@ def test_deploy_needs_cloud_domain() -> None:
     assert err.value.code is ErrorCode.CONFIG_INVALID
 
 
-def test_deploy_needs_database_url_secret_output() -> None:
+def test_deploy_needs_database_url_secret_output(clients: dict[str, Stubber]) -> None:
     cloud = {k: v for k, v in PLATFORM["cloud"].items() if k != "app_secret_arn_DATABASE_URL"}
     with pytest.raises(DdakToolError) as err:
         AwsProvider().deploy("was", _ctx(platform={"cloud": cloud}))
@@ -424,7 +424,7 @@ def test_inject_config_skips_public_runtime_keys(clients: dict[str, Stubber]) ->
     assert got.keys == ["APP_BASE_URL", "APP_ENV", "RELEASE_ID"]
 
 
-def test_inject_config_unknown_key_without_secret_output_fails() -> None:
+def test_inject_config_unknown_key_without_secret_output_fails(clients: dict[str, Stubber]) -> None:
     with pytest.raises(DdakToolError) as err:
         AwsProvider().inject_config(["API_TOKEN"], _ctx())
     assert err.value.code is ErrorCode.INFRA_MISSING

@@ -36,6 +36,7 @@ class ProjectSettings(ContractModel):
     git_author_email: str | None = Field(default=None, max_length=254)
     inventory_path: str | None = Field(default=None, max_length=4096)
     cloud_domain: str | None = None
+    aws_profile: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.@-]{0,127}$")
     dns_mode: Literal["route53", "external"] = "external"
     hosted_zone_id: str | None = Field(default=None, pattern=r"^Z[A-Z0-9]{5,31}$")
 
@@ -47,6 +48,13 @@ class ProjectSettings(ContractModel):
         value = value.strip()
         if not value or any(ord(c) < 32 or c in "<>" for c in value):
             raise ValueError("커밋 작성자 형식 오류")
+        if "[bot]" in value.lower() or re.fullmatch(
+            r"claude(?: code)?|(?:openai )?codex|(?:github )?copilot|chatgpt|gemini|"
+            r"ai|bot|dependabot|renovate|cursor(?: agent)?",
+            value,
+            re.IGNORECASE,
+        ):
+            raise ValueError("AI·bot 대신 사람의 커밋 작성자가 필요하다")
         return value
 
     @field_validator("git_author_email")
@@ -54,6 +62,13 @@ class ProjectSettings(ContractModel):
     def author_email(cls, value: str | None) -> str | None:
         if value is not None and not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", value):
             raise ValueError("커밋 작성자 이메일 형식 오류")
+        if value is not None and re.search(
+            r"@(?:anthropic|openai|cursor)\.com$|^codex@|\[bot\]|"
+            r"\+copilot@users\.noreply\.github\.com$",
+            value,
+            re.IGNORECASE,
+        ):
+            raise ValueError("AI·bot 대신 사람의 커밋 작성자가 필요하다")
         return value
 
     @field_validator("repo_url")

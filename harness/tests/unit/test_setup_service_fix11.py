@@ -156,7 +156,8 @@ def test_required_red_blocks_both_manual_and_auto_gate(rig):
     setup.require_ready("flaskr", "onprem")
 
 
-def test_saved_backend_and_explicit_env_precedence(rig, monkeypatch):
+def test_managed_backend_takes_precedence_over_explicit_environment(rig, monkeypatch):
+    """관리 화면 저장값은 같은 항목의 실행 환경 기본값보다 우선한다."""
     _, setup, _ = rig
     monkeypatch.delenv("DDAK_BUILD_BACKEND", raising=False)
     saved = {
@@ -173,7 +174,7 @@ def test_saved_backend_and_explicit_env_precedence(rig, monkeypatch):
     cfg = app._effective_project_settings(
         Settings(), "flaskr", saved, setup.vault, cli_host="127.0.0.1"
     )
-    assert cfg.build_backend == "codebuild"
+    assert cfg.build_backend == "local"
 
 
 def test_managed_scanner_does_not_fall_back_to_system_path(tmp_path):

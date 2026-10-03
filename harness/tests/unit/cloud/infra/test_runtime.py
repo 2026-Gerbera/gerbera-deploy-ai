@@ -31,6 +31,7 @@ from ddak.cloud.infra.runtime import (
 from ddak.core.contracts.approval import ApprovalRecord
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.executor.approval_meta import encode_meta
+from tests.unit.cloud.test_aws_credentials import SELECTION, StubSessions
 
 ACCOUNT = "123456789012"
 SETTINGS = AwsSettings(
@@ -50,8 +51,11 @@ SESSION = SessionKeys("fixture-access", "fixture-" + "secret", "fixture-session"
 
 def test_foundation_iam_client_disables_sdk_retries(tmp_path, monkeypatch):
     sdk = Mock()
+    sdk.client.return_value.get_caller_identity.return_value = {"Account": ACCOUNT}
     monkeypatch.setattr("ddak.cloud.infra.runtime.boto3.Session", Mock(return_value=sdk))
     runtime = InfraRuntime(
+        aws_project_settings=SELECTION,
+        session_factory=Mock(return_value=sdk),
         root=tmp_path,
         run_id="retry-fixture",
         settings=SETTINGS,
@@ -161,6 +165,8 @@ class FakeRunner:
 def runtime(tmp_path):
     fake, approvals, guard = FakeRunner(), [], Mock()
     instance = InfraRuntime(
+        aws_project_settings=SELECTION,
+        session_factory=StubSessions(),
         root=tmp_path,
         run_id="run-1",
         settings=SETTINGS,
@@ -218,8 +224,11 @@ def test_approved_v2_summary_and_apply(runtime):
     assert sum(cmd[1] == "apply" for cmd, _ in fake.calls) == 1
     assert guard.call_count == 3
     # init(validate)/validate/Checkov는 자격증명 없이 실행한다.
-    for _command, session in fake.calls[:3]:
-        assert session is None
+    for command, session in fake.calls[:3]:
+        if Path(command[0]).name == "checkov":
+            assert session is None
+        else:
+            assert session.environment() == {"AWS_PROFILE": "g"}
 
 
 def test_plan_resolves_new_policy_role_from_configuration_reference():
@@ -414,6 +423,12 @@ def test_runner_does_not_inherit_ambient_credentials(tmp_path, monkeypatch):
     for name in ("AWS_PROFILE", "AWS_ACCESS_KEY_ID", "TF_LOG", "TF_CLI_ARGS", "BASH_ENV"):
         monkeypatch.setenv(name, "do-not-forward")
     script = "import os,json; print(json.dumps(dict(os.environ)))"
+
+    def popen(argv, **kwargs):
+        kwargs["stdout"].write(json.dumps(kwargs["env"]).encode())
+        return Mock(returncode=0, wait=Mock(return_value=0))
+
+    monkeypatch.setattr("ddak.cloud.infra.runtime.subprocess.Popen", popen)
     out = CommandRunner().run(
         [sys.executable, "-c", script], cwd=tmp_path, deadline=time.monotonic() + 3
     )
@@ -426,13 +441,22 @@ def test_runner_does_not_inherit_ambient_credentials(tmp_path, monkeypatch):
     assert not Path(env["HOME"]).exists()
 
 
-def test_runner_timeout(tmp_path):
+def test_runner_timeout(tmp_path, monkeypatch):
+    import subprocess
+
+    process = Mock(returncode=0)
+    process.wait.side_effect = [subprocess.TimeoutExpired("fixture", 0.1), 0, 0]
+    monkeypatch.setattr("ddak.cloud.infra.runtime.subprocess.Popen", Mock(return_value=process))
+    signal = Mock(side_effect=[None, ProcessLookupError()])
+    monkeypatch.setattr("ddak.cloud.infra.runtime.os.killpg", signal)
     with pytest.raises(DdakToolError, match="ADAPTER_TIMEOUT"):
         CommandRunner().run(
             [sys.executable, "-c", "import time; time.sleep(3)"],
             cwd=tmp_path,
             deadline=time.monotonic() + 0.1,
         )
+    assert process.wait.call_count == 3
+    assert signal.call_count == 2
 
 
 def test_foundation_without_approval_has_no_aws_calls(tmp_path):
@@ -655,6 +679,8 @@ def test_checkov_exception_is_resource_and_check_specific(tmp_path, resource_add
         ),
     )
     runtime = InfraRuntime(
+        aws_project_settings=SELECTION,
+        session_factory=StubSessions(),
         root=tmp_path,
         run_id="run-1",
         settings=settings,
@@ -891,6 +917,8 @@ def test_same_run_second_instance_cannot_apply(tmp_path):
 
     def new():
         return InfraRuntime(
+            aws_project_settings=SELECTION,
+            session_factory=StubSessions(),
             root=tmp_path,
             run_id="run-1",
             settings=SETTINGS,

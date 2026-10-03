@@ -6,7 +6,7 @@
   앞선 결과 = ctx.release_artifacts.
 - 인프라 출력: ctx.platform['cloud']의 codebuild_project_name,
   image_repository(`<네임스페이스>/<저장소>`).
-- REAL은 호출마다 새 boto3 Session(AWS_PROFILE·AWS_REGION, 서울 기본). FAKE는 FakeCodeBuild이고
+- REAL은 호출마다 선택 프로필의 계정을 확인한다(AWS_REGION, 서울 기본). FAKE는 FakeCodeBuild이고
   AWS를 부르지 않는다. FAKE는 저장소 URL을 쓰지 않고(고정 가짜 URL), 커밋은 ctx.candidate_sha를
   쓰되 40자가 아니면 가짜 값으로, 빠진 인프라 출력도 결정적 가짜 값으로 채운다.
 """
@@ -26,6 +26,7 @@ from ddak.cloud.build.codebuild import CodeBuildClient, GitSource, docker_hub_re
 from ddak.cloud.build.fake import FakeCodeBuild
 from ddak.cloud.build.local import build_local_tier
 from ddak.cloud.build.release import build_tier
+from ddak.core.aws_credentials import checked_session
 from ddak.core.config import AdapterMode
 from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.enums import Source
@@ -74,7 +75,7 @@ def build_image(tier: str, ctx: RunContext) -> BuildImageOutput:
             ErrorCode.INFRA_MISSING,
             "인프라 출력 codebuild_project_name 또는 image_repository가 없다",
         )
-    client: CodeBuildClient = FakeCodeBuild() if fake else _codebuild(cloud)
+    client: CodeBuildClient = FakeCodeBuild() if fake else _codebuild(cloud, ctx)
     result = build_tier(
         client,
         tier=tier,
@@ -100,13 +101,17 @@ def _cloud(ctx: RunContext) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
-def _codebuild(cloud: Mapping[str, Any]) -> CodeBuildClient:
+def _codebuild(cloud: Mapping[str, Any], ctx: RunContext) -> CodeBuildClient:
     region = cloud.get("region") or os.environ.get("AWS_REGION") or DEFAULT_REGION
     config = Config(connect_timeout=10, read_timeout=30, retries={"max_attempts": 3})
     try:
-        return boto3.Session(region_name=region).client("codebuild", config=config)  # pyright: ignore[reportUnknownMemberType]
-    except Exception as exc:
-        raise DdakToolError(ErrorCode.ADAPTER_FAILED, "AWS 세션을 만들지 못했다") from exc
+        return checked_session(
+            ctx.project_settings, region_name=region, config=config, session_factory=boto3.Session
+        ).client("codebuild", config=config)
+    except DdakToolError:
+        raise
+    except Exception:
+        raise DdakToolError(ErrorCode.ADAPTER_FAILED, "AWS 세션을 만들지 못했다") from None
 
 
 def _is_sha1(value: str | None) -> bool:

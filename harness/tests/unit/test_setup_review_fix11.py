@@ -451,12 +451,12 @@ def test_migration_callback_error_never_echoes_url(tmp_path, monkeypatch, except
 
 # 4. UI 검사에서 green으로 확인한 인벤토리와 계획 입력의 파일 선택은 일치해야 한다.
 @pytest.mark.anyio
-@pytest.mark.parametrize("environment_override", [False, True])
-async def test_inventory_probe_view_and_planning_choose_same_file(
-    tmp_path, monkeypatch, environment_override
+@pytest.mark.parametrize("managed,environment", [(True, False), (True, True), (False, True)])
+async def test_inventory_probe_view_and_planning_prefer_managed_file(
+    tmp_path, monkeypatch, managed, environment
 ):
     saved_path, env_path = tmp_path / "ui-inventory.json", tmp_path / "env-inventory.json"
-    if environment_override:
+    if environment:
         monkeypatch.setenv("DDAK_ONPREM_INVENTORY", str(env_path))
     probed = []
 
@@ -470,19 +470,21 @@ async def test_inventory_probe_view_and_planning_choose_same_file(
 
     monkeypatch.setattr(assembly, "load_inventory", read_inventory)
     monkeypatch.setattr(assembly, "preflight_inventory", preflight)
-    service, settings = coordinator(tmp_path, {"inventory_path": str(saved_path)})
+    service, settings = coordinator(
+        tmp_path, {"inventory_path": str(saved_path)} if managed else {}
+    )
     result = service.onboarding.probe(PROJECT, "inventory")
     assert result["status"] == "green" and len(probed) == 1
     visible = service.onboarding.view(PROJECT)["inventory"]["fixture_source"]
     calls = fake_planning(monkeypatch, tmp_path)
     await prepare(service, settings, tmp_path)
     assert not service.failures and len(service.prepared) == 1
-    expected = str(env_path if environment_override else saved_path)
+    expected = str(saved_path if managed else env_path)
     assert probed[0] == visible == calls[0]["platform"]["onprem"]["fixture_source"] == expected
     assert service.prepared[0].context.platform["onprem"]["fixture_source"] == expected
 
 
-# 5. 명시적 환경 provider/model이 저장값·provider 기본 모델에 덮이지 않는다.
+# 5. 관리 provider/model이 실행환경보다 우선하고, 미저장 모델은 실행환경을 사용한다.
 @pytest.mark.parametrize(
     "environ,saved,field,expected",
     [
@@ -490,24 +492,36 @@ async def test_inventory_probe_view_and_planning_choose_same_file(
             {"DDAK_LLM_PROVIDER": "groq"},
             {"generation_provider": "claude-api"},
             "llm_provider",
-            "groq",
+            "claude-api",
         ),
         (
             {"DDAK_JUDGMENT_PROVIDER": "groq"},
             {"judgment_provider": "claude-api"},
             "judgment_provider",
-            "groq",
+            "claude-api",
         ),
         (
             {"DDAK_JUDGMENT_MODEL": "environment-model"},
-            {"judgment_provider": "claude-api"},
+            {"judgment_provider": "claude-api", "judgment_model": "saved-model"},
             "judgment_model",
-            "environment-model",
+            "saved-model",
         ),
         (
             {"DDAK_LLM_MODEL": "environment-model"},
+            {"generation_provider": "claude-api", "generation_model": "saved-model"},
+            "llm_model",
+            "saved-model",
+        ),
+        (
+            {"DDAK_LLM_PROVIDER": "claude-api", "DDAK_LLM_MODEL": "environment-model"},
             {"generation_provider": "claude-api"},
             "llm_model",
+            "environment-model",
+        ),
+        (
+            {"DDAK_JUDGMENT_PROVIDER": "claude-api", "DDAK_JUDGMENT_MODEL": "environment-model"},
+            {"judgment_provider": "claude-api"},
+            "judgment_model",
             "environment-model",
         ),
         (
@@ -524,7 +538,7 @@ async def test_inventory_probe_view_and_planning_choose_same_file(
         ),
     ],
 )
-def test_explicit_provider_and_model_environment_wins(
+def test_managed_provider_and_model_win_with_environment_fallback(
     tmp_path, monkeypatch, environ, saved, field, expected
 ):
     for key, value in environ.items():

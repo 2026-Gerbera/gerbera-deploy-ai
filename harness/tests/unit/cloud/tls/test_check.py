@@ -177,27 +177,18 @@ def test_probe_clamps_large_deadline_and_expiry_is_false(monkeypatch):
     runner.assert_not_called()
 
 
-def test_dns_hang_is_bounded_and_child_reaped(monkeypatch, tmp_path):
+def test_dns_hang_uses_subprocess_timeout_and_reports_failure(monkeypatch):
     import subprocess
     import time
 
     from ddak.cloud.tls import probe_https
 
-    real_run = subprocess.run
-    marker = tmp_path / "dns-started"
-
-    def dns_hang(argv, **kwargs):
-        # 실 DNS/네트워크를 호출하지 않는다. 자식 안 resolver만 지연시킨다.
-        code = (
-            "import socket,time,pathlib; "
-            "socket.getaddrinfo=lambda *a,**k:(pathlib.Path("
-            + repr(str(marker))
-            + ").touch(),time.sleep(5)); "
-            + argv[2]
-        )
-        return real_run([*argv[:2], code, *argv[3:]], **kwargs)
-
-    monkeypatch.setattr("ddak.cloud.tls.check.subprocess.run", dns_hang)
+    # subprocess.run의 timeout은 자식 회수를 담당한다. 여기서는 외부 실행 없이
+    # 제품이 DNS를 포함한 전체 작업에 제한 시간을 적용하고 실패를 반환하는지 검사한다.
+    runner = Mock(side_effect=subprocess.TimeoutExpired("fixture-probe", 1))
+    monkeypatch.setattr("ddak.cloud.tls.check.subprocess.run", runner)
     start = time.monotonic()
     assert not probe_https("app.example.test", start + 1)
-    assert marker.exists() and time.monotonic() - start < 2
+    assert 0 < runner.call_args.kwargs["timeout"] <= 1
+    assert "_probe_https" in runner.call_args.args[0][2]
+    assert time.monotonic() - start < 2

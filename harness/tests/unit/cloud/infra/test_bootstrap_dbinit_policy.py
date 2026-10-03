@@ -18,6 +18,7 @@ from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.executor.approval_meta import encode_meta
 from tests.unit.cloud.infra import test_bluegreen_foundation as b
 from tests.unit.cloud.infra import test_runtime as f
+from tests.unit.cloud.test_aws_credentials import SELECTION, StubSessions
 
 ARN = f"arn:aws:secretsmanager:ap-northeast-2:{f.ACCOUNT}:secret:rds!db-*"
 MASKED = "RDS bootstrap 범위 rds!db-* (ap-northeast-2, 계정 ************)"
@@ -204,6 +205,8 @@ def test_runtime_cannot_use_exception_without_foundation_preparation(tmp_path):
     runner = f.FakeRunner()
     runner.raw = raw_plan(unknown=True)
     runtime = f.InfraRuntime(
+        aws_project_settings=SELECTION,
+        session_factory=StubSessions(),
         root=tmp_path,
         run_id="run-1",
         settings=b.SETTINGS,
@@ -221,6 +224,8 @@ def test_runtime_approval_contains_dbinit_exception_and_foundation_hash(tmp_path
     runner, sdk, records = f.FakeRunner(), b.sdk_clients(), []
     runner.raw = raw_plan(unknown=True)
     runtime = f.InfraRuntime(
+        aws_project_settings=SELECTION,
+        session_factory=StubSessions(),
         root=tmp_path,
         run_id="run-1",
         settings=b.SETTINGS,

@@ -10,6 +10,7 @@ from typing import Any
 import boto3
 from botocore.config import Config
 
+from ddak.core.aws_credentials import checked_session
 from ddak.core.config import AdapterMode
 from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
@@ -40,10 +41,10 @@ def seed_registry_secrets(ctx: RunContext) -> None:
     if not all(isinstance(value, str) and value for value in identifiers.values()):
         raise DdakToolError(ErrorCode.INFRA_MISSING, "Docker Hub 시크릿 ARN 출력이 없다")
     try:
-        client = boto3.Session(region_name=_REGION).client(
-            "secretsmanager",
-            config=Config(connect_timeout=5, read_timeout=10, retries={"max_attempts": 2}),
-        )
+        config = Config(connect_timeout=5, read_timeout=10, retries={"max_attempts": 2})
+        client = checked_session(
+            ctx.project_settings, region_name=_REGION, config=config, session_factory=boto3.Session
+        ).client("secretsmanager", config=config)
         values: dict[str, Any] = {"push": push, "pull": pull}
         for kind, secret_id in identifiers.items():
             client.put_secret_value(

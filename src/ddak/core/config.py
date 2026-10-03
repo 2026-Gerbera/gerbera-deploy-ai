@@ -22,6 +22,7 @@ import yaml
 from ddak.core.contracts.enums import LLMBackend
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.contracts.infra_outputs import IMAGE_REPOSITORY_PATTERN
+from ddak.core.defaults import load_aws_defaults, load_defaults
 from ddak.core.logging import get_logger
 
 
@@ -79,9 +80,22 @@ class Settings:
     jev_timeout_s: float = 2.0  # SDK 기본(10초 + 재시도 2회)을 줄인다
     build_backend: Literal["codebuild", "local"] = "codebuild"
     image_repository: str | None = None
+    aws_profile: str | None = None
+    aws_expected_account_id: str | None = None
+    setting_sources: Mapping[str, str] = field(default_factory=dict, hash=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "provider_keys", MappingProxyType(dict(self.provider_keys)))
+        object.__setattr__(self, "setting_sources", MappingProxyType(dict(self.setting_sources)))
+        if self.llm_provider is not None:
+            backend = (
+                LLMBackend.REPLAY
+                if self.llm_provider == "replay"
+                else LLMBackend.CLI
+                if _PROVIDER_KINDS.get(self.llm_provider) == "cli"
+                else LLMBackend.API
+            )
+            object.__setattr__(self, "llm_backend", backend)
         if self.llm_effort not in ("low", "medium"):
             raise ValueError("DDAK_LLM_EFFORT는 low/medium만 허용한다")
         if (
@@ -115,9 +129,25 @@ class Settings:
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> Settings:
         env = os.environ if environ is None else environ
-        judgment = env.get("DDAK_JEV_BACKEND") or "groq"
+        real = env.get("DDAK_ADAPTER_MODE") == AdapterMode.REAL.value
+        defaults = load_defaults() if real else {}
+        aws_defaults = load_aws_defaults() if real else {}
+        judgment = env.get("DDAK_JEV_BACKEND") or defaults.get("judgment_provider", "groq")
         selected_judgment = env.get("DDAK_JUDGMENT_PROVIDER") or judgment
-        selected_generation = env.get("DDAK_LLM_PROVIDER")
+        selected_generation = env.get("DDAK_LLM_PROVIDER") or (
+            defaults.get("generation_provider") if not env.get("DDAK_LLM_BACKEND") else None
+        )
+        source_keys = {
+            "generation_provider": ("DDAK_LLM_PROVIDER", "DDAK_LLM_BACKEND"),
+            "generation_model": ("DDAK_LLM_MODEL",),
+            "judgment_provider": ("DDAK_JUDGMENT_PROVIDER", "DDAK_JEV_BACKEND"),
+            "judgment_model": ("DDAK_JUDGMENT_MODEL",),
+            "llm_effort": ("DDAK_LLM_EFFORT",),
+            "ai_timeout_s": ("DDAK_AI_TIMEOUT_S",),
+            "build_backend": ("DDAK_BUILD_BACKEND",),
+            "image_repository": ("DDAK_IMAGE_REPOSITORY",),
+            "aws_profile": ("DDAK_AWS_PROFILE", "AWS_PROFILE"),
+        }
         groq_key = (
             env.get("DDAK_GROQ_API_KEY")
             if (selected_judgment == "groq" or selected_generation == "groq")
@@ -132,15 +162,20 @@ class Settings:
             log_level=env.get("DDAK_LOG_LEVEL", "INFO"),
             admin_port=int(env.get("DDAK_ADMIN_PORT", "8765")),
             llm_backend=LLMBackend(env.get("DDAK_LLM_BACKEND") or LLMBackend.REPLAY.value),
-            llm_provider=env.get("DDAK_LLM_PROVIDER") or None,
+            llm_provider=selected_generation,
             judgment_provider=env.get("DDAK_JUDGMENT_PROVIDER") or None,
-            judgment_model=env.get("DDAK_JUDGMENT_MODEL") or None,
+            judgment_model=env.get("DDAK_JUDGMENT_MODEL")
+            or (defaults.get("judgment_model") if selected_judgment == "claude-cli" else None),
             anthropic_api_key=env.get("DDAK_ANTHROPIC_API_KEY") or None,
-            llm_model=env.get("DDAK_LLM_MODEL") or None,
-            llm_effort=cast(Literal["low", "medium"], env.get("DDAK_LLM_EFFORT") or "low"),
+            llm_model=env.get("DDAK_LLM_MODEL")
+            or (defaults.get("generation_model") if selected_generation == "claude-cli" else None),
+            llm_effort=cast(
+                Literal["low", "medium"],
+                env.get("DDAK_LLM_EFFORT") or defaults.get("llm_effort", "low"),
+            ),
             claude_bin=env.get("DDAK_CLAUDE_BIN") or "claude",
             llm_api_key=env.get("DDAK_LLM_API_KEY") or None,
-            ai_timeout_s=float(env.get("DDAK_AI_TIMEOUT_S") or "20"),
+            ai_timeout_s=float(env.get("DDAK_AI_TIMEOUT_S") or defaults.get("ai_timeout_s", 20)),
             ai_retries=int(env.get("DDAK_AI_RETRIES") or "1"),
             ai_replay_dir=Path(env.get("DDAK_AI_REPLAY_DIR") or "fixtures/ai_replay"),
             jev_backend=cast(Literal["groq", "claude-cli"], judgment),
@@ -151,9 +186,22 @@ class Settings:
             jev_model=env.get("DDAK_JEV_MODEL") or "jev-1.13.0",
             jev_timeout_s=float(env.get("DDAK_JEV_TIMEOUT_S") or "2"),
             build_backend=cast(
-                Literal["codebuild", "local"], env.get("DDAK_BUILD_BACKEND") or "codebuild"
+                Literal["codebuild", "local"],
+                env.get("DDAK_BUILD_BACKEND") or defaults.get("build_backend", "codebuild"),
             ),
-            image_repository=env.get("DDAK_IMAGE_REPOSITORY") or None,
+            image_repository=env.get("DDAK_IMAGE_REPOSITORY") or defaults.get("image_repository"),
+            aws_profile=env.get("DDAK_AWS_PROFILE")
+            or env.get("AWS_PROFILE")
+            or defaults.get("aws_profile"),
+            aws_expected_account_id=aws_defaults.get("expected_account_id"),
+            setting_sources={
+                key: "실행환경"
+                if any(env.get(var) for var in variables)
+                else "기본 파일"
+                if key in defaults
+                else "실행환경"
+                for key, variables in source_keys.items()
+            },
         )
 
 
@@ -184,7 +232,6 @@ def require_local_cli(
             "ECS_CONTAINER_METADATA_URI",
             "ECS_CONTAINER_METADATA_URI_V4",
             "AWS_EXECUTION_ENV",
-            "INVOCATION_ID",
         )
     )
     in_container = any(Path(p).exists() for p in ("/.dockerenv", "/run/.containerenv"))

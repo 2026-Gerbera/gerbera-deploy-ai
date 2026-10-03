@@ -21,6 +21,7 @@ from ddak.executor.engine import RunStatus, TrackStatus
 from ddak.executor.infra import refresh_infra_context
 from tests.unit import test_deployment_service as service_tests
 from tests.unit.cloud.infra import test_runtime as fixtures
+from tests.unit.cloud.test_aws_credentials import SELECTION, StubSessions
 
 rig = service_tests.rig
 
@@ -83,6 +84,8 @@ async def test_registered_infra_tools_prepare_approve_apply_refresh(rig, tmp_pat
         checks.append(True)
 
     runtime = InfraRuntime(
+        aws_project_settings=SELECTION,
+        session_factory=StubSessions(),
         root=tmp_path / "infra",
         run_id=p.run_id,
         settings=settings,

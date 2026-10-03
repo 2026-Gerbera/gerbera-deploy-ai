@@ -14,6 +14,14 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
+from ddak.core.git_credentials import (
+    CredentialSource,
+    helper_options,
+    isolated_git_env,
+)
+from ddak.core.git_credentials import (
+    credential_source as resolve_credential_source,
+)
 
 
 def git_sha(value: str) -> str:
@@ -35,15 +43,25 @@ class AppRepository:
         expected_url: str | None = None,
         author: tuple[str, str] | None = None,
         credentials: tuple[Path, str, str] | None = None,
+        credential_source: CredentialSource | None = None,
     ) -> None:
         self.author = author
         self.credentials = credentials
+        # 재연결에서만 모드를 다시 고른다. 파생 worktree도 같은 선택을 물려받는다.
+        self._credential_source: CredentialSource = credential_source or (
+            resolve_credential_source(*credentials) if credentials else "machine"
+        )
         self.secret_scan = secret_scan
         self.expected_url = expected_url
         self.path = path.resolve(strict=True)
         self.allow_local = allow_local
         self.timeout_s = timeout_s
         self.timings: list[dict[str, Any]] = []
+
+    @property
+    def credential_source(self) -> CredentialSource:
+        """이 연결이 모든 Git 명령에 사용하는 출처. 토큰 값은 공개하지 않는다."""
+        return self._credential_source
 
     @classmethod
     def connect(
@@ -77,20 +95,35 @@ class AppRepository:
             author=author,
             credentials=credentials,
         )
-        if not (path / ".git").exists():
-            if any(path.iterdir()):
-                raise DdakToolError(
-                    ErrorCode.PRECONDITION_FAILED, "앱 checkout 경로가 비어 있지 않다"
+        try:
+            if not (path / ".git").exists():
+                if any(path.iterdir()):
+                    raise DdakToolError(
+                        ErrorCode.PRECONDITION_FAILED, "앱 checkout 경로가 비어 있지 않다"
+                    )
+                # URL을 바꾸는 Git 전역 설정도 승인 URL과 비교한다. 네트워크 조회는 없다.
+                if repo.git("ls-remote", "--get-url", repo_url) != repo_url:
+                    raise DdakToolError(
+                        ErrorCode.PRECONDITION_FAILED, "앱 저장소 URL 재작성은 허용하지 않는다"
+                    )
+                repo.git(
+                    "clone",
+                    "--no-checkout",
+                    "--template=",
+                    "--origin",
+                    "origin",
+                    "--",
+                    repo_url,
+                    ".",
                 )
-            # 대신 연결 URL을 바꾸는 Git 전역 설정도 승인 URL과 비교한다. 네트워크 조회가 아니다.
-            if repo.git("ls-remote", "--get-url", repo_url) != repo_url:
+            repo.require_origin(repo_url)
+        except DdakToolError as error:
+            if error.code in {ErrorCode.ADAPTER_FAILED, ErrorCode.ADAPTER_TIMEOUT}:
                 raise DdakToolError(
-                    ErrorCode.PRECONDITION_FAILED, "앱 저장소 URL 재작성은 허용하지 않는다"
-                )
-            repo.git(
-                "clone", "--no-checkout", "--template=", "--origin", "origin", "--", repo_url, "."
-            )
-        repo.require_origin(repo_url)
+                    ErrorCode.PRECONDITION_FAILED,
+                    "설정 필요: 앱 저장소 Git 인증·권한·연결 상태를 확인하세요",
+                ) from None
+            raise
         return repo
 
     def require_origin(self, repo_url: str) -> None:
@@ -98,7 +131,7 @@ class AppRepository:
             raise DdakToolError(
                 ErrorCode.PRECONDITION_FAILED, "승인 저장소와 연결된 저장소가 다르다"
             )
-        if self.credentials and self.git(
+        if self.credential_source == "managed" and self.git(
             "config",
             "--includes",
             "--name-only",
@@ -166,14 +199,17 @@ class AppRepository:
                 "-c",
                 "committer.email=" + self.author[1],
             ]
+        source = self.credential_source
         if self.credentials:
-            from ddak.core.git_credentials import helper_options, isolated_git_env
-
             if args and args[0] != "config":
                 options += [
-                    part for option in helper_options(*self.credentials) for part in ("-c", option)
+                    part
+                    for option in helper_options(*self.credentials, source=source)
+                    for part in ("-c", option)
                 ]
-            env = isolated_git_env(env)
+        elif source == "machine":
+            options += ["-c", "credential.interactive=false"]
+        env = isolated_git_env(env, source=source)
         argv = [
             "git",
             "-c",
@@ -185,14 +221,20 @@ class AppRepository:
             *options,
             *args,
         ]
-        process = subprocess.Popen(
-            argv,
-            cwd=self.path,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            start_new_session=True,
-        )
+        try:
+            process = subprocess.Popen(
+                argv,
+                cwd=self.path,
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+            )
+        except OSError:
+            raise DdakToolError(
+                ErrorCode.ADAPTER_FAILED, "앱 Git 실행 실패; 원문 출력은 숨김"
+            ) from None
         try:
             stdout, _ = process.communicate(timeout=self.timeout_s)
         except subprocess.TimeoutExpired:
@@ -217,7 +259,7 @@ class AppRepository:
 
         started = time.monotonic()
         try:
-            return prepare_candidate(self, *args)
+            return {**prepare_candidate(self, *args), "git_auth_source": self.credential_source}
         finally:
             self.timings.append(
                 {"operation": "prepare_candidate", "elapsed_s": time.monotonic() - started}
@@ -226,7 +268,34 @@ class AppRepository:
     def preflight_source(self, source_sha: str, *, patch: bytes | None = None) -> dict[str, Any]:
         from ddak.core.candidate import preflight_source
 
-        return preflight_source(self, source_sha, patch=patch)
+        self.check_push_access()
+        return {
+            **preflight_source(self, source_sha, patch=patch),
+            "git_auth_source": self.credential_source,
+        }
+
+    def check_push_access(self, branch: str = "prod") -> None:
+        """ai-prod의 현재 SHA로 일반 push를 dry-run한다. 원격 ref는 변경하지 않는다."""
+        target = "refs/heads/ai-prod"
+        try:
+            source_ref = "refs/heads/" + branch.removeprefix("refs/heads/")
+            self.git("check-ref-format", source_ref)
+            if self.expected_url is not None:
+                self.require_origin(self.expected_url)
+            refs = {}
+            for line in self.git("ls-remote", "--refs", "origin", source_ref, target).splitlines():
+                oid, ref = line.split("\t", 1)
+                refs[ref] = git_sha(oid)
+            if source_ref not in refs:
+                raise ValueError("감시 브랜치가 없다")
+            sha = refs.get(target, refs[source_ref])
+            self.git("fetch", "--no-tags", "origin", sha)
+            self.git("push", "--dry-run", "--porcelain", "origin", sha + ":" + target)
+        except (DdakToolError, OSError, ValueError):
+            raise DdakToolError(
+                ErrorCode.PRECONDITION_FAILED,
+                "설정 필요: 앱 저장소 push 접근 확인 실패; Git 인증·권한·연결 상태를 확인하세요",
+            ) from None
 
     def validate_candidate(self, *args: Any) -> dict[str, Any]:
         from ddak.core.candidate import validate_candidate
@@ -247,7 +316,12 @@ class AppRepository:
         candidate_sha = git_sha(candidate_sha)
         if not selected or not selected <= {"local", "cloud"} or not succeeded <= selected:
             raise ValueError("배포 기록 대상이 잘못됐다")
-        result: dict[str, Any] = {"status": "SKIPPED", "tags": [], "main_updated": False}
+        result: dict[str, Any] = {
+            "status": "SKIPPED",
+            "tags": [],
+            "main_updated": False,
+            "git_auth_source": self.credential_source,
+        }
         if not succeeded:
             return result
         try:
@@ -327,6 +401,7 @@ class FakeAppRepository(AppRepository):
             "candidate_sha": digest_json(build_files).split(":", 1)[1][:40],
             "merge_conflicts": [],
             "source": "fake",
+            "git_auth_source": self.credential_source,
         }
 
     def validate_candidate(self, *args: Any) -> dict[str, Any]:
@@ -342,6 +417,7 @@ class FakeAppRepository(AppRepository):
         return {
             "status": "SIMULATED",
             "source": "fake",
+            "git_auth_source": self.credential_source,
             "tags": [],
             "main_updated": False,
             "would_publish": sorted(succeeded),

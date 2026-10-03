@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from botocore.exceptions import ClientError
@@ -18,6 +19,21 @@ from .bindings import InfraBinding
 from .runtime import AwsSettings, CommandResult, InfraRuntime, SessionKeys
 
 _ACCOUNT = "123456789012"
+
+
+class _FixtureSession:
+    def __init__(self, **kwargs):
+        self.keys = SimpleNamespace(
+            access_key=kwargs.get("aws_access_key_id", "fixture-access"),
+            secret_key=kwargs.get("aws_secret_access_key", "fixture-value"),
+            token=kwargs.get("aws_session_token", "fixture-session"),
+        )
+
+    def get_credentials(self):
+        return SimpleNamespace(get_frozen_credentials=lambda: self.keys)
+
+    def client(self, name, **kwargs):
+        return _FixtureSDK()
 
 
 class _FixtureSDK:
@@ -214,6 +230,8 @@ resource "aws_subnet" "fixture" { cidr_block = "10.0.1.0/24" }
         approvals=approvals,
         guard=guard,
         foundation_clients=lambda keys: sdk,
+        aws_project_settings={"aws_profile": "fixture", "aws_expected_account_id": _ACCOUNT},
+        session_factory=_FixtureSession,
     )
     return InfraBinding(
         runtime=runtime,

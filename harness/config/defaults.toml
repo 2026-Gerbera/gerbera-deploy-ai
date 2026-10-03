@@ -1,0 +1,20 @@
+# 비밀값을 넣지 않는다. 관리 페이지 저장값이 실행환경과 이 파일보다 우선한다.
+[project]
+generation_provider = "claude-cli"
+generation_model = "claude-sonnet-5-5"
+judgment_provider = "claude-cli"
+judgment_model = "claude-sonnet-5-5"
+llm_effort = "low"
+ai_timeout_s = 90
+build_backend = "local"
+image_repository = "2026gerbera/flaskr"
+aws_profile = "g"
+watch_branch = "prod"
+auto_detect = true
+default_targets = "onprem"
+code_patch = true
+# buildx_builder 미지정: 프로젝트 전용 ddak-product-* 빌더를 승인 후 생성한다.
+# Git 작성자 미지정: 앱 checkout 또는 머신 global의 사람 신원만 읽는다.
+
+[aws]
+expected_account_id = "458781646776"
