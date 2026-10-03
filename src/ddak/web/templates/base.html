@@ -1,12 +1,13 @@
+{% set ui_language = ui_language|default('ko') %}{% set language_links = language_links|default({'ko':'/?lang=ko','ja':'/?lang=ja'}) %}
 <!doctype html>
-<html lang="ko">
+<html lang="{{ ui_language|default('ko') }}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="light">
   {% block head %}{% endblock %}
   <title>{% block title %}Gerbera 배포 관리{% endblock %}</title>
-  <link rel="stylesheet" href="/static/app.css?v=narrative-20261004">
+  <link rel="stylesheet" href="/static/app.css?v=i18n-20261004">
 </head>
 <body>
   <a class="skip-link" href="#main">본문으로 이동</a>
@@ -14,6 +15,7 @@
     <button class="sidebar-toggle" type="button" data-sidebar-toggle aria-controls="sidebar" aria-expanded="true" hidden>메뉴 접기</button>
     <a class="brand" href="/">Gerbera</a>
     {% if project %}<span class="project-label" title="{{ project }}">{{ project }}</span>{% else %}<span class="scope-label">전체 프로젝트</span>{% endif %}
+    <nav class="language-switch" aria-label="言語 / 언어">{% for code, name in [('ko','한국어'),('ja','日本語')] %}<a href="{{ language_links[code] }}" lang="{{ code }}"{% if ui_language == code %} aria-current="true"{% endif %}>{{ name|e }}</a>{% if not loop.last %}<span aria-hidden="true"> | </span>{% endif %}{% endfor %}</nav>
   </header>
   <div hidden>{% block breadcrumb %}{% endblock %}</div>
   {% from '_status.html' import error_box %}
@@ -30,13 +32,15 @@
         <a href="/ops?project={{ project|urlencode }}"{% if request.url.path == '/ops' %} aria-current="page"{% endif %}>운영</a>
         <a href="/settings?project={{ project|urlencode }}"{% if request.url.path == '/settings' %} aria-current="page"{% endif %}>프로젝트 설정</a>
       </nav>{% endif %}
+      <div class="sidebar-language"><nav class="language-switch" aria-label="言語 / 언어">{% for code, name in [('ko','한국어'),('ja','日本語')] %}<a href="{{ language_links[code] }}" lang="{{ code }}"{% if ui_language == code %} aria-current="true"{% endif %}>{{ name|e }}</a>{% if not loop.last %}<span aria-hidden="true"> | </span>{% endif %}{% endfor %}</nav></div>
     </aside>
     <main id="main">{% block content %}{% endblock %}
       {% set remaining_error = form_error_for(request) if form_error_for is defined and request.scope is defined else None %}{% if remaining_error %}{{ error_box(remaining_error) }}{% endif %}
     </main>
   </div>
   <template id="form-error-template">{{ error_box(prototype=True) }}</template>
-  <script type="application/json" id="narrative-errors">{{ narrative_errors|tojson }}</script>
-  <script src="/static/app.js?v=narrative-20261004" defer></script>
+  <script type="application/json" id="narrative-errors">{{ (localize_json(narrative_errors) if localize_json is defined else narrative_errors)|tojson }}</script>
+  <script type="application/json" id="app-wording">{{ app_wording|default({})|tojson }}</script>
+  <script src="/static/app.js?v=i18n-20261004" defer></script>
 </body>
 </html>

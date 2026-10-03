@@ -7,6 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from ddak.core.ai.gateway import call_ai
+from ddak.core.answer_language import with_answer_language
 from ddak.core.config import AdapterMode, Settings
 from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.tools.post_report import PostReportInput, PostReportOutput, ReportNarrative
@@ -61,7 +62,10 @@ def post_report(inp: PostReportInput, ctx: RunContext) -> PostReportOutput:
         return report
     try:
         result = call_ai(
-            instruction=Path(__file__).with_name("prompt.md").read_text(),
+            instruction=with_answer_language(
+                Path(__file__).with_name("prompt.md").read_text(),
+                ctx.project_settings.get("ai_answer_language", "ko"),
+            ),
             data=json.dumps(facts, ensure_ascii=False),
             output_model=ReportNarrative,
             prompt_version="report-v3",

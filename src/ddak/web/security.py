@@ -40,3 +40,6 @@ def require_safe_post(request: Request, token: str) -> None:
     cookie = request.cookies.get(CSRF_COOKIE, "")
     if not cookie or not token or not secrets.compare_digest(cookie, token):
         raise HTTPException(status_code=403, detail="CSRF 검증 실패")
+    from ddak.web.i18n import remember_run_language
+
+    remember_run_language(request)

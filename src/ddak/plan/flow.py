@@ -195,7 +195,10 @@ def plan_deployment(
                 root=policy.root,
             )
             mapping_suggestions = suggest_infra_mappings(
-                checkout, settings=settings, provider=provider
+                checkout,
+                settings=settings,
+                provider=provider,
+                language=ctx.project_settings.get("ai_answer_language", "ko"),
             )
         storage = storage_intent(
             STORAGE_SMOKE_GROUP in ana.smoke_groups,

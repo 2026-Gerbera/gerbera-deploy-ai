@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from ddak.core.ai.gateway import call_ai
 from ddak.core.ai.providers import LLMProvider
+from ddak.core.answer_language import with_answer_language
 from ddak.core.config import Settings
 from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.enums import Target
@@ -153,7 +154,9 @@ def diagnose_parity_gap(
     data, refs = _ai_data(inp, logs, smoke, compare)
     try:
         result = call_ai(
-            instruction=INSTRUCTION,
+            instruction=with_answer_language(
+                INSTRUCTION, ctx.project_settings.get("ai_answer_language", "ko")
+            ),
             data=data,
             output_model=_AIDiagnosis,
             prompt_version=PROMPT_VERSION,

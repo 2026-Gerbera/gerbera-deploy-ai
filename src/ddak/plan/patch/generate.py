@@ -31,6 +31,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ddak.core.ai.gateway import call_ai, ensure_ai_allowed
 from ddak.core.ai.providers import LLMProvider
+from ddak.core.answer_language import with_answer_language
 from ddak.core.config import Settings
 from ddak.core.contracts.base import AIUsage
 from ddak.core.contracts.context import RunContext
@@ -486,7 +487,10 @@ def propose_intents(
             trace.attempts += 1
         try:
             result = call_ai(
-                instruction=_INTENTS_INSTRUCTION + feedback,
+                instruction=with_answer_language(
+                    _INTENTS_INSTRUCTION + feedback,
+                    ctx.project_settings.get("ai_answer_language", "ko"),
+                ),
                 data=data,
                 output_model=_IntentDraft,
                 prompt_version=_INTENTS_PROMPT_VERSION,
@@ -647,7 +651,10 @@ def propose_config_patch(
                 proposal.attempts += 1
                 try:
                     result = call_ai(
-                        instruction=INSTRUCTION + feedback,
+                        instruction=with_answer_language(
+                            INSTRUCTION + feedback,
+                            ctx.project_settings.get("ai_answer_language", "ko"),
+                        ),
                         data=data,
                         output_model=PatchDraft,
                         prompt_version=PROMPT_VERSION,

@@ -364,13 +364,13 @@ pre, .diff-panel { background: var(--surface-code); }
 .compact-checks li { padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
 .story-section > p, .notice p, .page-heading p { max-width: 66ch; }
 /* 진행 중 결과와 최종 결과는 같은 두 환경 카드로 표시한다. */
-.environments[aria-label="환경별 결과"] { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: var(--s6); }
-.environments[aria-label="환경별 결과"] > .env { display: block; padding: var(--s5); background: var(--surface-1); border: 1px solid var(--line); border-radius: var(--radius); min-width: 0; }
-.environments[aria-label="환경별 결과"] .env h2 { display: inline-block; margin-right: var(--s3); }
-.environments[aria-label="환경별 결과"] .env > .numeric { float: right; }
-.environments[aria-label="환경별 결과"] .env > p { margin-top: var(--s4); }
-.environments[aria-label="환경별 결과"] .env > .button { margin-top: var(--s4); }
-@media (max-width: 720px) { .environments[aria-label="환경별 결과"] { grid-template-columns: 1fr; } }
+.environments { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: var(--s6); }
+.environments > .env { display: block; padding: var(--s5); background: var(--surface-1); border: 1px solid var(--line); border-radius: var(--radius); min-width: 0; }
+.environments .env h2 { display: inline-block; margin-right: var(--s3); }
+.environments .env > .numeric { float: right; }
+.environments .env > p { margin-top: var(--s4); }
+.environments .env > .button { margin-top: var(--s4); }
+@media (max-width: 720px) { .environments { grid-template-columns: 1fr; } }
 
 /* 기존 레이아웃의 가독성 조정. */
 
@@ -380,11 +380,19 @@ pre, .diff-panel { background: var(--surface-code); }
 .section,.card,.pipeline-lane,.button,.sidebar-toggle,.state,.actor,.source-badge,.code-change,.resource-metric,.iam-card,.story-resources p,.summary-chips li { border-radius:0;box-shadow:none; }
 .section > h2,.card-header,.story-section > h2 { background:var(--title-paper);border-top:var(--skin-rule) solid var(--line-strong);border-bottom:1px solid var(--line);font-weight:700;color:var(--ink); }
 .page-heading { border-bottom:var(--skin-rule) solid var(--line-strong); }
-.environments[aria-label="환경별 결과"] > .env { background:var(--env-paper);border:0;border-top:var(--skin-rule) solid var(--line-strong);border-bottom:1px solid var(--line);border-radius:0; }
-.environments[aria-label="환경별 결과"] .env h2 { font-weight:750; }
+.environments > .env { background:var(--env-paper);border:0;border-top:var(--skin-rule) solid var(--line-strong);border-bottom:1px solid var(--line);border-radius:0; }
+.environments .env h2 { font-weight:750; }
 .resource-metric { background:var(--metric-paper);border-bottom:var(--skin-rule) solid var(--line-strong); }
 .iam-card { background:var(--surface-1);border-color:var(--line); }
 .state.success { color:var(--success);background:var(--success-bg); }
 .state.success i { background:var(--success); }
 .story-diff > div:last-child pre { border-left-color:var(--ink-2); }
 .button.secondary,.button.ghost { background:var(--surface-1); }
+
+:lang(ja) { --font-body: "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic", "Noto Sans JP", sans-serif; }
+.language-switch { display: flex; align-items: center; gap: .35rem; white-space: nowrap; font-size: .8rem; }
+.masthead > .language-switch { margin-inline-start: auto; }
+.language-switch [aria-current] { font-weight: 700; text-decoration: underline; text-underline-offset: .2em; }
+.sidebar-language { margin-block-start: auto; padding-block: 1rem; }
+:lang(ja) .heading-actions { flex-wrap: wrap; }
+:lang(ja) .button, :lang(ja) .state { max-width: 100%; overflow-wrap: anywhere; }

@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ddak.core.ai.gateway import call_ai
 from ddak.core.ai.providers import LLMProvider
+from ddak.core.answer_language import with_answer_language
 from ddak.core.code_context import is_secret_path
 from ddak.core.config import Settings
 from ddak.core.contracts.context import RunContext
@@ -56,6 +57,7 @@ class CodeQuestionSession:
     run_id: str
     settings: Settings
     provider: LLMProvider | None = None  # 테스트·리허설용 주입. 없으면 설정의 provider
+    language: str | None = None  # 요청 언어. 없으면 run의 저장 설정을 사용한다.
 
 
 _SESSION: ContextVar[CodeQuestionSession | None] = ContextVar(
@@ -101,7 +103,12 @@ def answer_code_question(inp: AnswerCodeQuestionInput, ctx: RunContext) -> Answe
     session = _session(ctx.run_id)
     data, included = build_data(inp)
     result = call_ai(
-        instruction=_PROMPT,
+        instruction=with_answer_language(
+            _PROMPT,
+            session.language
+            if session is not None and session.language is not None
+            else ctx.project_settings.get("ai_answer_language", "ko"),
+        ),
         data=data,
         output_model=_Answer,
         operator_message=redact(inp.question, max_len=None),

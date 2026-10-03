@@ -21,6 +21,7 @@ from fastapi.staticfiles import StaticFiles
 
 from ddak.core.config import Settings
 from ddak.executor.service import DeploymentService
+from ddak.web.i18n import LanguageMiddleware
 from ddak.web.routes import ROUTERS
 
 LLMStatusFn = Callable[[], Mapping[str, Any]]
@@ -45,6 +46,7 @@ def create_app(
                 await deployment.shutdown()
 
     app = FastAPI(title="ddak", lifespan=lifespan)
+    app.add_middleware(LanguageMiddleware)
     app.state.settings = current_settings
     app.state.llm_status = llm_status
     static = Path(__file__).resolve().parent / "static"

@@ -33,6 +33,7 @@ class ProjectSettings(ContractModel):
     judgment_provider: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9-]{0,63}$")
     judgment_model: str | None = Field(default=None, max_length=160, pattern=r"^[A-Za-z0-9._:/-]+$")
     llm_effort: Literal["low", "medium"] | None = None
+    ai_answer_language: Literal["ko", "ja"] = "ko"
     ai_timeout_s: float | None = Field(default=None, gt=0, le=300, allow_inf_nan=False)
     build_backend: Literal["codebuild", "local"] | None = None
     image_repository: str | None = Field(default=None, pattern="^" + IMAGE_REPOSITORY_PATTERN + "$")

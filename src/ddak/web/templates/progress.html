@@ -21,5 +21,5 @@
 <p id="event-age" class="note">{{ '최종 결과를 확인하세요.' if ended else '첫 이벤트를 기다립니다.' }}</p><p id="connection-state" role="status">{{ '실행 종료' if ended else '실시간 연결을 준비합니다.' }}</p>
 <noscript><p>실시간 갱신을 사용할 수 없습니다. <a href="/runs/{{ run_id }}">진행 기록 새로고침</a></p></noscript>
 <details class="story-technical"><summary>자세한 기록 보기</summary>{% for track in ('local','cloud','common') %}<section class="section"><h2>{{ target(track) }} 이벤트</h2><ol id="{{ track }}-events" class="event-list"></ol></section>{% endfor %}<p>실행 ID <code>{{ run_id }}</code></p></details></section>
-<script type="application/json" id="pipeline-wording" data-narrative>{{ {'texts': pipeline.texts, 'aliases': pipeline.aliases, 'gates': pipeline.gates, 'errors': pipeline.errors}|tojson }}</script>
+<script type="application/json" id="pipeline-wording" data-narrative>{% set pipeline_wording = {'texts': pipeline.texts, 'aliases': pipeline.aliases, 'gates': pipeline.gates, 'errors': pipeline.errors} %}{{ (localize_json(pipeline_wording) if localize_json is defined else pipeline_wording)|tojson }}</script>
 {% endblock %}

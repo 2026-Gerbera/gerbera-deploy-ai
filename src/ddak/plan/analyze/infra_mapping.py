@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ddak.core.ai.gateway import call_ai
 from ddak.core.ai.providers import LLMProvider
+from ddak.core.answer_language import with_answer_language
 from ddak.core.config import Settings
 from ddak.core.logging import get_logger
 from ddak.core.patch_patterns import (
@@ -149,7 +150,11 @@ def _scan(source: Path) -> list[_Evidence]:
 
 
 def suggest_infra_mappings(
-    source: Path, *, settings: Settings, provider: LLMProvider | None = None
+    source: Path,
+    *,
+    settings: Settings,
+    provider: LLMProvider | None = None,
+    language: str | None = "ko",
 ) -> list[dict[str, Any]]:
     """선택 분석. 탐지·요청·출력 처리 실패는 기록하고 빈 제안으로 계속한다."""
     try:
@@ -161,11 +166,12 @@ def suggest_infra_mappings(
         if len(data) > 4096:
             raise ValueError("evidence size")
         result = call_ai(
-            instruction=(
+            instruction=with_answer_language(
                 "로컬 리소스 흔적에 대응하는 클라우드 서비스 후보를 제안한다. "
                 "target은 s3/rds/elasticache/sqs/ses/none 중 하나다. "
                 "evidence_id는 입력에 있는 것만 사용하고 reason은 200자 이하로 설명한다. "
-                "값이나 코드를 추측하지 않는다. 자동 생성되지 않는 표시용 제안이다."
+                "값이나 코드를 추측하지 않는다. 자동 생성되지 않는 표시용 제안이다.",
+                language,
             ),
             data=data,
             output_model=_Reply,
