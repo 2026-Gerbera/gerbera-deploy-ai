@@ -7,7 +7,8 @@ AI가 만든 unified diff는 신뢰하지 않는 입력이다. 사람 승인 화
    경로의 ..·절대 경로·따옴표·역슬래시는 거부한다. 이 형식의 diff는 build_patch로 만든다
 2. 허용 파일: 정책의 허용 파일(분석이 패턴을 찾은 파일)과 허용 확장자(.py)만
 3. 허용 패턴: 지운 줄은 모두 대상 패턴(서명 키 하드코딩, localhost·127.0.0.1 주소, 쿠키 Secure,
-   ProxyFix) 줄이어야 한다. 추가한 줄은 대상 패턴 줄, 환경변수를 읽는 줄, import, 괄호·빈 줄·주석만.
+   ProxyFix) 줄이어야 한다. 추가한 줄은 대상 패턴 줄, 환경변수를 읽는 줄, import, 괄호·빈 줄만.
+   추가한 줄의 주석은 거부한다(따옴표 없는 비밀값을 볼 수 없다. 이유는 diff 밖에 쓴다).
    대상 패턴을 지운 파일에는 환경변수를 읽는 줄이 있어야 한다. 위험한 호출과 `;`는 거부한다.
    추가한 줄의 패턴·환경변수 읽기는 주석과 문자열을 뺀 코드에서만 찾는다
    (주석에 패턴 단어만 넣는 우회 방지)
@@ -16,8 +17,10 @@ AI가 만든 unified diff는 신뢰하지 않는 입력이다. 사람 승인 화
 5. 적용·문법: O1과 같은 core.snapshots.apply_diff로 임시 사본에 적용하고, 바뀐 .py를 ast로 파싱
 6. 적용 후 AST 비교(문자열 이어붙이기·여러 줄 나누기로 줄 검사를 피하는 경우): 원본에 없던 호출은
    허용 목록(환경변수 읽기, ProxyFix, 형 변환)만, 원본에 없던 import는 os·ProxyFix·앱 자체 모듈만
-   허용한다.
-   비밀 이름에 문자열을 넣는 대입·키워드·dict 항목·환경변수 기본값이 원본보다 늘면 실패
+   허용한다. 허용 호출의 이름(getenv·os·environ·ProxyFix·int…)을 새로 묶는 별칭 import·대입·인자와
+   * import는 거부한다(정식 import만 허용).
+   비밀 이름에 문자열(또는 문자열을 받은 이름)을 넣는 대입·키워드·dict 항목·환경변수 기본값이
+   원본보다 늘면 실패
 위반 메시지에는 줄 내용을 싣지 않는다(비밀값이 섞일 수 있다). 파일과 줄 번호만 남긴다.
 """
 
@@ -54,6 +57,8 @@ _ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]{1,63}$")
 _ENV_KEY_BEFORE = re.compile(
     r"(?:\benviron\s*\[|\b(?:environ\.get|getenv|require_env|env_bool|env_int)\s*\()\s*$"
 )
+# 첨자 키 자리(app.config["SECRET_KEY"]): 이름·]·) 바로 뒤의 [. 리스트 리터럴 ["..."]은 아니다
+_SUBSCRIPT_KEY_BEFORE = re.compile(r"[\w\])]\s*\[\s*$")
 _STRUCTURAL = re.compile(r"^\s*[()\[\]{},:]*\s*$")
 _DANGEROUS = re.compile(
     r"\bos\.system\b|\bsubprocess\b|\beval\s*\(|\bexec\s*\(|__import__|\bopen\s*\("
@@ -73,6 +78,14 @@ ENV_CALLS = frozenset(
 )
 ALLOWED_CALLS = ENV_CALLS | {"ProxyFix", "int", "bool", "str", "float", "*.lower", "*.strip"}
 ALLOWED_IMPORTS = frozenset({"os", "werkzeug.middleware.proxy_fix"})
+# 허용 호출이 기대는 이름. 패치가 여기에 새로 값을 묶으면(별칭 import, 대입, 인자 등)
+# getenv()가 다른 함수를 부를 수 있으므로 아래 정식 import만 허용한다
+PROTECTED_NAMES = frozenset(n.split(".")[0] for n in ALLOWED_CALLS) - {"*"}
+_LOCAL_HELPERS = frozenset({"require_env", "env_bool", "env_int"})
+_IMPORT_BINDINGS = {
+    "os": frozenset({"getenv", "environ"}),
+    "werkzeug.middleware.proxy_fix": frozenset({"ProxyFix"}),
+}
 
 
 @dataclass(frozen=True)
@@ -256,12 +269,21 @@ def build_patch(changes: Mapping[str, tuple[str, str]]) -> bytes:
 
 def _code_only(line: str) -> str:
     """주석을 지우고 문자열 내용을 비운다(따옴표만 남긴다)."""
+    return _split_comment(line)[0]
+
+
+def _has_comment(line: str) -> bool:
+    """문자열 밖에 # 주석이 있는지."""
+    return _split_comment(line)[1]
+
+
+def _split_comment(line: str) -> tuple[str, bool]:
     out: list[str] = []
     i, n = 0, len(line)
     while i < n:
         ch = line[i]
         if ch == "#":
-            break
+            return "".join(out), True
         if ch in "'\"":
             quote = line[i : i + 3] if line[i : i + 3] in ('"""', "'''") else ch
             end = i + len(quote)
@@ -272,7 +294,7 @@ def _code_only(line: str) -> str:
             continue
         out.append(ch)
         i += 1
-    return "".join(out)
+    return "".join(out), False
 
 
 def _patterns_in(line: str) -> set[str]:
@@ -285,11 +307,15 @@ def _is_blank_or_comment(line: str) -> bool:
 
 
 def _secret_literal(line: str) -> bool:
-    """비밀 이름이 있는 줄에 환경변수 키 자리가 아닌 문자열이 있으면 True(대문자 값 포함)."""
+    """비밀 이름이 있는 줄에 키 자리가 아닌 문자열이 있으면 True(대문자 값 포함).
+
+    키 자리는 환경변수 키와 첨자 키(app.config["SECRET_KEY"])다. 값은 AST 비교가 다시 본다.
+    """
     if not _SECRET_NAME.search(line):
         return False
     for match in _STRING.finditer(line):
-        key_position = _ENV_KEY_BEFORE.search(line[: match.start()])
+        before = line[: match.start()]
+        key_position = _ENV_KEY_BEFORE.search(before) or _SUBSCRIPT_KEY_BEFORE.search(before)
         if not (key_position and _ENV_NAME.fullmatch(match.group("s"))):
             return True
     return False
@@ -313,6 +339,9 @@ def _check_lines(diff: _FileDiff) -> tuple[list[Violation], set[str]]:
         env_read = env_read or reads_env
         if _secret_literal(line):
             problems.append(Violation("secret_literal", diff.path, number, "비밀값 리터럴이 있다"))
+        if _has_comment(line):
+            # 주석은 줄 검사·AST 모두 값을 볼 수 없다(따옴표 없는 비밀값). 이유는 diff 밖에 쓴다
+            problems.append(Violation("comment", diff.path, number, "추가한 줄에 주석이 있다"))
         if _DANGEROUS.search(line):
             problems.append(Violation("dangerous", diff.path, number, "허용되지 않는 호출이 있다"))
         if _is_blank_or_comment(line) or _IMPORT.match(line) or reads_env or found:
@@ -386,11 +415,13 @@ def _env_default(call: ast.Call) -> ast.AST | None:
     return next((k.value for k in call.keywords if k.arg == "default"), None)
 
 
-def _has_literal(node: ast.AST) -> bool:
-    """환경변수 키 자리를 뺀 곳에 문자열 값이 있는지."""
+def _has_literal(node: ast.AST, names: frozenset[str] = frozenset()) -> bool:
+    """환경변수 키 자리를 뺀 곳에 문자열 값이 있는지. names는 문자열 값을 받은 이름이다."""
     stack = [node]
     while stack:
         current = stack.pop()
+        if isinstance(current, ast.Name) and current.id in names:
+            return True
         if isinstance(current, ast.Call) and _call_name(current) in ENV_CALLS:
             stack += current.args[1:] + [k.value for k in current.keywords]
             stack.append(current.func)
@@ -419,27 +450,47 @@ def _is_secret(name: str | None) -> bool:
     return name is not None and bool(_SECRET_NAME.search(name))
 
 
+def _literal_names(tree: ast.AST) -> frozenset[str]:
+    """문자열 값을 받은 이름(X = "dev", Y = X …). 두 줄로 나눠 비밀 자리에 넣는 경우를 잡는다."""
+    names: frozenset[str] = frozenset()
+    while True:
+        found = set(names)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign | ast.AnnAssign | ast.AugAssign | ast.NamedExpr):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                if node.value is not None and _has_literal(node.value, names):
+                    found |= {t.id for t in targets if isinstance(t, ast.Name)}
+        if found == names:
+            return names
+        names = frozenset(found)
+
+
 def _secret_sites(tree: ast.AST) -> Iterator[ast.AST]:
-    """비밀 이름에 문자열 값을 넣는 곳."""
+    """비밀 이름에 문자열 값(또는 문자열 값을 받은 이름)을 넣는 곳."""
+    names = _literal_names(tree)
+
+    def literal(node: ast.AST) -> bool:
+        return _has_literal(node, names)
+
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign):
-            if any(_is_secret(_target_name(t)) for t in node.targets) and _has_literal(node.value):
+            if any(_is_secret(_target_name(t)) for t in node.targets) and literal(node.value):
                 yield node
         elif isinstance(node, ast.AnnAssign | ast.AugAssign):
             value = node.value
-            if value is not None and _is_secret(_target_name(node.target)) and _has_literal(value):
+            if value is not None and _is_secret(_target_name(node.target)) and literal(value):
                 yield node
         elif isinstance(node, ast.keyword):
-            if _is_secret(node.arg) and _has_literal(node.value):
+            if _is_secret(node.arg) and literal(node.value):
                 yield node
         elif isinstance(node, ast.Dict):
             for key, value in zip(node.keys, node.values, strict=True):
-                if _is_secret(_fold_str(key)) and _has_literal(value):
+                if _is_secret(_fold_str(key)) and literal(value):
                     yield value
         elif isinstance(node, ast.Call) and _call_name(node) in ENV_CALLS:
             key = _fold_str(node.args[0]) if node.args else None
             default = _env_default(node)
-            if (key is None or _is_secret(key)) and default is not None and _has_literal(default):
+            if (key is None or _is_secret(key)) and default is not None and literal(default):
                 yield node
 
 
@@ -449,6 +500,58 @@ def _imports(tree: ast.AST) -> Iterator[tuple[str, ast.AST]]:
             yield from ((alias.name, node) for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
             yield node.module, node
+
+
+def _root_name(node: ast.AST) -> str | None:
+    while isinstance(node, ast.Attribute | ast.Subscript):
+        node = node.value
+    return node.id if isinstance(node, ast.Name) else None
+
+
+def _import_ok(node: ast.Import | ast.ImportFrom, alias: ast.alias, local: set[str]) -> bool:
+    """보호 이름을 묶는 import 중 허용하는 것: 별칭 없는 정식 import만."""
+    if alias.asname is not None:
+        return False
+    if isinstance(node, ast.Import):
+        return alias.name == "os"
+    module = node.module or ""
+    if node.level == 0 and alias.name in _IMPORT_BINDINGS.get(module, ()):
+        return True
+    return alias.name in _LOCAL_HELPERS and (node.level > 0 or module.split(".")[0] in local)
+
+
+def _protected_bindings(tree: ast.AST, local: set[str]) -> Iterator[tuple[str, ast.AST]]:
+    """허용 호출의 이름(getenv·os·environ·ProxyFix·int…)을 다시 묶는 곳과 * import."""
+    for node in ast.walk(tree):
+        names: list[str | None] = []
+        if isinstance(node, ast.Name | ast.Attribute | ast.Subscript):
+            if isinstance(node.ctx, ast.Store | ast.Del):
+                names.append(_root_name(node))
+        elif isinstance(node, ast.arg):
+            names.append(node.arg)
+        elif isinstance(
+            node,
+            ast.FunctionDef
+            | ast.AsyncFunctionDef
+            | ast.ClassDef
+            | ast.ExceptHandler
+            | ast.MatchAs
+            | ast.MatchStar,
+        ):
+            names.append(node.name)
+        elif isinstance(node, ast.MatchMapping):
+            names.append(node.rest)
+        elif isinstance(node, ast.Import | ast.ImportFrom):
+            for alias in node.names:
+                if alias.name == "*":
+                    yield "import *", node
+                    continue
+                bound = alias.asname or alias.name.split(".")[0]
+                if bound in PROTECTED_NAMES and not _import_ok(node, alias, local):
+                    yield f"import:{bound}", node
+        for name in names:
+            if name in PROTECTED_NAMES:
+                yield f"{type(node).__name__}:{name}", node
 
 
 def _local_modules(root: Path) -> set[str]:
@@ -498,6 +601,11 @@ def _ast_diff(source: Path, root: Path, paths: Iterable[str]) -> list[Violation]
                 problems.append(
                     Violation("dangerous", path, _line(node), "허용되지 않는 import가 생겼다")
                 )
+        old_bindings = (k for k, _ in _protected_bindings(old, local))
+        for _, node in _increased(old_bindings, list(_protected_bindings(new, local))):
+            problems.append(
+                Violation("dangerous", path, _line(node), "허용 호출의 이름을 다시 묶었다")
+            )
         old_sites = (ast.unparse(n) for n in _secret_sites(old))
         new_sites = [(ast.unparse(n), n) for n in _secret_sites(new)]
         for _, node in _increased(old_sites, new_sites):

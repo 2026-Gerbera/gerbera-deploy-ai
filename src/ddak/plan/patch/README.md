@@ -1,6 +1,9 @@
 # plan/patch (담당: 장민영)
 - 할 일: AI 코드 수정 P0(patch_config, patch_db_access, patch_storage). 토글 ON 전용·사람 승인
-- 현재: **검사기와 diff 생성 함수만 있다**(`check.py`의 `check_patch`·`build_patch`, AI 없음). 패치 생성 툴(AI)은 O2 분석 결과 형식이 정해지면 만든다. `__init__.py`의 툴 함수는 아직 빈 구현이다
+- 현재: 검사기와 diff 생성 함수(`check.py`의 `check_patch`·`build_patch`, AI 없음)와 **patch_config 제안 로직**(`generate.py`의 `propose_config_patch`, AI). 툴 등록(`tool.py`)과 입출력 계약은 아직 없다(NEEDS_CONTEXT). `__init__.py`의 툴 함수는 빈 구현이다
+- 제안 흐름(`propose_config_patch`, 토글 `code_patch`가 꺼져 있으면 TOGGLE_OFF): ① 대상 찾기(코드, 주석만 있는 줄 제외) → 없으면 `no_targets` ② 이전 승인 패치가 새 원본에서 `check_patch`를 통과하면 AI 없이 재사용(`reused`, meta.reuse=True) ③ 아니면 `call_ai`에 줄 번호 붙인 대상 파일(관문이 비밀값을 가림)을 주고 "줄 범위 → 새 줄" 수정만 받아 코드가 원본에 적용 → `build_patch` → `check_patch`. 불합격이면 위반 코드만 알려 주고 1회 재시도, 그래도 불합격이면 `rejected`(예외 아님)
+- 결과: `patch`(bytes)와 `meta`(`reason`·`reuse`·`source`)는 실행기 `prepare(patch=, patch_meta=)`에 그대로 넘긴다. `target_hashes`(경로 → 원본 sha256)·`env_vars`(새로 읽는 환경변수)·`check`(검사 결과)는 승인 화면·기록용
+- AI에는 가린 원본만 간다. 줄 번호로 고치므로 가린 값(`[REDACTED]`)이 실제 파일에 들어가지 않는다. 가림이 줄 수를 바꾸면(여러 줄 비밀값) AI를 부르지 않고 PRECONDITION_FAILED
 - 검사(공통 계약 3-5): 형식(UTF-8, 64KB, 파일 5개 이하, 기존 텍스트 파일 수정만) → 허용 파일(정책 `allowed_files`, `.py`, tests·migrations 제외) → 허용 패턴(지운 줄은 대상 패턴만, 추가한 줄은 대상 패턴·환경변수 읽기·import·괄호/주석만, 위험한 호출과 `;` 거부, 대상 패턴을 지운 파일엔 환경변수 읽기 필요, 대상 패턴이 하나도 없으면 거부) → 비밀값 리터럴(비밀 이름이 있는 줄의 문자열은 환경변수 키 자리만 허용, 개발값 기본값 포함) → O1과 같은 `core.snapshots.apply_diff`로 임시 사본에 적용 → `ast` 문법 검사 → 원본과 AST 비교(새로 생긴 호출·import는 허용 목록만, 비밀 이름에 문자열을 넣는 곳이 늘면 거부)
 - 형식(O1 `core.snapshots.apply_diff`와 같음): hunk 밖 줄은 `---`·`+++`·`@@`만(`diff --git`·`index`·모드 변경 등 Git 확장 헤더 거부), 파일마다 `---/+++` 쌍 하나와 바로 뒤 hunk 하나. 패치 생성 쪽은 `build_patch({경로: (원본, 수정본)})`로 이 형식을 만든다(파일 전체를 문맥으로 hunk 하나, 줄바꿈 유지)
 - 우회 차단(PR #7 리뷰): 경로의 `..`·절대 경로·따옴표 거부, 추가한 줄의 패턴·환경변수 판정은 주석·문자열을 뺀 코드로, 비밀 이름이 있는 줄의 문자열은 환경변수 키 자리만 허용(대문자 값도 거부)

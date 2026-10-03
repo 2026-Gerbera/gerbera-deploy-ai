@@ -409,3 +409,115 @@ def test_violation_messages_never_contain_line_contents(source: Path) -> None:
     result = check_patch(source, diff(bad))
     assert result.violations
     assert all(marker not in v.message and marker not in v.file for v in result.violations)
+
+
+SUBSCRIPT_ORIGINAL = """from flask import Flask
+
+
+def create_app():
+    app = Flask(__name__)
+    app.config["SECRET_KEY"] = "dev"
+    return app
+"""
+
+
+def _subscript_check(source: Path, old_line: str, new_lines: str, imports: str):  # type: ignore[no-untyped-def]
+    (source / APP).write_text(SUBSCRIPT_ORIGINAL, encoding="utf-8")
+    new = SUBSCRIPT_ORIGINAL.replace(old_line, new_lines).replace(
+        "from flask import Flask\n", imports + "from flask import Flask\n"
+    )
+    return check_patch(source, build_patch({APP: (SUBSCRIPT_ORIGINAL, new)}))
+
+
+@pytest.mark.parametrize(
+    ("value", "imports"),
+    [
+        ('os.environ["SECRET_KEY"]', "import os\n\n"),
+        ('os.environ.get("SECRET_KEY")', "import os\n\n"),
+        ('getenv("SECRET_KEY")', "from os import getenv\n\n"),
+    ],
+)
+def test_config_subscript_secret_key_from_env_passes(
+    source: Path, value: str, imports: str
+) -> None:
+    # 2차 데모 대표 패치. config 키 문자열 "SECRET_KEY"는 비밀값이 아니다
+    result = _subscript_check(source, '"dev"', value, imports)
+    assert result.passed, result.violations
+
+
+def test_list_literal_secret_is_still_rejected(source: Path) -> None:
+    result = _subscript_check(
+        source, '"dev"', '["HUNTER" + "PW"][0] or os.environ["SECRET_KEY"]', "import os\n\n"
+    )
+    assert "secret_literal" in codes(result)
+
+
+@pytest.mark.parametrize(
+    ("line", "imports"),
+    [
+        # 별칭 import: getenv()가 실제로는 다른 함수다
+        ('app.config["SECRET_KEY"] = getenv("SECRET_KEY")', "from os import getcwd as getenv\n"),
+        ('app.config["SECRET_KEY"] = getenv("SECRET_KEY")', "from os import system as getenv\n"),
+        ('app.config["SECRET_KEY"] = os.environ["SECRET_KEY"]', "from flaskr import db as os\n"),
+        # 대입으로 다시 묶기(줄 검사는 SECRET_KEY 패턴 때문에 통과한다)
+        (
+            'SECRET_KEY = getenv = os.remove\n    app.config["SECRET_KEY"] = getenv("SECRET_KEY")',
+            "import os\n\n",
+        ),
+        (
+            "SECRET_KEY = os.getenv = os.remove\n"
+            '    app.config["SECRET_KEY"] = os.getenv("SECRET_KEY")',
+            "import os\n\n",
+        ),
+        # * import는 어떤 이름이 묶이는지 알 수 없다
+        ('app.config["SECRET_KEY"] = os.environ["SECRET_KEY"]', "import os\nfrom os import *\n"),
+    ],
+)
+def test_rebinding_allowed_call_names_is_rejected(source: Path, line: str, imports: str) -> None:
+    result = _subscript_check(source, 'app.config["SECRET_KEY"] = "dev"', line, imports)
+    assert not result.passed
+    assert "dangerous" in codes(result)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        # 따옴표 없는 비밀값은 줄 검사·AST 모두 못 본다. 추가한 줄의 주석은 거부한다
+        '    app.config["SECRET_KEY"] = os.environ["SECRET_KEY"]  # was hunter2pass',
+        "    # SECRET_KEY old value hunter2pass\n"
+        '    app.config["SECRET_KEY"] = os.environ["SECRET_KEY"]',
+    ],
+)
+def test_comment_in_added_line_is_rejected(source: Path, line: str) -> None:
+    result = _subscript_check(source, '    app.config["SECRET_KEY"] = "dev"', line, "import os\n\n")
+    assert "comment" in codes(result)
+
+
+@pytest.mark.parametrize(
+    "lines",
+    [
+        # 패턴 단어(PROXY_FIX_) 이름에 값을 넣고 다음 줄에서 비밀 기본값으로 쓴다
+        '    PROXY_FIX_DEFAULT = "hunter" + "2pass"\n'
+        '    app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", PROXY_FIX_DEFAULT)',
+        '    PROXY_FIX_A = "hunter" + "2pass"\n'
+        "    PROXY_FIX_B = PROXY_FIX_A\n"
+        '    app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", PROXY_FIX_B)',
+    ],
+)
+def test_secret_value_through_other_name_is_rejected(source: Path, lines: str) -> None:
+    result = _subscript_check(
+        source, '    app.config["SECRET_KEY"] = "dev"', lines, "import os\n\n"
+    )
+    assert not result.passed
+    assert "secret_literal" in codes(result)
+
+
+def test_non_secret_env_default_still_passes(source: Path) -> None:
+    lines = (
+        '    app.config["SECRET_KEY"] = os.environ["SECRET_KEY"]\n'
+        '    app.config["APP_BASE_URL"] = os.environ.get("APP_BASE_URL", "http://localhost:5000")'
+    )
+    result = _subscript_check(
+        source, '    app.config["SECRET_KEY"] = "dev"', lines, "import os\n\n"
+    )
+    assert result.passed, result.violations

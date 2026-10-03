@@ -28,6 +28,15 @@ def compare_env_results(inp: CompareEnvResultsInput, ctx: RunContext) -> Compare
             ErrorCode.PRECONDITION_FAILED, f"이번 run의 smoke 결과가 없다: {', '.join(missing)}"
         )
     local, cloud = smoke[Target.LOCAL], smoke[Target.CLOUD]
+    # 두 환경이 똑같이 실패해도 값은 같아 match가 된다. smoke가 통과한 환경끼리만 비교한다.
+    # 이것은 패리티 실패(passed=False → 클라우드 롤백)가 아니라 비교 불가(FAILED_VERIFY)다
+    failed = [
+        t.value for t, out in ((Target.LOCAL, local), (Target.CLOUD, cloud)) if not out.passed
+    ]
+    if failed:
+        raise DdakToolError(
+            ErrorCode.PRECONDITION_FAILED, f"smoke가 통과하지 않은 환경이 있다: {', '.join(failed)}"
+        )
     result = compare_env(local, cloud, artifacts=ctx.release_artifacts)
     return CompareEnvResultsOutput(
         run_id=inp.run_id,

@@ -131,3 +131,16 @@ async def test_executor_runs_compare_after_both_smoke_tracks() -> None:
     compare = next(r for r in result.records if r.tool == "compare_env_results")
     assert compare.status == "succeeded" and compare.output is not None
     assert compare.output["passed"] is True
+
+
+@pytest.mark.parametrize("failed", [[Target.LOCAL], [Target.CLOUD], [Target.LOCAL, Target.CLOUD]])
+def test_compare_refuses_when_a_smoke_did_not_pass(failed: list[Target]) -> None:
+    # 두 환경이 똑같이 실패하면 값이 같아 match가 된다. 패리티 성공이 아니라 비교 불가로 둔다
+    _smoke(Target.LOCAL)
+    _smoke(Target.CLOUD)
+    for target in failed:
+        record(results_for(RUN)[target].model_copy(update={"passed": False}))
+    with pytest.raises(DdakToolError) as caught:
+        compare_env_results(CompareEnvResultsInput(run_id=RUN), RunContext(RUN))
+    assert caught.value.code is ErrorCode.PRECONDITION_FAILED
+    assert all(t.value in str(caught.value) for t in failed)
