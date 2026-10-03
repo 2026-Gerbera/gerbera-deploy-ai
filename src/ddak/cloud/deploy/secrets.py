@@ -23,7 +23,7 @@ from typing import Any, Protocol
 from ddak.cloud.deploy._aws import call
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 
-GENERATED = "SECRET_KEY"
+GENERATED = frozenset({"SECRET_KEY", "DATABASE_URL"})
 _KEY = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
 _SECRET_KEY_VALUE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -49,6 +49,7 @@ def fill_secrets(
     secret_ids: Mapping[str, str],
     *,
     token: Callable[[], str] = lambda: secrets.token_hex(32),
+    generated_values: Mapping[str, str] | None = None,
 ) -> SecretFilled:
     """keys마다 시크릿에 현재 값이 있게 한다. 새로 만들 것은 SECRET_KEY뿐이다."""
     if not keys:
@@ -64,30 +65,41 @@ def fill_secrets(
 
     # 먼저 전부 확인하고, 운영자 키가 하나라도 비었으면 아무것도 쓰지 않는다.
     has_value = {k: _has_current(client, secret_ids[k]) for k in keys}
-    missing = [k for k in keys if k != GENERATED and not has_value[k]]
+    missing = [k for k in keys if k not in GENERATED and not has_value[k]]
     if missing:
         raise DdakToolError(
             ErrorCode.PRECONDITION_FAILED,
             f"운영자가 넣어야 하는 키가 비어 있다: {', '.join(missing)}",
         )
     generated: list[str] = []
-    if GENERATED in keys:
-        secret_id = secret_ids[GENERATED]
-        if has_value[GENERATED]:
+    values = dict(generated_values or {})
+    values.setdefault("SECRET_KEY", token())
+    for key in keys:
+        if key not in GENERATED:
+            continue
+        secret_id = secret_ids[key]
+        if has_value[key]:
+            if key != "SECRET_KEY":
+                continue
             existing = call(
-                "시크릿 값을 읽지 못했다", lambda: client.get_secret_value(SecretId=secret_id)
+                "시크릿 값을 읽지 못했다",
+                lambda secret_id=secret_id: client.get_secret_value(SecretId=secret_id),
             ).get("SecretString")
             if not isinstance(existing, str) or not _SECRET_KEY_VALUE.fullmatch(existing):
                 raise DdakToolError(
                     ErrorCode.CONFIG_INVALID, "기존 SECRET_KEY는 64자리 hex여야 한다"
                 )
         else:
-            value = token()
+            value = values.get(key)
+            if not isinstance(value, str) or not value:
+                raise DdakToolError(ErrorCode.CONFIG_INVALID, f"{key} 생성 값이 없다")
             call(
                 "시크릿 값을 쓰지 못했다",
-                lambda: client.put_secret_value(SecretId=secret_id, SecretString=value),
+                lambda secret_id=secret_id, value=value: client.put_secret_value(
+                    SecretId=secret_id, SecretString=value
+                ),
             )
-            generated.append(GENERATED)
+            generated.append(key)
     return SecretFilled(keys=list(keys), generated=generated, changed=bool(generated))
 
 

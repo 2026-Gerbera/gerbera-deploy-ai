@@ -172,11 +172,11 @@ _TIMEOUTS: Mapping[str, int] = {
     "push_image": 120,  # 저장소 API로 digest 확인
     "generate_dockerfile": 120,  # AI Dockerfile 초안 1회
     "validate_dockerfile": 600,  # 정적 검사 + 로컬 검증 빌드(push 없음)
-    "generate_infra": 300,  # AI HCL 초안 1회(수정 루프 최대 3회는 계획 흐름 조정자가 돈다)
+    "generate_infra": 600,  # 긴 HCL 응답과 API 재시도를 포함한 AI 초안 1회
     "validate_infra": 300,  # 정적 게이트 + init(미러) + validate + 정책 검사
     "plan_infra": 600,  # 읽기 세션 plan + show -json + Access Analyzer
     "apply_infra": 3600,  # RDS 생성 최대 20분(AWS 문서). provider 기본 create 타임아웃 40분
-    "prepare_db": 180,  # 클라우드는 ECS 일회성 태스크
+    "prepare_db": 300,  # Fargate cold start를 포함한 precheck·up·verify 3단계
     "deploy_tier": 300,
     "rollback_tier": 300,
     "ensure_tls": 2700,  # "도메인 연결" run의 ACM 발급 상한(45분). 데모 run은 툴이 60초로 자름

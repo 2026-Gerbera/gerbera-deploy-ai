@@ -80,7 +80,15 @@ class Revision:
     changed: bool  # 이미 같은 image였으면 False(새 리비전 없음)
 
 
-def register_revision(client: EcsClient, target: EcsService, images: Mapping[str, str]) -> Revision:
+def register_revision(
+    client: EcsClient,
+    target: EcsService,
+    images: Mapping[str, str],
+    *,
+    environment: Mapping[str, str] | None = None,
+    secrets: Mapping[str, str] | None = None,
+    only_containers: frozenset[str] | None = None,
+) -> Revision:
     """서비스의 현재 태스크 정의를 복사해 images({컨테이너: 참조})만 바꾼 새 리비전을 등록한다.
 
     서비스는 바꾸지 않는다. 마이그레이션(database.py)이 서비스 교체 전에 이 리비전으로 돈다.
@@ -103,10 +111,33 @@ def register_revision(client: EcsClient, target: EcsService, images: Mapping[str
             ErrorCode.CONFIG_INVALID, f"태스크 정의에 컨테이너가 없다: {', '.join(missing)}"
         )
     previous = {name: by_name[name].get("image") for name in images}
-    if all(previous[name] == ref for name, ref in images.items()):
+    if only_containers is not None and not only_containers:
+        raise DdakToolError(ErrorCode.CONFIG_INVALID, "실행할 컨테이너가 없다")
+    if only_containers is not None and not only_containers <= by_name.keys():
+        raise DdakToolError(ErrorCode.CONFIG_INVALID, "태스크 정의에 실행할 컨테이너가 없다")
+    if (
+        only_containers is None
+        and environment is None
+        and secrets is None
+        and all(previous[name] == ref for name, ref in images.items())
+    ):
         return Revision(current_arn, current_arn, previous, changed=False)
     for name, ref in images.items():
         by_name[name]["image"] = ref
+    was = by_name.get("was")
+    if was is not None:
+        if environment is not None:
+            was["environment"] = [
+                {"name": name, "value": value} for name, value in sorted(environment.items())
+            ]
+        if secrets is not None:
+            was["secrets"] = [
+                {"name": name, "valueFrom": value} for name, value in sorted(secrets.items())
+            ]
+    if only_containers is not None:
+        containers = [c for c in containers if c.get("name") in only_containers]
+        for container in containers:
+            container["essential"] = True
 
     register: dict[str, Any] = {k: definition[k] for k in _REGISTER_KEYS if k in definition}
     register["containerDefinitions"] = containers
@@ -126,12 +157,14 @@ def replace_images(
     deadline: float,
     *,
     desired_count: int,
+    environment: Mapping[str, str] | None = None,
+    secrets: Mapping[str, str] | None = None,
     poll_s: float = 10.0,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
 ) -> Revision:
     """images로 새 리비전을 배포하고 완료까지 기다린다. 서비스가 0개면 desired_count로 올린다."""
-    revision = register_revision(client, target, images)
+    revision = register_revision(client, target, images, environment=environment, secrets=secrets)
     stopped = _service(client, target).get("desiredCount", 0) == 0
     if not revision.changed and not stopped:
         return revision

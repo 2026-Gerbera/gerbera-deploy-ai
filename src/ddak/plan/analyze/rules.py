@@ -10,9 +10,17 @@ from typing import Literal
 _NAME = r"[A-Z][A-Z0-9_]{0,63}"
 _EXAMPLE_LINE = re.compile(rf"^\s*(?:export\s+)?({_NAME})\s*=")  # 값 쪽은 캡처하지 않는다
 _SOURCE_USE = re.compile(rf"os\.(?:environ\[|environ\.get\(|getenv\()\s*['\"]({_NAME})['\"]")
-_SECRET = re.compile(r"SECRET|PASSWORD|PASSWD|TOKEN|PRIVATE|CREDENTIAL|API_KEY|_KEY$")
+_SECRET = re.compile(
+    r"SECRET|PASSWORD|PASSWD|TOKEN|PRIVATE|CREDENTIAL|API_KEY|_KEY$|^DATABASE_URL$"
+)
 _PLAIN = re.compile(
-    r"^(?:DEBUG|PORT|HOST|LOG_LEVEL|ENV|TZ|WORKERS)$|_(?:ENABLED|SECURE|PORT|HOST|LEVEL)$"
+    r"^(?:"
+    r"DEBUG|PORT|HOST|LOG_LEVEL|ENV|TZ|WORKERS|"
+    r"APP_ENV|APP_BASE_URL|MIGRATE_MODE|DATABASE_URL_MIGRATOR|"
+    r"PROXY_FIX_X_FOR|PROXY_FIX_X_PROTO|"
+    r"RELEASE_ID|SOURCE_SHA"
+    r")$"
+    r"|_(?:ENABLED|SECURE|PORT|HOST|LEVEL)$"
 )
 _SKIP_DIRS = {"node_modules", "__pycache__"}
 _MAX_BYTES = 1_000_000

@@ -548,7 +548,7 @@
       "local",
       "cloud"
     ],
-    "timeout_s": 180,
+    "timeout_s": 300,
     "uses_ai": false
   },
   {
