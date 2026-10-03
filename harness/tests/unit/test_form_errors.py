@@ -22,14 +22,26 @@ class Boxes(HTMLParser):
         super().__init__()
         self.last_form = None
         self.visible = []
+        self.details = []
         self.feed(text)
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
+        if tag == "details":
+            self.details.append("open" in attrs)
         if tag == "input" and attrs.get("name") == "_form_id":
             self.last_form = attrs["value"]
-        if tag == "section" and "data-form-error" in attrs and "hidden" not in attrs:
+        if (
+            tag == "section"
+            and "data-form-error" in attrs
+            and "hidden" not in attrs
+            and all(self.details)
+        ):
             self.visible.append(self.last_form)
+
+    def handle_endtag(self, tag):
+        if tag == "details":
+            self.details.pop()
 
 
 def submit(client, path, origin, ident, *, js=False, **fields):
@@ -271,3 +283,27 @@ def test_failed_action_keeps_error_inside_its_summary(actions_panel, uncertain):
     )[0]
     assert "PRECONDITION_FAILED" in article and "준비 작업 실패" in article
     assert 'role="alert"' in article and "<form" not in article
+
+
+@pytest.mark.parametrize(
+    "ident,method,fields",
+    [
+        ("plan", "enqueue_deployment", {"ref": "v2"}),
+        ("unlock", "unlock_project", {"reason": "상태 확인"}),
+    ],
+)
+def test_dashboard_operating_error_expands_its_details(rig, monkeypatch, ident, method, fields):
+    service, _, _ = rig
+
+    def fail(*args, **kwargs):
+        raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "운영 요청 실패")
+
+    monkeypatch.setattr(service, method, fail)
+    origin = "/?project=" + PROJECT
+    with client_for(service) as client:
+        client.get(origin)
+        response = submit(client, "/ops/" + ident, origin, ident, **fields)
+        assert response.status_code == 303
+        page = client.get(response.headers["location"])
+        assert Boxes(page.text).visible == [ident]
+        assert "<details open><summary>운영 도구</summary>" in page.text

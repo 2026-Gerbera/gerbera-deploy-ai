@@ -32,7 +32,9 @@ def test_approval_actions_precede_details_and_basis_is_summarized(rig):
     before, technical = html.split('<details id="approval-technical">', 1)
     assert "<summary>기술 정보</summary>" in technical
     assert "long-reason-" not in before and "long-reason-" in technical
-    assert html.count('value="approved"') == html.count('value="denied"') == 1
+    # 한 폼 안에 상단(요약 바로 아래)과 본문 끝 결정 바가 있다. 같은 POST·같은 승인 해시를 쓴다.
+    assert html.count("data-approval-form") == 1
+    assert html.count('value="approved"') == html.count('value="denied"') == 2
     assert before.index('class="approval-bar"') < before.index("준비 경고")
     assert before.index('class="approval-bar"') < before.index('id="decision-basis"')
     assert 'data-label="포함 단계">2개' in before

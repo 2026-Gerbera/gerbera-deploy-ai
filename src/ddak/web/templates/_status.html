@@ -1,12 +1,13 @@
 {% set labels = {
   'AWAITING_APPROVAL':'승인 대기','APPROVED':'승인됨 · 곧 시작','RUNNING':'배포 중','DEPLOYING':'배포 중','FINALIZING':'마무리 중','PREPARING':'배포 준비 중',
-  'SUCCEEDED':'배포 완료','FAILED_BEFORE_DEPLOY':'배포 전에 중단','FAILED_LOCAL':'온프렘 배포 실패','FAILED_CLOUD':'클라우드 배포 실패','FAILED_VERIFY':'배포 후 검증 실패','PARITY_FAILED':'두 환경 결과가 다름','CANCELLED':'취소됨','NEEDS_HUMAN':'직접 확인 필요','SUPERSEDED':'새 커밋으로 대체됨',
-  'PENDING':'대기','WAITING':'앞 단계 기다리는 중','DONE':'완료','FAILED':'실패','ROLLED_BACK':'이전 버전으로 되돌림','ROLLBACK_FAILED':'되돌리기 실패 · 직접 확인 필요','N/A':'이번 대상 아님','SKIPPED':'건너뜀',
-  'succeeded':'성공','failed':'실패','check_failed':'검사 불합격','skipped':'건너뜀','UNKNOWN':'확인 중'
+  'PATCH_GENERATING':'코드 수정 제안 준비 중','PATCH_REVIEWING':'수정 요청 검토 중','PATCH_FINALIZING':'선택한 수정으로 승인 자료 준비 중','PATCH_PUBLISHING':'새 승인 자료 연결 중',
+  'SUCCEEDED':'배포 완료','FAILED_BEFORE_DEPLOY':'배포 전에 중단','FAILED_LOCAL':'온프렘 배포 실패','FAILED_CLOUD':'클라우드 배포 실패','FAILED_VERIFY':'배포 후 검증 실패','PARITY_FAILED':'두 환경 결과가 다름','CANCELLED':'취소됨','NEEDS_HUMAN':'직접 확인 필요','SUPERSEDED':'새 승인 자료로 대체됨',
+  'IDLE':'실행 없음','PENDING':'대기','WAITING':'앞 단계 기다리는 중','DONE':'완료','FAILED':'실패','ROLLED_BACK':'이전 버전으로 되돌림','ROLLBACK_FAILED':'되돌리기 실패 · 직접 확인 필요','N/A':'이번 대상 아님','SKIPPED':'건너뜀',
+  'patch_lost':'이전 승인 수정 손실 · 승인 중단','succeeded':'성공','failed':'실패','check_failed':'검사 불합격','skipped':'건너뜀','UNKNOWN':'확인 중'
 } %}
 {% macro label(code) -%}{{ labels.get(code, code or '확인 중') }}{%- endmacro %}
 {% macro state(code) -%}
-{% set kind = 'success' if code in ('SUCCEEDED','DONE','succeeded') else 'failure' if code in ('FAILED_BEFORE_DEPLOY','FAILED_LOCAL','FAILED_CLOUD','FAILED_VERIFY','PARITY_FAILED','NEEDS_HUMAN','FAILED','ROLLBACK_FAILED','failed','check_failed') else 'waiting' if code in ('AWAITING_APPROVAL','ROLLED_BACK','WAITING','PENDING') else 'running' if code in ('APPROVED','RUNNING','DEPLOYING','FINALIZING','PREPARING') else 'neutral' %}
+{% set kind = 'success' if code in ('SUCCEEDED','DONE','succeeded') else 'failure' if code in ('FAILED_BEFORE_DEPLOY','FAILED_LOCAL','FAILED_CLOUD','FAILED_VERIFY','PARITY_FAILED','NEEDS_HUMAN','FAILED','ROLLBACK_FAILED','failed','check_failed','patch_lost') else 'waiting' if code in ('AWAITING_APPROVAL','ROLLED_BACK','WAITING','PENDING') else 'running' if code in ('APPROVED','RUNNING','DEPLOYING','FINALIZING','PREPARING','PATCH_GENERATING','PATCH_REVIEWING','PATCH_FINALIZING','PATCH_PUBLISHING') else 'neutral' %}
 <span class="state {{ kind }}" data-code="{{ code }}"><i aria-hidden="true"></i><span>{{ label(code) }}</span></span>
 {%- endmacro %}
 
@@ -15,6 +16,7 @@
 <section class="notice failure" data-form-error role="alert" tabindex="-1"{% if not error %} hidden{% endif %}>
   <p><span class="state failure"><span aria-hidden="true">⚠</span><strong>오류</strong></span> <code data-error-code>{{ error.code if error else '' }}</code></p>
   <p data-error-message>{{ error.message if error else '' }}</p>
+  {% if error and error.submitted and 'revision' in error.submitted and not error.inputs_restored %}<div data-stale-input><h2>이전 화면에서 보낸 입력</h2><p>아래 초안은 최신 제안에 적용하지 않았습니다. 필요한 문구를 복사해 다시 검토하세요.</p><p>선택했던 제안: {% for key, value in error.submitted.items() if key.startswith('apply_') and value == 'on' %}<code>{{ key[6:] }}</code>{% if not loop.last %}, {% endif %}{% else %}없음{% endfor %}</p>{% for key, value in error.submitted.items() if key.startswith('prompt_') and value %}<h3>{{ key[7:] }}에 보낸 요청</h3><pre>{{ value }}</pre>{% endfor %}</div>{% endif %}
 </section>
 {% endif %}
 {%- endmacro %}

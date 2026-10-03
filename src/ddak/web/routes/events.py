@@ -5,7 +5,7 @@ import json
 from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
 
 from ddak.core.contracts.events import RunEvent
 from ddak.core.redact import redact_obj
@@ -28,6 +28,11 @@ async def progress_page(request: Request, run_id: str):
         run = deployment(request).get_run(run_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="실행을 찾을 수 없습니다") from exc
+    if run["status"] == "AWAITING_APPROVAL":
+        return RedirectResponse(f"/runs/{run_id}/approval", status_code=303)
+    approved = any(
+        item.decision == "approved" for item in deployment(request).get_approvals(run_id)
+    )
     return templates.TemplateResponse(
         request=request,
         name="progress.html",
@@ -36,6 +41,8 @@ async def progress_page(request: Request, run_id: str):
             "project": run["project"],
             "status": run["status"],
             "targets": (run.get("context") or {}).get("targets"),
+            "result": run.get("result") or {},
+            "approved": approved,
             "terminal_states": sorted(_FINAL),
         },
     )

@@ -38,6 +38,7 @@ class RunContext:
     release_artifacts: ReleaseArtifacts | None = None
     deadline: float | None = None  # monotonic 절대 시각, 툴/자식 프로세스 제한 시간
     previous_release: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    review_baseline_hash: str | None = None  # 제안 재계획이 관측한 환경 상태. 실행 전까지 결합한다.
     build_source: str | None = None  # 승인 후 생성한 빌드 사본 경로
 
     targets: Literal["onprem", "cloud", "both"] | None = None  # None은 기존 계획 대상 유지
@@ -59,6 +60,10 @@ class RunContext:
     source_checks: Mapping[str, Any] = field(default_factory=dict)  # 비밀값 없는 검사·예외 요약
 
     def __post_init__(self) -> None:
+        if self.review_baseline_hash is not None and not re.fullmatch(
+            r"sha256:[0-9a-f]{64}", self.review_baseline_hash
+        ):
+            raise ValueError("재검토 배포 기준 해시 형식 오류")
         if not isinstance(self.preparation_warnings, list) or len(self.preparation_warnings) > 20:
             raise ValueError("준비 경고 형식 오류")
         if any(not isinstance(w, str) or len(w) > 1000 for w in self.preparation_warnings):
@@ -100,6 +105,8 @@ class RunContext:
 
     def to_json_dict(self) -> dict[str, Any]:
         data = asdict(self)
+        if self.review_baseline_hash is None:
+            data.pop("review_baseline_hash")  # 확장 전 승인 자료의 context 해시도 유지한다.
         data["adapter_mode"] = self.adapter_mode.value
         data["mode"] = self.mode.value
         if self.release_artifacts is not None:

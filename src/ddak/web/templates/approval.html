@@ -1,82 +1,51 @@
 {% from "_form_errors.html" import form_fields, form_error with context %}
 {% extends 'base.html' %}
-{% from '_status.html' import state, target, step_label %}
+{% from '_status.html' import state, target %}
 {% block title %}배포 승인 · Gerbera{% endblock %}
-{% block breadcrumb %}Deployment approval{% endblock %}
+{% block breadcrumb %}배포 · 변경 확인{% endblock %}
 {% block content %}
-{% set local = approval.plan and approval.plan.deploy.local.steps|length > 0 %}
-{% set cloud = approval.plan and approval.plan.deploy.cloud.steps|length > 0 %}
-<section class="page-heading"><div>{{ state('AWAITING_APPROVAL') }}<h1>배포 승인</h1><p>{{ approval.project }} · {{ approval.ref or '브랜치 기록 없음' }} · 커밋 <code>{{ (approval.source_sha or '')[:7] or '기록 없음' }}</code>. 변경 내용을 확인한 뒤 승인하세요.</p></div><p>승인 전에는 배포를 실행하지 않습니다.</p></section>
-<div class="approval-context">
-<section class="section"><h2>배포할 소스</h2><dl class="detail-list"><div><dt>저장소</dt><dd>{{ approval.repo_url or '기록 없음' }}</dd></div><div><dt>커밋 · 브랜치</dt><dd><code>{{ (approval.source_sha or '')[:7] or '기록 없음' }}</code> · {{ approval.ref or '기록 없음' }}</dd></div><div><dt>이미지 빌드</dt><dd>{{ {'codebuild':'AWS CodeBuild','local':'로컬 빌드'}.get(approval.build_backend, approval.build_backend or '기록 없음') }}</dd></div><div><dt>이미지 저장소</dt><dd>{{ approval.image_repository or '플랫폼 설정' }}</dd></div></dl></section>
-<section class="section"><h2>배포 위치</h2>{% for name, included in (('local',local),('cloud',cloud)) %}<div class="env {{ name }}"><h2>{{ target(name) }}</h2><div>{{ state('AWAITING_APPROVAL' if included else 'N/A') }}</div></div>{% endfor %}<p class="note">두 환경이 대상이면 각각 독립적으로 진행합니다.</p></section>
-</div>
-<form class="approval-bar" method="post" action="/runs/{{ approval.run_id }}/approval" data-approval-form>{{ form_fields("approval") }}
-  <div><h2>이 변경을 배포할까요?</h2><p>{% if local and cloud %}승인하면 온프렘과 클라우드에 각각 배포합니다.{% elif local %}승인하면 온프렘에 배포합니다. 클라우드는 바뀌지 않습니다.{% elif cloud %}승인하면 클라우드에 배포합니다. 온프렘은 바뀌지 않습니다.{% else %}승인하면 기록된 실행 계획을 시작합니다.{% endif %}{% if approval.infra_summary %} 인프라 변경도 함께 적용합니다.{% endif %}</p></div>
-  <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="project" value="{{ project }}">
-  <div class="heading-actions"><button class="button danger" name="decision" value="denied" type="submit">거절</button><button class="button" name="decision" value="approved" type="submit">승인하고 배포</button></div>
-</form>{{ form_error("approval") }}
-{% if approval.preparation_warnings or approval.preparation_failures %}<section class="notice"><h2>준비 경고</h2><ul>{% for warning in approval.preparation_warnings %}<li>{{ warning }}</li>{% endfor %}{% for name, tools in approval.preparation_failures.items() %}<li>{{ target(name) }}: 준비하지 못함 · {% if approval.preparation_errors.get(name) %}{{ approval.preparation_errors[name].code }} · {{ approval.preparation_errors[name].detail }}{% else %}미등록 {{ tools|join(', ') }}{% endif %}</li>{% endfor %}</ul></section>{% endif %}
-{% if approval.infra_summary %}{% set infra = approval.infra_summary %}{% set counts = infra.get('counts', {}) %}
-<section class="section"><h2>클라우드 인프라 변경</h2><p>생성 {{ counts.get('create', '기록 없음') }} · 수정 {{ counts.get('update', '기록 없음') }} · 삭제 {{ counts.get('delete', '기록 없음') }} · 교체 {{ counts.get('replace', '기록 없음') }}</p>
-<h3>삭제·교체되는 리소스</h3>{% if infra.destructive %}<ul>{% for item in infra.destructive %}<li>{{ item }}</li>{% endfor %}</ul>{% else %}<p>없음</p>{% endif %}
-<h3>권한(IAM) 변경</h3>
-{% if infra.iam_diff %}<ul>{% for item in infra.iam_diff %}
-{% set action = item.get('action') %}
-<li><code>{{ item.get('address') or '대상 기록 없음' }}</code> · {{ {'create':'생성','update':'수정','delete':'삭제','replace':'교체','ensure':'준비'}.get(action, action) if action is string else '작업 기록 없음' }}{% if item.boundary_attached is sameas true %} · 권한 상한 적용됨{% endif %}{% if item.trust_changed is sameas true %} · 신뢰 정책 바뀜{% endif %}
-{% set boundary_changes = item.get('boundary_changes', []) %}
-{% if item.get('address') == 'ddak.foundation' and boundary_changes %}
-<div class="table-wrap"><table><thead><tr><th scope="col">경계 정책 · ARN</th><th scope="col">동작</th><th scope="col">기존 버전</th><th scope="col">기존 문서 SHA-256</th><th scope="col">목표 템플릿 SHA-256</th><th scope="col">Statement 변경</th><th scope="col">Resource 변경</th></tr></thead><tbody>
-{% for boundary in boundary_changes %}<tr>
-<td data-label="경계 정책 · ARN"><strong>{{ boundary.get('policy_name') or (boundary.get('policy_arn', '').split('/')[-1] if boundary.get('policy_arn') else '정책 이름 기록 없음') }}</strong>{% if boundary.get('policy_arn') %}<br><code>{{ boundary.policy_arn }}</code>{% endif %}</td>
-<td data-label="동작">{{ {'create':'생성','update':'수정','unchanged':'변경 없음'}.get(boundary.get('action'), boundary.get('action') or '기록 없음') }}</td>
-<td data-label="기존 버전"><code>{{ boundary.get('previous_version_id') or '없음' }}</code></td>
-<td data-label="기존 문서 SHA-256"><code>{{ boundary.get('previous_document_sha256') or '없음' }}</code></td>
-<td data-label="목표 템플릿 SHA-256"><code>{{ boundary.get('template_sha256') or '기록 없음' }}</code></td>
-<td data-label="Statement 변경">
-{% for heading, statements in (('추가', boundary.get('added_statements', [])), ('삭제', boundary.get('removed_statements', []))) %}
-<strong>{{ heading }} ({{ statements|length }})</strong>
-{% if statements %}<ul>{% for statement in statements %}<li>
-{% for key, value in statement.items() %}<span>{{ key }}: <code>{{ value|tojson }}</code></span>{% if not loop.last %} · {% endif %}{% endfor %}
-</li>{% endfor %}</ul>{% else %}<p>없음</p>{% endif %}
-{% endfor %}</td>
-<td data-label="Resource 변경">{% for heading, resources in (('추가', boundary.get('added_resources', [])), ('삭제', boundary.get('removed_resources', []))) %}<strong>{{ heading }} ({{ resources|length }})</strong>{% if resources %}<ul>{% for resource in resources %}<li><code>{{ resource }}</code></li>{% endfor %}</ul>{% else %}<p>없음</p>{% endif %}{% endfor %}</td>
-</tr>{% endfor %}</tbody></table></div>
-{% endif %}
-{% set grants = item.get('proposed_allow', item.get('added')) %}
-{% if item.get('address') == 'ddak.foundation' and boundary_changes %}
-{% if item.get('ecs_infrastructure_role') %}<p>ECS 인프라 역할: <code>{{ item.ecs_infrastructure_role.arn }}</code><br>연결 정책: <code>{{ item.ecs_infrastructure_role.managed_policy_arn }}</code></p>{% endif %}
-{% if item.get('bootstrap_dbinit_exception') %}<p>RDS bootstrap 읽기 예외: <code>{{ item.bootstrap_dbinit_exception.resource }}</code> · 역할 <code>{{ item.bootstrap_dbinit_exception.role_address }}</code> · <code>{{ item.bootstrap_dbinit_exception.actions|join(', ') }}</code></p>{% endif %}
-{% elif grants is sequence and grants is not string and grants is not mapping and grants %}
-<p>{{ '제안 정책의 전체 허용 목록' if 'proposed_allow' in item else '추가 허용 목록' }}</p>
-{% for grant in grants %}{% if grant is mapping %}
-<p>허용 작업: <code>{{ grant.actions|join(', ') if grant.actions is sequence and grant.actions is not string and grant.actions is not mapping else grant.get('actions', '기록 없음') }}</code></p>
-<p>대상 리소스: <code>{{ grant.resources|join(', ') if grant.resources is sequence and grant.resources is not string and grant.resources is not mapping else grant.get('resources', '기록 없음') }}</code></p>
-{% else %}<pre>{{ grant|tojson(indent=2) }}</pre>{% endif %}{% endfor %}
-{% else %}<p>권한 세부 기록</p><pre>{{ item|tojson(indent=2) }}</pre>{% endif %}
-</li>{% endfor %}</ul>{% else %}<p>표시할 권한 변경이 없습니다. 전체 내용은 기술 정보에서 확인하세요.</p>{% endif %}
-<h3>자동 보안 검사</h3><p>{% if infra.checkov %}Checkov {{ '통과' if infra.checkov.passed else '미통과' }}{% else %}Checkov 기록 없음{% endif %}{% if infra.access_analyzer %} · Access Analyzer 오류 {{ infra.access_analyzer.errors }} · 보안 경고 {{ infra.access_analyzer.security_warnings }}{% endif %}</p></section>
-{% endif %}
-<p><a href="/setup?project={{ approval.project|urlencode }}">연결 설정·필요한 환경 값 입력</a></p>
-{% if approval.missing_env_keys %}<section class="notice"><h2>값 필요</h2><p>{{ approval.missing_env_keys|join(', ') }}. 프로젝트 환경 설정에 입력하세요.</p></section>{% endif %}
-{% if approval.patch_meta %}<section class="section" id="patch-review"><h2>코드 수정 · 패치 검사</h2><p>{{ approval.patch_meta.reason or '환경 설정 패치를 검토하세요.' }}</p>
-{% if approval.patch_meta.passed is defined %}<p>check_patch: {{ '통과' if approval.patch_meta.passed else '실패' }} · {{ approval.patch_meta.gitleaks }}</p><p>새 환경 키: {{ approval.patch_meta.new_env_keys|join(', ') }}</p>{% endif %}
-<p>패치 원문은 표시하지 않습니다. 패턴·대상 해시·환경 키와 승인 해시를 확인하세요.</p><pre>{{ approval.patch_meta|tojson(indent=2) }}</pre></section>{% endif %}
-{% if approval.decision_basis %}
-{% set basis = approval.decision_basis %}{% set planner = basis.get('planner') or {} %}{% set env = basis.get('env_classification', {}) %}
-{% set counts = namespace(total=0, secret=0, plain=0) %}
-{% for keys in env.get('by_provider', {}).values() %}{% for key in keys %}
-{% set counts.total = counts.total + 1 %}{% if key.kind == 'secret' %}{% set counts.secret = counts.secret + 1 %}{% elif key.kind == 'plain' %}{% set counts.plain = counts.plain + 1 %}{% endif %}
+{% if story is not defined %}{% if approval_story is defined %}{% set story = approval_story(approval) %}{% else %}{% set deploy_plan = (approval.plan or {}).get('deploy') or {} %}{% set story = {'summary': (approval.ref or '배포 소스') ~ '의 커밋 ' ~ ((approval.source_sha or '')[:7] or '미확인') ~ '를 배포합니다.', 'targets': (['local'] if (deploy_plan.get('local') or {}).get('steps') else []) + (['cloud'] if (deploy_plan.get('cloud') or {}).get('steps') else []), 'files': [], 'patches': [], 'findings': [], 'mappings': [], 'images': [], 'containers': [], 'migration': false, 'steps': []} %}{% endif %}{% endif %}
+{% set local = 'local' in story.targets %}{% set cloud = 'cloud' in story.targets %}
+{% set patch_lost = patch_review and patch_review.state == 'patch_lost' %}
+{% macro decisions() %}<div class="heading-actions"><button class="button danger" name="decision" value="denied" type="submit">거절</button><button class="button" name="decision" value="approved" type="submit" {% if patch_review and patch_review.state not in ('cancelled','sealed') %}disabled{% endif %}>{{ '배포 시작 재시도' if start_retry else '승인하고 배포' }}</button></div>{% endmacro %}
+<section class="page-heading"><div>{{ state('patch_lost' if patch_lost else 'APPROVED' if start_retry else 'AWAITING_APPROVAL') }}<h1>이 변경을 배포합니다</h1><p class="story-lead">{{ story.summary }}</p></div><span>{{ approval.project }}</span></section>
+{% if patch_lost %}{% with patch_loss=patch_review %}{% include '_patch_loss.html' %}{% endwith %}{% endif %}
+<form method="post" id="deployment-approval" action="/runs/{{ approval.run_id }}/approval" data-approval-form>{{ form_fields('approval') }}
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="project" value="{{ project }}">
+<div class="approval-bar"><div><strong>{{ '승인이 중단됐습니다' if patch_lost else '승인은 저장됐습니다. 시작을 다시 시도하세요.' if start_retry else '변경을 확인한 뒤 한 번만 승인하세요.' }}</strong><p>{{ '저장된 승인과 대상별 해시를 그대로 사용합니다.' if start_retry else '승인 전에는 배포를 실행하지 않습니다.' }}</p></div>{{ decisions() }}</div>
+{% if approval.preparation_warnings or approval.preparation_failures %}<section class="notice"><h2>준비 경고</h2><ul>{% for warning in approval.preparation_warnings %}<li>{{ warning }}</li>{% endfor %}{% for name, tools in approval.preparation_failures.items() %}<li>{{ target(name) }}: 준비하지 못함 · {{ approval.preparation_errors.get(name, {}).get('detail', tools|join(', ')) }}</li>{% endfor %}</ul></section>{% endif %}
+<section class="section story-section" id="code-changes"><h2><span class="section-index">01</span> 무엇이 바뀌었나</h2><p>환경별 마지막 성공 배포와 비교한 파일입니다. 첫 배포는 모든 파일을 추가로 표시합니다.</p>
+{% if story.files %}<div class="table-wrap"><table><thead><tr><th>티어</th><th>변경 파일</th><th>환경</th><th>변경 내용</th></tr></thead><tbody>{% for file in story.files %}<tr><td>{{ file.tier }}</td><td><code>{{ file.file }}</code></td><td>{{ target(file.target) }}</td><td>{{ file.change }} · {{ '배포 소스에서 제거' if file.change == '삭제' else '새 소스 반영' }}</td></tr>{% endfor %}</tbody></table></div>{% else %}<p class="note">파일 변경 비교 기록이 없습니다.</p>{% endif %}
+{% if story.patches %}<h3>코드 수정 패치 · 파일별 before → after</h3>{% for patch in story.patches %}<article class="story-patch"><h3><code>{{ patch.file }}:{{ patch.line }}</code></h3><div class="story-diff"><div><h4>수정 전</h4><pre>{{ patch.before }}</pre></div><div><h4>수정 후</h4><pre>{{ patch.after }}</pre></div></div></article>{% endfor %}<p class="note">값과 주석은 가렸습니다. 환경변수 조회 키와 코드 구조만 표시합니다.</p>{% else %}<p>승인 대상에 별도 코드 수정 패치가 없습니다.</p>{% endif %}</section>
+<section class="section story-section" id="environment-findings"><h2><span class="section-index">02</span> 환경 의존 코드 탐지 결과</h2>
+{% if story.findings %}<div class="table-wrap"><table><thead><tr><th>위치</th><th>종류</th><th>탐지한 설정</th></tr></thead><tbody>{% for finding in story.findings %}<tr><td><code>{{ finding.file }}:{{ finding.line }}</code></td><td>{{ {'secret_key':'하드코딩된 비밀값','local_address':'개발 서버 주소','cookie_secure':'쿠키 보안 설정','proxy_fix':'프록시 설정'}.get(finding.pattern_id, '환경 의존 설정') }}</td><td><code>{{ finding.key or finding.pattern_id }} = [가림]</code></td></tr>{% endfor %}</tbody></table></div>{% else %}<p>저장된 탐지 위치가 없습니다.</p>{% endif %}
+{% if approval.source_checks %}<p>소스 검사 · 예외로 허용한 항목 {{ approval.source_checks.ignored_count }}건</p>{% for finding in approval.source_checks.findings %}<p>{{ finding.path }} · {{ '코드에 비밀값이 직접 적혀 있음' if finding.rule == 'hardcoded_secret' else finding.rule }} · {{ finding.count }}건</p>{% endfor %}{% endif %}</section>
+<section class="section story-section" id="environment-mapping"><h2><span class="section-index">03</span> 어떻게 바꿀 것인가</h2><p>코드는 환경변수의 키를 읽습니다. 실제 값은 배포할 환경에서 주입합니다.</p>
+<div class="table-wrap"><table><thead><tr><th>키 이름</th><th>로컬 개발값</th><th>온프렘 값</th><th>클라우드 값</th></tr></thead><tbody>{% for mapping in story.mappings %}<tr><td><code>{{ mapping.key }}</code></td><td>[가림] · 개발 소스</td><td>[가림] · {{ mapping.local }}</td><td>[가림] · {{ mapping.cloud }}</td></tr>{% else %}<tr><td colspan="4">환경 키 대응 기록이 없습니다.</td></tr>{% endfor %}</tbody></table></div>
+{% if approval.patch_meta %}{% set meta = approval.patch_meta %}<p>{% if meta.passed is defined and meta.passed is not none %}check_patch: {{ '통과' if meta.passed else '실패' }}{% if meta.gitleaks %} · gitleaks {{ meta.gitleaks }}{% endif %} · {% endif %}{{ '이전 승인 패치 재사용' if meta.reuse else '새 패치 제안' }}</p><p>{{ meta.reason }}</p>{% if meta.new_env_keys %}<p>새 환경 키: {{ meta.new_env_keys|join(', ') }}</p>{% endif %}{% if meta.patterns %}<p>탐지 패턴: {{ meta.patterns|join(', ') }}</p>{% endif %}{% if meta.target_hashes %}<p>수정 대상 원본 해시</p><ul>{% for path, digest in meta.target_hashes.items() %}<li><code>{{ path }}</code> · <code>{{ digest }}</code></li>{% endfor %}</ul>{% endif %}{% if story.patches %}<a href="#code-changes">위 파일별 before/after 확인</a>{% endif %}{% endif %}
+{% if approval.patch_warning %}<p class="notice">{{ approval.patch_warning }}</p>{% endif %}
+{% if approval.missing_env_keys %}<p class="notice">값 필요: {{ approval.missing_env_keys|join(', ') }}</p>{% endif %}<p><a href="/setup?project={{ approval.project|urlencode }}">연결 설정·필요한 환경 값 입력</a></p>
+{% if patch_review and patch_review.state == 'sealed' %}<h3>선택한 코드 수정 {{ patch_review.selected|length }}개</h3><ul>{% for proposal in patch_review.proposals if proposal.id in patch_review.selected %}<li>{{ proposal.title }} · {{ proposal.revision }}판{% if proposal.required %} · 이전 승인 수정 유지{% endif %}</li>{% endfor %}</ul>{% endif %}
+{% if patch_review_enabled and not patch_lost and not start_retry %}<p>제안별 적용 여부를 고르거나 옆 프롬프트로 수정을 요청할 수 있습니다.</p><a class="button secondary" href="/runs/{{ approval.run_id }}/patch-review">제안 선택·수정 요청</a>{% endif %}</section>
+<section class="section story-section" id="resource-changes"><h2><span class="section-index">04</span> 생기거나 바뀌는 리소스</h2><div class="story-resources"><div><h3>이미지</h3>{% for image in story.images %}<p><strong>{{ image.tier }}</strong> · {{ image.action }}</p>{% else %}<p>빌드·재사용 기록 없음</p>{% endfor %}</div><div><h3>컨테이너 · DB</h3>{% for container in story.containers %}<p>{{ container.env }} {{ container.tier }} · 새 이미지로 교체</p>{% endfor %}<p>DB 마이그레이션 · {{ '실행 예정' if story.migration else '실행 단계 없음' }}</p></div></div>
+{% set infra = approval.infra_summary %}{% if infra %}<h3>클라우드 리소스</h3><p>{{ infra.headline }}</p>{% set counts = infra.get('counts') or {} %}<p>추가 {{ counts.get('create', 0) }} · 변경 {{ counts.get('update', 0) }} · 삭제 {{ counts.get('delete', 0) }} · 교체 {{ counts.get('replace', 0) }}</p><ul>{% for item in infra.destructive %}<li>{{ item if item is string else item.get('address', '이름 미기록') }} · 삭제·교체 대상</li>{% endfor %}{% for item in infra.iam_diff %}<li><code>{{ item.get('address', '이름 미기록') }}</code> · {{ {'create':'생성','update':'수정','delete':'삭제','ensure':'준비'}.get(item.get('action'),'변경') }}{% if item.boundary_attached %}. 권한 상한을 적용합니다.{% endif %}{% if item.trust_changed %} 신뢰 정책이 바뀝니다.{% endif %}{% set grants = item.get('proposed_allow', item.get('added', [])) %}{% if grants is sequence and grants is not string and grants is not mapping %}{% for grant in grants if grant is mapping %}<p>허용 작업: {{ (grant.get('actions') or [])|join(', ') }} · 대상: {{ (grant.get('resources') or [])|join(', ') }}</p>{% endfor %}{% endif %}{% for boundary in item.get('boundary_changes', []) %}<p>{{ boundary.get('policy_name') or boundary.get('policy_arn') }} · 권한 경계 {{ {'create':'생성','update':'갱신','unchanged':'유지'}.get(boundary.get('action'),'확인 필요') }}</p>{% endfor %}</li>{% endfor %}</ul><p class="note">요약에 기록된 리소스 이름만 표시합니다. 전체 생성·변경 이름이 없는 경우 개수와 이름 목록은 일치하지 않을 수 있습니다.</p>{% else %}<p>클라우드 리소스·권한 경계 변경 계획이 없습니다.</p>{% endif %}
+</section>
+<section class="section story-section" id="execution-preview"><h2><span class="section-index">05</span> 실행 단계 미리보기</h2><ol class="story-timeline"><li><strong>계획</strong><p>소스·패치·리소스 변경을 검사하고 승인한 해시에 묶습니다.</p></li><li><strong>빌드</strong><p>{{ story.images|selectattr('action','equalto','새로 빌드')|map(attribute='tier')|join('·') or '빌드 대상 없음' }} · 변경된 티어의 이미지를 만듭니다.</p></li><li><strong>배포</strong><p>환경 설정을 주입하고 컨테이너를 교체합니다. 계획에 있으면 DB도 갱신합니다.</p></li><li><strong>검증</strong><p>헬스와 사용자 시나리오를 확인하고 환경별 결과를 저장합니다.</p></li></ol>{% if approval.decision_basis %}
+{% set basis = approval.decision_basis %}{% set planner = basis.get('planner') or {} %}{% set classification = basis.get('env_classification', {}) %}
+{% set env_counts = namespace(total=0, secret=0, plain=0) %}
+{% for keys in classification.get('by_provider', {}).values() %}{% for key in keys %}
+{% set env_counts.total = env_counts.total + 1 %}{% if key.kind == 'secret' %}{% set env_counts.secret = env_counts.secret + 1 %}{% elif key.kind == 'plain' %}{% set env_counts.plain = env_counts.plain + 1 %}{% endif %}
 {% endfor %}{% endfor %}
-<section class="section" id="decision-basis"><h2>계획 판정 근거</h2>
+<div id="decision-basis"><h3>계획 판정 근거</h3>
 <div class="table-wrap"><table><tbody>
 <tr><th scope="row">포함 단계</th><td data-label="포함 단계">{{ basis.get('steps', [])|length }}개</td></tr>
 <tr><th scope="row">제외 단계</th><td data-label="제외 단계">{{ basis.get('skipped', [])|length }}개</td></tr>
-<tr><th scope="row">환경 키 분류</th><td data-label="환경 키 분류">{% if env.get('facts_available') %}총 {{ counts.total }}개 · 비밀 {{ counts.secret }}개 · 일반 {{ counts.plain }}개{% else %}기록 없음{% endif %}</td></tr>
+<tr><th scope="row">환경 키 분류</th><td data-label="환경 키 분류">{% if classification.get('facts_available') %}총 {{ env_counts.total }}개 · 비밀 {{ env_counts.secret }}개 · 일반 {{ env_counts.plain }}개{% else %}기록 없음{% endif %}</td></tr>
 <tr><th scope="row">판정 제공자</th><td data-label="판정 제공자">{{ {'claude-cli':'Claude CLI','claude-api':'Claude API','groq':'Groq','replay':'저장 응답 (replay)','rule':'규칙','rules':'규칙'}.get(planner.get('provider'), planner.get('provider') or '기록 없음') }}{% if planner.get('model') %} · {{ planner.model }}{% endif %}</td></tr>
-</tbody></table></div><p class="note">단계별 이유와 전체 JSON은 아래 기술 정보에서 확인하세요.</p></section>
-{% endif %}
-{% if approval.source_checks %}<section class="section"><h2>소스 검사</h2><p>예외로 허용한 항목 {{ approval.source_checks.ignored_count }}건</p><ul>{% for finding in approval.source_checks.findings %}<li>{{ '코드에 비밀값이 직접 적혀 있음' if finding.rule == 'hardcoded_secret' else finding.rule }} · {{ finding.path }} · {{ finding.count }}건</li>{% endfor %}</ul></section>{% endif %}
-<details><summary>실행 단계 보기</summary>{% if approval.plan %}<div class="table-wrap"><table><thead><tr><th scope="col">단계</th><th scope="col">환경</th><th scope="col">단계 ID</th><th scope="col">툴</th></tr></thead><tbody>{% for section in (approval.plan.build, approval.plan.deploy.local, approval.plan.deploy.cloud, approval.plan.verify) %}{% for step in section.steps %}<tr><td data-label="단계">{{ step_label(step.id) }}</td><td data-label="환경">{{ target(step.target or 'common') }}</td><td data-label="ID"><code>{{ step.id }}</code></td><td data-label="툴"><code>{{ step.tool }}</code></td></tr>{% endfor %}{% endfor %}</tbody></table></div>{% else %}<p>과거 실행의 계획 상세 기록이 없습니다.</p>{% endif %}</details>
-<details id="approval-technical"><summary>기술 정보</summary>{% if approval.decision_basis %}<h3>계획 판정 근거 원문</h3><pre>{{ approval.decision_basis|tojson(indent=2) }}</pre>{% endif %}<dl class="detail-list"><div><dt>전체 커밋 SHA</dt><dd><code>{{ approval.source_sha or '기록 없음' }}</code></dd></div><div><dt>실행 ID</dt><dd><code>{{ approval.run_id }}</code></dd></div>{% for kind,digest in approval.subjects.items() %}<div><dt>{{ {'deploy':'배포 계획','infra':'인프라 변경','patch':'코드 수정'}.get(kind,kind) }} 승인 해시</dt><dd><code>{{ digest }}</code></dd></div>{% endfor %}</dl><p class="note">승인 해시는 실행 전에 코드가 다시 검증합니다.</p>{% if approval.patch_meta %}<h3>패치 메타</h3><pre>{{ approval.patch_meta|tojson(indent=2) }}</pre>{% endif %}{% if approval.infra_summary %}<h3>인프라 변경 원문</h3><pre>{{ approval.infra_summary|tojson(indent=2) }}</pre>{% endif %}{% if approval.source_checks %}<h3>소스 검사 원문</h3><pre>{{ approval.source_checks|tojson(indent=2) }}</pre>{% endif %}</details>
+</tbody></table></div><p class="note">단계별 이유와 전체 JSON은 아래 기술 정보에서 확인하세요.</p></div>
+{% endif %}</section>
+<section class="section story-section" id="expected-result"><h2><span class="section-index">06</span> 승인하면 최종적으로</h2><p>{% if local and cloud %}승인하면 온프렘과 클라우드에 각각 배포합니다.{% elif local %}승인하면 온프렘에 배포합니다. 클라우드는 바뀌지 않습니다.{% elif cloud %}승인하면 클라우드에 배포합니다. 온프렘은 바뀌지 않습니다.{% else %}승인하면 기록된 실행 계획을 시작합니다.{% endif %}</p><p>검증을 통과하면 커밋 <code>{{ (approval.source_sha or '')[:7] or '미확인' }}</code>의 배포 결과와 서비스 주소를 보여 줍니다.</p><p>실패한 환경은 이전 배포가 있으면 자동 복구를 시도합니다. 첫 배포이거나 복구에 실패하면 직접 확인이 필요합니다. 인프라 변경은 앱 복구와 별개입니다.</p>{% include '_public_links.html' %}<div class="environments">{% for name in ('local','cloud') %}<div class="env {{ name }}"><h3>{{ target(name) }}</h3>{{ state('AWAITING_APPROVAL' if name in story.targets else 'N/A') }}</div>{% endfor %}</div></section>
+<div class="approval-bar"><strong>{{ '배포 시작을 다시 시도합니다' if start_retry else '위 변경 내용으로 진행할까요?' }}</strong>{{ decisions() }}</div>
+</form>{{ form_error('approval') }}
+<div class="story-technical"><details id="approval-technical"><summary>기술 정보</summary>{% if approval.decision_basis %}<h3>계획 판정 근거 원문</h3><pre>{{ approval.decision_basis|tojson(indent=2) }}</pre>{% endif %}<dl class="detail-list"><div><dt>전체 커밋 SHA</dt><dd><code>{{ approval.source_sha or '기록 없음' }}</code></dd></div><div><dt>실행 ID</dt><dd><code>{{ approval.run_id }}</code></dd></div>{% for kind,digest in approval.subjects.items() %}<div><dt>{{ {'deploy':'배포 계획','infra':'인프라 변경','patch':'코드 수정'}.get(kind,kind) }} 승인 해시</dt><dd><code>{{ digest }}</code></dd></div>{% endfor %}</dl><p class="note">승인 해시는 실행 전에 코드가 다시 검증합니다.</p>{% if story.steps %}<h3>실행 단계</h3><ul>{% for step in story.steps %}<li>{{ step.title }} · <code>{{ step.id }}</code></li>{% endfor %}</ul>{% endif %}{% include '_infra_review.html' %}{% if approval.patch_meta %}<h3>패치 메타</h3><pre>{{ approval.patch_meta|tojson(indent=2) }}</pre>{% endif %}{% if approval.infra_summary %}<h3>인프라 변경 원문</h3><pre>{{ approval.infra_summary|tojson(indent=2) }}</pre>{% endif %}{% if approval.source_checks %}<h3>소스 검사 원문</h3><pre>{{ approval.source_checks|tojson(indent=2) }}</pre>{% endif %}</details></div>
 {% endblock %}

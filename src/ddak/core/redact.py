@@ -6,6 +6,7 @@ devpi-guardian의 privacy.py 개념만 참고해 새로 작성했다(코드 복�
 
 from __future__ import annotations
 
+import ast
 import re
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
@@ -124,6 +125,87 @@ def redact(text: str, *, max_len: int | None = MAX_LEN) -> str:
         cut = len(out) - max_len
         out = f"{out[:max_len]}...[truncated {cut} chars]"
     return out
+
+
+def redact_python(text: str) -> str:
+    """표시용 Python의 비밀 리터럴을 AST 위치로 가린다. 실행·승인 바이트에는 쓰지 않는다."""
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError):
+        return "# 코드 구문을 확인할 수 없어 내용을 숨겼습니다.\n"
+
+    def secret_target(node: ast.AST) -> bool:
+        if isinstance(node, ast.Name):
+            return _is_secret_name(node.id)
+        if isinstance(node, ast.Attribute):
+            return _is_secret_name(node.attr)
+        if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant):
+            return isinstance(node.slice.value, str) and _is_secret_name(node.slice.value)
+        if isinstance(node, ast.Tuple | ast.List):
+            return any(secret_target(item) for item in node.elts)
+        return False
+
+    values: list[ast.AST] = []
+    public_key_nodes: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and any(secret_target(t) for t in node.targets):
+            values.append(node.value)
+        elif isinstance(node, ast.AnnAssign | ast.NamedExpr) and secret_target(node.target):
+            if node.value is not None:
+                values.append(node.value)
+        elif isinstance(node, ast.Dict):
+            values.extend(
+                value
+                for key, value in zip(node.keys, node.values, strict=True)
+                if isinstance(key, ast.Constant)
+                and isinstance(key.value, str)
+                and _is_secret_name(key.value)
+            )
+        if isinstance(node, ast.Subscript) and ast.unparse(node.value) in {"os.environ", "environ"}:
+            public_key_nodes.add(id(node.slice))
+        if isinstance(node, ast.Call):
+            values.extend(k.value for k in node.keywords if k.arg and _is_secret_name(k.arg))
+            name = ast.unparse(node.func).rsplit(".", 1)[-1]
+            key_index = 1 if name == "getattr" else 0
+            if (
+                name in {"get", "getenv", "setdefault", "pop", "env", "getattr"}
+                and len(node.args) > key_index
+            ):
+                key = node.args[key_index]
+                public_key_nodes.add(id(key))
+                if (
+                    isinstance(key, ast.Constant)
+                    and isinstance(key.value, str)
+                    and _is_secret_name(key.value)
+                ):
+                    values.extend(node.args[key_index + 1 :])
+                    values.extend(k.value for k in node.keywords if k.arg == "default")
+
+    # AST 열 번호는 UTF-8 바이트 오프셋이다. 다중 행·한글 앞쪽에서도 정확히 치환한다.
+    raw = text.encode("utf-8")
+    starts = [0]
+    for line in raw.splitlines(keepends=True):
+        starts.append(starts[-1] + len(line))
+    spans = set()
+    for value in values:
+        for node in ast.walk(value):
+            if (
+                isinstance(node, ast.Constant)
+                and isinstance(node.value, str | bytes)
+                and node.value
+                and id(node) not in public_key_nodes
+                and node.end_lineno is not None
+                and node.end_col_offset is not None
+            ):
+                spans.add(
+                    (
+                        starts[node.lineno - 1] + node.col_offset,
+                        starts[node.end_lineno - 1] + node.end_col_offset,
+                    )
+                )
+    for start, end in sorted(spans, reverse=True):
+        raw = raw[:start] + b'"[REDACTED]"' + raw[end:]
+    return raw.decode("utf-8")
 
 
 _SECRET_KEY = re.compile(

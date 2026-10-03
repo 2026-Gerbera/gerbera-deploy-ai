@@ -15,5 +15,6 @@
 """
 
 from ddak.plan.flow import PlanBundle, new_run_id, plan_deployment
+from ddak.plan.review import replan_patch
 
-__all__ = ["PlanBundle", "new_run_id", "plan_deployment"]
+__all__ = ["PlanBundle", "new_run_id", "plan_deployment", "replan_patch"]

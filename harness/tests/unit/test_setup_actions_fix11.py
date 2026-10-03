@@ -64,7 +64,12 @@ class FakeAdapter:
 @pytest.fixture
 def coordinator(tmp_path: Path):
     store = Store(tmp_path / "state.sqlite")
-    service = SimpleNamespace(root=tmp_path, store=store, resolve_project=lambda name: name)
+    service = SimpleNamespace(
+        root=tmp_path,
+        store=store,
+        resolve_project=lambda name: name,
+        list_projects=lambda: ["demo"],
+    )
     adapter = FakeAdapter()
     return SetupActions(service, lambda project: adapter), adapter, store, service
 
