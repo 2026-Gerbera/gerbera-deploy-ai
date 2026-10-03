@@ -29,6 +29,9 @@ class _FixtureSDK:
             "head_bucket",
             "head_object",
             "get_policy",
+            "get_role",
+            "create_role",
+            "attach_role_policy",
             "create_bucket",
             "create_policy",
             "put_bucket_tagging",
@@ -42,8 +45,8 @@ class _FixtureSDK:
             raise AttributeError(name)
 
         def call(**kwargs):
-            if name in {"head_bucket", "head_object", "get_policy"}:
-                code = "NoSuchEntity" if name == "get_policy" else "404"
+            if name in {"head_bucket", "head_object", "get_policy", "get_role"}:
+                code = "NoSuchEntity" if name in {"get_policy", "get_role"} else "404"
                 raise ClientError({"Error": {"Code": code}}, name)
             if name == "get_caller_identity":
                 return {"Account": _ACCOUNT}
@@ -55,6 +58,17 @@ class _FixtureSDK:
 class _FixtureRunner:
     def __init__(self, source: str, outputs: dict[str, Any]):
         self.outputs = outputs
+        # fixture plan의 after는 HCL 보간식 대신 확정된 식별자를 반환한다.
+        resolved = source.replace("${var.account_id}", _ACCOUNT)
+        for expression, arn in (
+            ("aws_lb_target_group.fixture.arn", "targetgroup/fixture/abc"),
+            ("aws_lb_target_group.alternate.arn", "targetgroup/alternate/def"),
+            ("aws_lb_listener_rule.fixture.arn", "listener-rule/app/fixture/abc/def"),
+        ):
+            resolved = resolved.replace(
+                expression,
+                json.dumps(f"arn:aws:elasticloadbalancing:ap-northeast-2:{_ACCOUNT}:{arn}"),
+            )
         self.raw = {
             "format_version": "1.2",
             "resource_changes": [
@@ -69,7 +83,7 @@ class _FixtureRunner:
                         "after_sensitive": {},
                     },
                 }
-                for item in loads(source)["resource"]
+                for item in loads(resolved)["resource"]
                 for resource, named in item.items()
                 for name, attributes in named.items()
             ],
@@ -114,8 +128,43 @@ resource "aws_ecs_service" "fixture" {
   lifecycle { ignore_changes = [task_definition, desired_count] }
   deployment_circuit_breaker { enable = true
     rollback = true }
+  deployment_configuration { strategy = "BLUE_GREEN"
+    bake_time_in_minutes = 1 }
+  load_balancer {
+    target_group_arn = aws_lb_target_group.fixture.arn
+    container_name = "web"
+    container_port = 8080
+    advanced_configuration {
+      alternate_target_group_arn = aws_lb_target_group.alternate.arn
+      production_listener_rule = aws_lb_listener_rule.fixture.arn
+      role_arn = "arn:aws:iam::${var.account_id}:role/ddak/infra/ddak-ecs-infra-elb"
+    }
+  }
 }
-resource "aws_lb_target_group" "fixture" { name = "ddak-fixture-target" }
+resource "aws_lb_target_group" "fixture" {
+  name = "ddak-fixture-target"
+  deregistration_delay = 5
+  health_check { interval = 5
+    healthy_threshold = 2 }
+}
+resource "aws_lb_target_group" "alternate" {
+  name = "ddak-fixture-alternate"
+  deregistration_delay = 5
+  health_check { interval = 5
+    healthy_threshold = 2 }
+}
+resource "aws_lb_listener_rule" "fixture" {
+  lifecycle { ignore_changes = [action] }
+  action {
+    type = "forward"
+    forward {
+      target_group { arn = aws_lb_target_group.fixture.arn
+        weight = 100 }
+      target_group { arn = aws_lb_target_group.alternate.arn
+        weight = 0 }
+    }
+  }
+}
 resource "aws_security_group" "fixture" { name = "ddak-fixture-app" }
 resource "aws_subnet" "fixture" { cidr_block = "10.0.1.0/24" }
 """

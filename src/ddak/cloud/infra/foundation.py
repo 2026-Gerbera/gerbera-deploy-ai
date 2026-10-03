@@ -16,8 +16,10 @@ from .providers.aws import (
     BOUNDARY_NAME,
     BOUNDARY_PATH,
     REGION,
+    bootstrap_dbinit_exception,
     boundary_document,
     build_boundary_document,
+    ecs_infrastructure_role,
 )
 from .runtime import AwsSettings, canonical, check_approval, digest, private_write
 
@@ -50,7 +52,66 @@ def foundation_template(settings: AwsSettings) -> dict[str, Any]:
         "boundary_arn": settings.boundary_arn,
         "build_boundary": build_boundary_document(settings.account_id),
         "build_boundary_arn": settings.build_boundary_arn,
+        "ecs_infrastructure_role": ecs_infrastructure_role(settings.account_id),
+        "bootstrap_dbinit_exception": bootstrap_dbinit_exception(settings.account_id),
     }
+
+
+def _check_ecs_role(iam: Any, expected: dict[str, Any]) -> bool:
+    try:
+        role = iam.get_role(RoleName=expected["name"])["Role"]
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "NoSuchEntity":
+            return False
+        raise
+    if (
+        role.get("Arn") != expected["arn"]
+        or role.get("RoleName") != expected["name"]
+        or role.get("Path") != expected["path"]
+        or canonical(role.get("AssumeRolePolicyDocument")) != canonical(expected["trust_policy"])
+        or role.get("PermissionsBoundary")
+    ):
+        raise DdakToolError(
+            ErrorCode.PRECONDITION_FAILED, "기존 ECS 인프라 역할이 승인 템플릿과 다르다"
+        )
+    for operation, field in (
+        (iam.list_attached_role_policies, "AttachedPolicies"),
+        (iam.list_role_policies, "PolicyNames"),
+    ):
+        markers: set[str] = set()
+        request = {"RoleName": expected["name"]}
+        while True:
+            page = operation(**request)
+            policies = page.get(field)
+            if not isinstance(policies, list) or (
+                policies
+                and (
+                    field == "PolicyNames"
+                    or any(
+                        not isinstance(policy, dict)
+                        or policy.get("PolicyArn") != expected["managed_policy_arn"]
+                        for policy in policies
+                    )
+                )
+            ):
+                raise DdakToolError(
+                    ErrorCode.PRECONDITION_FAILED, "기존 ECS 인프라 역할에 승인 외 정책이 있다"
+                )
+            if page.get("IsTruncated") is False:
+                break
+            marker = page.get("Marker")
+            if (
+                page.get("IsTruncated") is not True
+                or not isinstance(marker, str)
+                or not marker
+                or marker in markers
+            ):
+                raise DdakToolError(
+                    ErrorCode.PRECONDITION_FAILED, "기존 ECS 인프라 역할 정책 조회가 불완전하다"
+                )
+            markers.add(marker)
+            request["Marker"] = marker
+    return True
 
 
 def apply_foundation(
@@ -141,6 +202,8 @@ def apply_foundation(
                 if exc.response["Error"]["Code"] != "NoSuchEntity":
                     raise
                 create_policies.append((name, document))
+        ecs_role = template["ecs_infrastructure_role"]
+        role_exists = _check_ecs_role(iam, ecs_role)
         private_write(marker, bound_to.encode())
         guard()
         if not bucket_exists:
@@ -194,6 +257,24 @@ def apply_foundation(
                 PolicyDocument=json.dumps(document),
                 Tags=[{"Key": k, "Value": v} for k, v in template["tags"].items()],
             )
+        guard()
+        if not role_exists:
+            try:
+                iam.create_role(
+                    Path=ecs_role["path"],
+                    RoleName=ecs_role["name"],
+                    AssumeRolePolicyDocument=json.dumps(ecs_role["trust_policy"]),
+                )
+            except ClientError as exc:
+                if exc.response["Error"]["Code"] != "EntityAlreadyExists":
+                    raise
+                if not _check_ecs_role(iam, ecs_role):
+                    raise DdakToolError(
+                        ErrorCode.PRECONDITION_FAILED, "동시 생성된 ECS 인프라 역할 확인 실패"
+                    ) from None
+        guard()
+        # 같은 관리형 정책의 재부착은 멱등이다. 기존 경계·신뢰 정책은 바꾸지 않는다.
+        iam.attach_role_policy(RoleName=ecs_role["name"], PolicyArn=ecs_role["managed_policy_arn"])
         return {
             "state_bucket": settings.state_bucket,
             "app_boundary_arn": settings.boundary_arn,

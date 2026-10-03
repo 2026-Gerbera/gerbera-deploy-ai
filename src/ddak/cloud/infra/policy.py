@@ -11,21 +11,53 @@ from typing import Any
 
 from hcl2.api import loads, parses
 
-from .providers.aws import APP_RESOURCE_TYPES, RESOURCE_TYPES
+from .providers.aws import (
+    APP_RESOURCE_TYPES,
+    RESOURCE_TYPES,
+    bootstrap_dbinit_exception,
+    ecs_infrastructure_role,
+)
 
 # StartBuild의 코드 소유 buildspecOverride가 빠지면 앱 저장소 buildspec을 읽지 않고 실패한다.
 OVERRIDE_REQUIRED_BUILDSPEC = "version: 0.2\nphases:\n  build:\n    commands:\n      - exit 1\n"
+_GENERATED_VARIABLES = {
+    "account_id",
+    "app_boundary_arn",
+    "build_boundary_arn",
+    "project",
+}
 
 
-def protect_platform_resource(kind: str, body: dict[str, Any], state_bucket: str | None) -> None:
+def protect_platform_resource(
+    kind: str,
+    body: dict[str, Any],
+    state_bucket: str | None,
+    *,
+    hcl: bool = False,
+) -> None:
     if kind.startswith("aws_s3_bucket") and state_bucket is not None:
-        require(body.get("bucket") != state_bucket, "FOUNDATION_BUCKET_OWNED_BY_CODE")
+        require(
+            body.get("bucket") != state_bucket,
+            "FOUNDATION_BUCKET_OWNED_BY_CODE",
+        )
+
     if kind == "aws_codebuild_project":
         source = body.get("source")
-        require(isinstance(source, list) and len(source) == 1, "CODEBUILD_SOURCE_REQUIRED")
+        require(
+            isinstance(source, list) and len(source) == 1,
+            "CODEBUILD_SOURCE_REQUIRED",
+        )
         require(
             source[0].get("buildspec") == OVERRIDE_REQUIRED_BUILDSPEC,
             "CODEBUILD_PLATFORM_BUILDSPEC_REQUIRED",
+        )
+        require(
+            isinstance(body.get("name"), str)
+            and (
+                bool(re.fullmatch(r"ddak-[a-z0-9][a-z0-9-]{0,46}-build", body["name"]))
+                or (hcl and body["name"] == "ddak-${var.project}-build")
+            ),
+            "CODEBUILD_PROJECT_NAME_INVALID",
         )
 
 
@@ -117,6 +149,50 @@ def inspect_policy(
             )
 
 
+def rds_wildcard_statements(policy: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        stmt
+        for stmt in statements(policy)
+        if stmt.get("Effect") == "Allow"
+        and any(
+            ":secret:rds" in ref and ("*" in ref or "?" in ref)
+            for ref in strings(stmt.get("Resource"))
+        )
+    ]
+
+
+def inspect_bootstrap_dbinit(
+    policy: dict[str, Any],
+    *,
+    layer: str,
+    update: bool,
+    role_address: str | None,
+    account: str = "${var.account_id}",
+) -> bool:
+    """HCL의 직접 참조와 plan의 실제 역할 주소·실행 모드를 검사한다."""
+    rows = rds_wildcard_statements(policy)
+    expected = bootstrap_dbinit_exception(account)
+    for stmt in rows:
+        require(
+            layer == expected["layer"] and not update and role_address == expected["role_address"],
+            "ROLE_SECRET_SCOPE",
+        )
+        require(
+            {a.lower() for a in strings(stmt["Action"])}
+            <= {a.lower() for a in expected["actions"]},
+            "ROLE_SECRET_SCOPE",
+        )
+        require(
+            all(
+                ref == expected["resource"]
+                for ref in strings(stmt["Resource"])
+                if ":secret:rds" in ref and ("*" in ref or "?" in ref)
+            ),
+            "ROLE_SECRET_SCOPE",
+        )
+    return bool(rows)
+
+
 def _walk(value: Any):
     if isinstance(value, dict):
         for key, child in value.items():
@@ -142,6 +218,8 @@ def static_gate(
             require(bool(re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*\.tf", name)), "BUNDLE_FILENAME")
             require(len(source.encode()) <= 256 * 1024, "BUNDLE_SIZE")
             require("checkov:skip" not in source.lower(), "CHECKOV_SKIP_FORBIDDEN")
+            referenced_variables = set(re.findall(r"\bvar\.([A-Za-z][A-Za-z0-9_]*)", source))
+            require(referenced_variables <= _GENERATED_VARIABLES, "VARIABLE_NOT_ALLOWED")
             tree = parses(source)
             for node in tree.iter_subtrees():
                 # hcl2의 heredoc은 내부 보간식을 AST로 펼치지 않는다.
@@ -163,8 +241,8 @@ def static_gate(
                         address = f"{kind}.{label}"
                         require(address not in addresses, "DUPLICATE_RESOURCE")
                         addresses.add(address)
-                        protect_platform_resource(kind, body, state_bucket)
-                        _resource(kind, body, layer)
+                        protect_platform_resource(kind, body, state_bucket, hcl=True)
+                        _resource(kind, label, body, layer)
         require(bool(addresses), "BUNDLE_REQUIRED")
         return GateResult(True)
     except PolicyViolation as exc:
@@ -174,7 +252,53 @@ def static_gate(
         return GateResult(False, "HCL_INVALID")
 
 
-def inspect_ecs(kind: str, body: dict[str, Any], *, hcl: bool = False) -> None:
+@dataclass(frozen=True)
+class PlanReference:
+    """configuration과 참조 대상 change를 확인한 미확정 ARN의 리소스 주소."""
+
+    address: str
+
+
+def _blocks(value: Any, rule: str, *, count: int | None = None) -> list[dict[str, Any]]:
+    require(
+        isinstance(value, list)
+        and bool(value)
+        and all(isinstance(item, dict) for item in value)
+        and (count is None or len(value) == count),
+        rule,
+    )
+    return value
+
+
+def _ignored(body: dict[str, Any], required: set[str], rule: str) -> None:
+    lifecycle = _blocks(body.get("lifecycle"), rule, count=1)[0]
+    ignored = lifecycle.get("ignore_changes")
+    require(isinstance(ignored, list) and all(isinstance(v, str) for v in ignored), rule)
+    names = {v.removeprefix("${").removesuffix("}") for v in ignored}
+    require(required <= names, rule)
+
+
+def _elb_reference(value: Any, kind: str, *, hcl: bool) -> bool:
+    if isinstance(value, PlanReference):
+        return not hcl and value.address.startswith(kind + ".")
+    if not isinstance(value, str):
+        return False
+    if hcl and re.fullmatch(r"\$\{" + kind + r"\.[A-Za-z][A-Za-z0-9_]*\.arn\}", value):
+        return True
+    resource = "targetgroup" if kind == "aws_lb_target_group" else "listener-rule/app"
+    return bool(
+        re.fullmatch(
+            r"arn:aws:elasticloadbalancing:ap-northeast-2:[0-9]{12}:"
+            + resource
+            + r"/[A-Za-z0-9_/-]+",
+            value,
+        )
+    )
+
+
+def inspect_ecs(
+    kind: str, body: dict[str, Any], *, hcl: bool = False, account: str = "${var.account_id}"
+) -> None:
     """ECS 배포 소유권. lifecycle은 plan의 after에 없으므로 HCL에서만 검사한다."""
     if kind == "aws_ecs_service":
         breaker = body.get("deployment_circuit_breaker")
@@ -187,20 +311,78 @@ def inspect_ecs(kind: str, body: dict[str, Any], *, hcl: bool = False) -> None:
             "ECS_CIRCUIT_BREAKER_REQUIRED",
         )
         if hcl:
-            lifecycle = body.get("lifecycle")
-            require(
-                isinstance(lifecycle, list)
-                and len(lifecycle) == 1
-                and isinstance(lifecycle[0], dict),
+            _ignored(
+                body,
+                {"task_definition", "desired_count"},
                 "ECS_DEPLOYMENT_OWNED_BY_C2",
             )
-            ignored = lifecycle[0].get("ignore_changes")
+        deployment = _blocks(
+            body.get("deployment_configuration"), "ECS_BLUE_GREEN_REQUIRED", count=1
+        )[0]
+        require(deployment.get("strategy") == "BLUE_GREEN", "ECS_BLUE_GREEN_REQUIRED")
+        bake = deployment.get("bake_time_in_minutes")
+        require(type(bake) is int and 0 <= bake <= 2, "ECS_BAKE_TIME")
+        controller = body.get("deployment_controller")
+        if controller not in (None, []):
+            controller = _blocks(controller, "ECS_CONTROLLER", count=1)[0]
+            require(controller.get("type") == "ECS", "ECS_CONTROLLER")
+        require(
+            not any(
+                key in {"lifecycle_hook", "lifecycle_hooks"} and value for key, value in _walk(body)
+            ),
+            "ECS_LIFECYCLE_HOOK_FORBIDDEN",
+        )
+        for balancer in _blocks(body.get("load_balancer"), "ECS_ADVANCED_CONFIGURATION"):
+            advanced = _blocks(
+                balancer.get("advanced_configuration"), "ECS_ADVANCED_CONFIGURATION", count=1
+            )[0]
             require(
-                isinstance(ignored, list) and all(isinstance(v, str) for v in ignored),
-                "ECS_DEPLOYMENT_OWNED_BY_C2",
+                _elb_reference(
+                    advanced.get("alternate_target_group_arn"), "aws_lb_target_group", hcl=hcl
+                )
+                and _elb_reference(
+                    advanced.get("production_listener_rule"), "aws_lb_listener_rule", hcl=hcl
+                ),
+                "ECS_ADVANCED_CONFIGURATION",
             )
-            names = {v.removeprefix("${").removesuffix("}") for v in ignored}
-            require({"task_definition", "desired_count"} <= names, "ECS_DEPLOYMENT_OWNED_BY_C2")
+            require(
+                advanced.get("role_arn") == ecs_infrastructure_role(account)["arn"],
+                "ECS_INFRA_ROLE",
+            )
+            test_rule = advanced.get("test_listener_rule")
+            require(
+                test_rule is None or (isinstance(test_rule, str) and test_rule == ""),
+                "ECS_TEST_LISTENER_FORBIDDEN",
+            )
+    if kind == "aws_lb_listener_rule":
+        if hcl:
+            _ignored(body, {"action"}, "LISTENER_ACTION_OWNED_BY_C2")
+        actions = _blocks(body.get("action"), "LISTENER_FORWARD_TARGETS", count=1)
+        require(actions[0].get("type") == "forward", "LISTENER_FORWARD_TARGETS")
+        forward = _blocks(actions[0].get("forward"), "LISTENER_FORWARD_TARGETS", count=1)[0]
+        groups = _blocks(forward.get("target_group"), "LISTENER_FORWARD_TARGETS", count=2)
+        arns = [group.get("arn") for group in groups]
+        require(
+            all(_elb_reference(arn, "aws_lb_target_group", hcl=hcl) for arn in arns)
+            and arns[0] != arns[1],
+            "LISTENER_FORWARD_TARGETS",
+        )
+        weights = [group.get("weight") for group in groups]
+        require(
+            all(type(weight) is int and 0 <= weight <= 999 for weight in weights)
+            and sum(weight > 0 for weight in weights) == 1,
+            "LISTENER_ALL_AT_ONCE_WEIGHTS",
+        )
+    if kind == "aws_lb_target_group":
+        delay = body.get("deregistration_delay")
+        # AWS provider는 deregistration_delay를 문자열로 직렬화하기도 한다.
+        if isinstance(delay, str) and re.fullmatch(r"[0-9]+", delay):
+            delay = int(delay)
+        require(type(delay) is int and 0 <= delay <= 30, "TARGET_GROUP_DEREGISTRATION")
+        health = _blocks(body.get("health_check"), "TARGET_GROUP_HEALTH_CHECK", count=1)[0]
+        interval, healthy = health.get("interval"), health.get("healthy_threshold")
+        require(type(interval) is int and 0 < interval <= 10, "TARGET_GROUP_INTERVAL")
+        require(type(healthy) is int and 0 < healthy <= 3, "TARGET_GROUP_HEALTHY_THRESHOLD")
     if kind == "aws_ecs_task_definition":
         encoded = body.get("container_definitions")
         if not isinstance(encoded, str):
@@ -230,7 +412,7 @@ def inspect_ecs(kind: str, body: dict[str, Any], *, hcl: bool = False) -> None:
         )
 
 
-def _resource(kind: str, body: dict[str, Any], layer: str) -> None:
+def _resource(kind: str, label: str, body: dict[str, Any], layer: str) -> None:
     forbidden = {
         "provisioner",
         "connection",
@@ -252,6 +434,17 @@ def _resource(kind: str, body: dict[str, Any], layer: str) -> None:
         "replica",
     }
     for key, value in _walk(body):
+        if key == "for_each":
+            certificate_records = (
+                kind == "aws_route53_record"
+                and label == "certificate_validation"
+                and isinstance(value, str)
+                and value.startswith("${{for ")
+                and " in aws_acm_certificate.main.domain_validation_options " in value
+                and not re.search(r"\b(?:path|terraform|data|module)\.", value)
+            )
+            require(certificate_records, "ATTRIBUTE_NOT_ALLOWED")
+            continue
         require(key not in forbidden, "ATTRIBUTE_NOT_ALLOWED")
         if isinstance(value, str):
             require(
@@ -277,7 +470,18 @@ def _resource(kind: str, body: dict[str, Any], layer: str) -> None:
             "inline_policy" not in body and "managed_policy_arns" not in body, "IAM_INLINE_SEPARATE"
         )
     if kind == "aws_iam_role_policy":
-        inspect_policy(policy_json(body.get("policy")))
+        policy = policy_json(body.get("policy"))
+        inspect_policy(policy)
+        reference = re.fullmatch(
+            r"\$\{(aws_iam_role\.[A-Za-z][A-Za-z0-9_]*)\.(?:id|name)\}",
+            str(body.get("role")),
+        )
+        inspect_bootstrap_dbinit(
+            policy,
+            layer=layer,
+            update=False,
+            role_address=reference.group(1) if reference else None,
+        )
     if kind == "aws_secretsmanager_secret":
         name = body.get("name", "")
         require(
