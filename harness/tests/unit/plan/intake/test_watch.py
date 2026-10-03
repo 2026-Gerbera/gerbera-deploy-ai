@@ -296,3 +296,48 @@ def test_format_poll_error_stops_once(tmp_path):
 def test_nonfinite_watch_interval_rejected(value):
     with pytest.raises(DdakToolError):
         w.interval_from_env({"DDAK_WATCH_INTERVAL_S": value})
+
+
+class _Log:
+    def __init__(self):
+        self.lines: list[tuple[str, str]] = []
+
+    def __getattr__(self, level):
+        return lambda event, **kw: self.lines.append((level, event))
+
+
+def test_lock_held_waits_without_saving_then_prepares_same_sha(tmp_path, monkeypatch):
+    log = _Log()
+    monkeypatch.setattr(w, "_log", log)
+    p = FetchPolicy(root=tmp_path)
+    w.write_last_commit(p, T, A)
+    tries: list[str] = []
+
+    async def locked(t, sha):
+        tries.append(sha)
+        # 대기 중에는 처리 완료로 저장하지 않는다(재시작해도 같은 커밋을 다시 찾는다).
+        assert w.read_last_commit(p, T) == A
+        if len(tries) <= 5:
+            raise DdakToolError(ErrorCode.LOCK_HELD, "다른 실행/복구가 진행 중이다")
+
+    s = Sim(tmp_path, [B] * 30, handler=locked, max_ticks=30).run()
+    assert tries == [B] * 6  # 3회 제한 없이 잠금이 풀릴 때까지 기다린 뒤 같은 SHA를 준비
+    assert w.read_last_commit(s.policy, T) == B
+    assert log.lines.count(("info", "다른 배포가 끝나면 이어서 준비")) == 1
+    assert not [line for line in log.lines if line[0] == "error"]
+
+
+def test_lock_held_newer_commit_skips_old(tmp_path):
+    p = FetchPolicy(root=tmp_path)
+    w.write_last_commit(p, T, A)
+    tries: list[str] = []
+
+    async def locked(t, sha):
+        tries.append(sha)
+        if sha == B:
+            raise DdakToolError(ErrorCode.LOCK_HELD, "다른 실행/복구가 진행 중이다")
+
+    s = Sim(tmp_path, [B, B, B, C, C, C, C, C, C, C], handler=locked, max_ticks=14).run()
+    assert tries[0] == B and tries.count(C) == 1 and tries[-1] == C
+    assert set(tries) == {B, C}  # 더 새 커밋이 오면 옛 SHA는 다시 시도하지 않는다
+    assert w.read_last_commit(s.policy, T) == C

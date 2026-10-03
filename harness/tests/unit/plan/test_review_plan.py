@@ -94,6 +94,19 @@ def patch_for(text=PATCHED):
     ).encode()
 
 
+def web_changed(source, **updates):
+    """web만 직전 성공과 다른 기준선.
+
+    바뀐 것이 없는 환경은 계획에서 빠지므로 배포할 것을 하나 둔다.
+    """
+    previous = {path: FileMeta(**meta) for path, meta in file_manifest(source).items()}
+    previous["web/Dockerfile"] = previous["web/Dockerfile"].model_copy(
+        update={"sha256": digest_bytes(b"FROM nginx:previous\n")}
+    )
+    previous.update(updates)
+    return lambda _: {"local": previous, "cloud": previous}
+
+
 def go(source, patch=None, **kwargs):
     manifest = {k: FileMeta(**v) for k, v in file_manifest(source).items()}
     request = kwargs.pop(
@@ -153,29 +166,27 @@ def test_patch_adds_required_keys_and_builds_previously_unchanged_tier(source, c
 
 def test_patch_matching_previous_success_accepts_existing_keys_without_reinjection(source, copies):
     before = file_manifest(source)
-    previous = {path: FileMeta(**meta) for path, meta in before.items()}
-    previous["was/app.py"] = previous["was/app.py"].model_copy(
+    patched = FileMeta(**before["was/app.py"]).model_copy(
         update={"sha256": digest_bytes(PATCHED.encode())}
     )
     bundle = go(
-        source,
-        patch_for(),
-        previous_manifests=lambda _: {"local": previous, "cloud": previous},
+        source, patch_for(), previous_manifests=web_changed(source, **{"was/app.py": patched})
     )
     assert bundle.facts.changed == {
-        "local": {"web": False, "was": False},
-        "cloud": {"web": False, "was": False},
+        "local": {"web": True, "was": False},
+        "cloud": {"web": True, "was": False},
     }
     assert {key.name: key.is_new for key in bundle.facts.env_keys} == {
         "DB_HOST": False,
         "SECRET_KEY": False,
         "SESSION_COOKIE_SECURE": False,
     }
-    assert not bundle.plan.build.steps
+    assert [step.id for step in bundle.plan.build.steps] == ["build.web"]
     assert not bundle.facts.infra_inputs_changed
     for section in (bundle.plan.deploy.local, bundle.plan.deploy.cloud):
         assert not any(
-            step.tool in {"inject_env_config", "sync_env_to_cloud", "apply_infra", "deploy_tier"}
+            step.tool in {"inject_env_config", "sync_env_to_cloud", "apply_infra"}
+            or (step.tool == "deploy_tier" and step.tier == "was")
             for step in section.steps
         )
         assert {step.tool for step in section.steps} >= {"health_check", "smoke_test"}
@@ -185,14 +196,29 @@ def test_patch_matching_previous_success_accepts_existing_keys_without_reinjecti
     assert copies and all(not path.exists() for path in copies)
 
 
+def test_patch_matching_previous_success_without_other_change_has_nothing_to_deploy(source, copies):
+    before = file_manifest(source)
+    previous = {path: FileMeta(**meta) for path, meta in before.items()}
+    previous["was/app.py"] = previous["was/app.py"].model_copy(
+        update={"sha256": digest_bytes(PATCHED.encode())}
+    )
+    with pytest.raises(DdakToolError) as exc:
+        go(source, patch_for(), previous_manifests=lambda _: {"local": previous, "cloud": previous})
+    # 두 환경 모두 바뀐 것이 없다: 헬스·스모크만 남은 계획 대신 재지시 없이 끝낸다.
+    assert exc.value.code is ErrorCode.PRECONDITION_FAILED
+    assert exc.value.message == "배포할 변경 없음"
+    assert file_manifest(source) == before
+    assert copies and all(not path.exists() for path in copies)
+
+
 def test_deselection_replans_original_without_previous_patch_effects(source, copies):
-    first = go(source, patch_for())
-    second = go(source)
+    first = go(source, patch_for(), previous_manifests=web_changed(source))
+    second = go(source, previous_manifests=web_changed(source))
     assert first.facts.infra_inputs_changed
     assert not second.facts.infra_inputs_changed
     assert {key.name for key in second.facts.env_keys} == {"DB_HOST"}
-    assert not second.plan.build.steps
-    assert not any(any(tiers.values()) for tiers in second.facts.changed.values())
+    assert [step.id for step in second.plan.build.steps] == ["build.web"]
+    assert all(tiers == {"web": True, "was": False} for tiers in second.facts.changed.values())
     assert first.facts.facts_hash == second.facts.facts_hash
     assert all(not path.exists() for path in copies)
 
@@ -401,7 +427,8 @@ def test_toggle_off_rejects_patch_but_allows_no_patch(source, copies):
         go(source, patch_for(), request=request)
     assert exc.value.code is ErrorCode.TOGGLE_OFF
     assert not copies
-    assert not go(source, request=request).context.toggles["code_patch"]
+    allowed = go(source, request=request, previous_manifests=web_changed(source))
+    assert not allowed.context.toggles["code_patch"]
 
 
 def test_symlink_source_rejected(source, tmp_path, copies):

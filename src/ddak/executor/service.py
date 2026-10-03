@@ -182,6 +182,8 @@ class DeploymentService:
         self._preparation_requests: dict[str, dict[str, Any]] = {}
         self._preparing_runs: dict[str, str] = {}
         self._preparation_locks: dict[str, asyncio.Lock] = {}
+        # 자동 감시가 다른 실행의 잠금 때문에 준비를 미룬 커밋(project -> sha, 시각)
+        self._watch_waiting: dict[str, dict[str, Any]] = {}
         self.patch_reviews: Any = None  # 조립부가 제안 생성·재계획 함수를 주입한다.
         self.store.recover_patch_reviews()
         from ddak.executor.reporting import Reports
@@ -959,6 +961,31 @@ class DeploymentService:
             del self._preparing_runs[project]
             self._preparation_locks[project].release()
 
+    def preparation_blocked_by_run(self, project: str) -> bool:
+        """자동 감시 사전 확인: 다른 실행·복구가 잠금을 쥐고 있으면 준비를 미룬다.
+
+        준비 중 인프라 확인과 같은 검사(assert_idle)다. 사람 확인이 필요한 차단은 미루지 않는다.
+        """
+        try:
+            self.store.assert_idle(project)
+        except DdakToolError as exc:
+            return exc.code is ErrorCode.LOCK_HELD
+        return False
+
+    def mark_watch_waiting(self, project: str, sha: str) -> None:
+        project = self.resolve_project(project)
+        if self._watch_waiting.get(project, {}).get("sha") != sha:
+            self._watch_waiting[project] = {"sha": sha, "created": time.time()}
+
+    def clear_watch_waiting(self, project: str | None = None) -> None:
+        if project is None:
+            self._watch_waiting.clear()
+        else:
+            self._watch_waiting.pop(self.resolve_project(project), None)
+
+    def watch_waiting(self, project: str) -> str | None:
+        return self._watch_waiting.get(self.resolve_project(project), {}).get("sha")
+
     def list_preparations(self, project: str) -> list[dict[str, Any]]:
         project = self.resolve_project(project)
         records = [
@@ -969,6 +996,17 @@ class DeploymentService:
         automatic = self._preparing_runs.get(project)
         if automatic and not any(row["status"] == "PREPARING" for row in records):
             records.append(self.get_preparation(automatic))
+        waiting = self._watch_waiting.get(project)
+        if waiting and not automatic:
+            records.append(
+                {
+                    "request_id": "watch-" + waiting["sha"][:12],
+                    "status": "WAITING",
+                    "run_id": None,
+                    "detail": "다른 배포가 끝나면 이어서 준비",
+                    "created": waiting["created"],
+                }
+            )
         return records
 
     def get_preparation(self, request_id: str) -> dict[str, Any]:

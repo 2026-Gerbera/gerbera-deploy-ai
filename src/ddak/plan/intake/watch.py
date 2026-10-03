@@ -191,6 +191,7 @@ class Watcher:
         self.resolve, self.warm = resolve, warm
         self.initial_trigger, self.get_state = initial_trigger, get_state
         self._stop = asyncio.Event()
+        self._waiting: dict[str, str] = {}  # project -> 잠금 해제를 기다리는 SHA(로그 1회용)
 
     async def run(self) -> None:
         await asyncio.gather(*(self._watch(t) for t in self.targets))
@@ -209,7 +210,8 @@ class Watcher:
     async def _watch(self, t: WatchTarget) -> None:
         last = read_last_commit(self.policy, t)
         pending: str | None = None
-        handler: asyncio.Task[str] | None = None  # 처리 중인 SHA를 결과로 돌려준다
+        # 처리한 SHA와 완료 여부를 돌려준다. 미완료 = 다른 실행의 잠금 해제를 기다린다.
+        handler: asyncio.Task[tuple[str, bool]] | None = None
         fails = 0
         first_poll = True
         try:
@@ -254,8 +256,18 @@ class Watcher:
                     if _deterministic(e):
                         break  # 설정·응답 형식 오류는 변경된 설정으로 재시작할 때 다시 확인한다.
                 if handler is not None and handler.done():
-                    last = handler.result()
+                    sha, done = handler.result()
                     handler = None
+                    if done:
+                        last = sha
+                    elif pending in (None, sha):
+                        pending = sha  # 처리 완료로 저장하지 않고 다음 주기에 같은 SHA를 다시 시도
+                    else:
+                        _log.info(
+                            "더 새 커밋이 와서 대기하던 커밋은 건너뜀",
+                            project=t.project,
+                            commit=sha[:12],
+                        )
                 if handler is None and pending is not None and pending != last:
                     handler = asyncio.create_task(self._handle(t, pending))
                     pending = None
@@ -270,8 +282,13 @@ class Watcher:
         except Exception as e:  # 캐시 예열 실패는 감시를 막지 않는다
             _log.warning("캐시 예열 실패", project=t.project, error_type=type(e).__name__)
 
-    async def _handle(self, t: WatchTarget, sha: str) -> str:
-        """핸들러를 최대 3회 시도. 성공이든 포기든 처리 완료로 저장하고 SHA를 돌려준다."""
+    async def _handle(self, t: WatchTarget, sha: str) -> tuple[str, bool]:
+        """핸들러를 최대 3회 시도. 성공이든 포기든 처리 완료로 저장하고 (SHA, True)를 돌려준다.
+
+        LOCK_HELD(다른 실행이 잠금 보유)는 시도 횟수에 넣지 않고 처리 완료로 저장하지도 않는다.
+        한 주기 쉰 뒤 (SHA, False)를 돌려주면 감시 루프가 같은 SHA를 다시 시도한다
+        (그 사이 더 새 커밋이 오면 새 것만). 대기 로그는 SHA마다 한 번만 남긴다.
+        """
         for attempt in range(1, HANDLER_RETRIES + 1):
             try:
                 await self.on_new_commit(t, sha)
@@ -279,6 +296,16 @@ class Watcher:
             except asyncio.CancelledError:
                 raise
             except Exception as e:
+                if isinstance(e, DdakToolError) and e.code is ErrorCode.LOCK_HELD:
+                    if self._waiting.get(t.project) != sha:
+                        self._waiting[t.project] = sha
+                        _log.info(
+                            "다른 배포가 끝나면 이어서 준비", project=t.project, commit=sha[:12]
+                        )
+                    await self._nap(self.interval_s)
+                    if self._stop.is_set():
+                        raise asyncio.CancelledError from None
+                    return sha, False
                 _log.error(
                     "새 커밋 처리 실패",
                     project=t.project,
@@ -291,8 +318,9 @@ class Watcher:
                     await self._nap(self.interval_s)
                     if self._stop.is_set():
                         raise asyncio.CancelledError from None
+        self._waiting.pop(t.project, None)
         try:
             write_last_commit(self.policy, t, sha, self.clock)
         except OSError as e:
             _log.warning("감시 상태 저장 실패", project=t.project, error_type=type(e).__name__)
-        return sha
+        return sha, True
