@@ -114,3 +114,14 @@
 - 독립 기본 경로 검토 PASS(148 passed)와 마지막 후보 취소 fixture 집중 검토 PASS(1 passed)를 완료했다. 원문 review-final.txt와 review-focused.txt.
 - `gitleaks git --redact --report-format json --report-path harness/var/validation/first-run-credentials-aws/gitleaks-git.json .`: exit 0, 215 commits, 발견 0건. 전체 변경 사본도 `gitleaks dir --redact`로 별도 검사하며 manifest에 원본 경로·해시와 .snapshot.txt 이름을 기록한다.
 - **DONE.** origin/main(#32 포함) 병합과 충돌 해결, Git/AWS 연결 보완, 검증·기록을 완료하고 git add 상태로 인계한다. HEAD 8c540c9와 MERGE_HEAD be52839를 유지한다. 커밋·push·PR·태그는 수행하지 않았다. 미해결 충돌과 unstaged 변경은 없고 미추적 .venv 링크만 stage에서 제외한다.
+
+
+## PR #33 원격 CI 실패 확인·수정 — 2026-10-03
+
+- PR HEAD `40787d499db13d9f9e15c96dba5e0b4a198a6520`의 [실패 실행](https://github.com/2026-Gerbera/gerbera-deploy-ai/actions/runs/37120322717)과 병합 후 main `d01b7d4ea3b9776a7bd3a65c581706e40f1e6a35`의 [실패 실행](https://github.com/2026-Gerbera/gerbera-deploy-ai/actions/runs/37120355038)을 확인했다. 두 실행 모두 3999 passed / 1 failed / 5 errors / 20 skipped / 4 deselected이며 lint/type/boundary/contracts는 통과했다.
+- 원인 1: `test_setup_app_actions_fix11.py`의 REAL 설정 fixture가 생성·판단 제공자를 생략해 새 기본값 Claude CLI를 상속했다. GitHub의 `CI=true`에서 `require_local_cli`가 정상 거부해 5개 테스트의 준비가 실패했다. fixture에 CI=true와 양쪽 replay 제공자를 명시했다. 제품의 CLI 제한 코드는 바꾸지 않았다.
+- 원인 2: `test_infra_preparation.py::test_missing_generator_bundle_is_visible_named_failure`가 작성자를 지정하지 않아 개발 머신의 전역 Git 신원에 의존했다. Git 신원 읽기에 값 없음 스텁을 적용하자 원격과 같은 request 단계 실패가 재현됐다. 해당 테스트에 작성자 이름·이메일 fixture를 저장하고 외부 명령 및 머신 신원 조회가 발생하면 테스트를 실패시키도록 고정했다. 생성기 누락은 원래 기대한 infra 단계에서 확인한다.
+- 이전 로컬 전체 CI 통과는 CI 표식과 Git 신원 부재 조건을 포함하지 않아 원격 통과를 보장하지 못했다. 이번 수정은 테스트의 실행 호스트 의존성 제거이며 제품 코드는 변경하지 않는다.
+- 집중 검증: `cd harness` 후 `CI=true UV_NO_SYNC=1 PYTHONPATH=<wt>/src uv run --no-sync pytest tests/unit/test_setup_app_actions_fix11.py tests/unit/test_infra_preparation.py tests/unit/test_exec_fix8.py::test_cli_remote_container_ci_denied -q --tb=short` → **21 passed in 1.08s**. 변경 테스트 2개 ruff check/format 통과. 실제 AWS·VM·Docker·Claude 호출 없음.
+- 최신 속도 지시대로 전체 CI·gitleaks·독립 검토는 실행하지 않았다. commit/push/PR 생성 및 git config 변경 없음. 변경은 같은 first-run worktree의 미커밋 파일로 남긴다.
+- 후속 작업: 사용자가 수정 반영 후 전체 CI와 gitleaks를 실행하고 원격 CI 성공을 확인한다. 기존 범위 밖 후속 목록은 유지한다.

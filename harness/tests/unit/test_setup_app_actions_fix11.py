@@ -17,9 +17,13 @@ from tests.unit.test_setup_service_fix11 import Builder
 
 @pytest.fixture
 def rig(tmp_path, monkeypatch):
+    monkeypatch.setenv("CI", "true")
     monkeypatch.delenv("DDAK_ONPREM_INVENTORY", raising=False)
     service = DeploymentService(Registry([]), tmp_path.resolve() / "state")
-    settings = Settings(adapter_mode=AdapterMode.REAL)
+    # DB 준비 fixture는 최초 실행의 CLI 기본값과 실행 호스트에 의존하지 않는다.
+    settings = Settings(
+        adapter_mode=AdapterMode.REAL, llm_provider="replay", judgment_provider="replay"
+    )
     setup = app._setup_service(service, settings, "127.0.0.1")
     setup._build_factory = Builder
     service.onboarding = setup
