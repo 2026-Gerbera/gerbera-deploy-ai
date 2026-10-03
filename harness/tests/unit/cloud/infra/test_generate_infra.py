@@ -40,6 +40,13 @@ def draft(**files: str):
     )
 
 
+def test_platform_prompt_requires_runtime_secret_tls_and_minimal_egress() -> None:
+    assert "aws_secretsmanager_secret.app_database_url" in logic._PROMPT
+    assert "ELBSecurityPolicy-TLS13-1-2-2021-06" in logic._PROMPT
+    assert "least-privilege egress" in logic._PROMPT
+    assert "rolling deployment percentages 100/200" in logic._PROMPT
+
+
 def test_generate_platform_writes_initial_ai_bundle(monkeypatch, tmp_path):
     source = (
         'resource "aws_secretsmanager_secret" "app_secret_key" {\n'

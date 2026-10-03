@@ -42,9 +42,13 @@ For a platform layer, create the complete first-deployment platform and use thes
   ingress is only ALB TCP 80/443. App ingress is only from the ALB security group to web TCP 8080.
   DB ingress is only from the app security group to TCP 3306. If using separate rule resources,
   name the public HTTP rule aws_vpc_security_group_ingress_rule.alb_http. Never create or manage an
-  aws_default_security_group resource.
+  aws_default_security_group resource. Use least-privilege egress: the ALB security group may send
+  only TCP 8080 to the app security group; the app security group may send only TCP 3306 to the DB
+  security group plus TCP 443 and DNS TCP/UDP 53 needed for AWS APIs, image pulls, logs, and name
+  resolution; the DB security group has no egress rule. Do not add unrestricted all-protocol egress.
 - aws_lb.main, aws_lb_target_group.app (deregistration_delay = 30), aws_lb_listener.http (301 HTTPS redirect),
-  aws_lb_listener.https (TLS 1.2+ and forwarding).
+  aws_lb_listener.https (forwarding with ssl_policy exactly
+  `ELBSecurityPolicy-TLS13-1-2-2021-06`).
 - aws_acm_certificate.main, aws_route53_record.certificate_validation,
   aws_acm_certificate_validation.main, and aws_route53_record.app. Use the provided domain and
   hosted zone. The app record is an alias to the ALB. `for_each` is forbidden everywhere except
@@ -60,8 +64,10 @@ For a platform layer, create the complete first-deployment platform and use thes
   manage_master_user_password=true, publicly_accessible=false and deletion_protection=true.
 - aws_s3_bucket.source with versioning, encryption and public access block.
 - secrets aws_secretsmanager_secret.dockerhub_push, aws_secretsmanager_secret.dockerhub_pull,
-  aws_secretsmanager_secret.app_secret_key. Secret names must be exactly
-  ddak-platform/dockerhub-push, ddak-platform/dockerhub-pull, and ddak/${var.project}/SECRET_KEY.
+  aws_secretsmanager_secret.app_secret_key, and aws_secretsmanager_secret.app_database_url. Secret
+  names must be exactly ddak-platform/dockerhub-push, ddak-platform/dockerhub-pull,
+  ddak/${var.project}/SECRET_KEY, and ddak/${var.project}/DATABASE_URL. Create empty secret resources
+  only; never set secret_string or any secret value in Terraform.
 - IAM roles aws_iam_role.codebuild (name ddak-codebuild, path /ddak/pipeline/ and build boundary),
   aws_iam_role.task_execution, aws_iam_role.task, aws_iam_role.dbinit_execution (path /ddak/app/
   and app boundary), plus separate least-privilege aws_iam_role_policy resources. Trust policies

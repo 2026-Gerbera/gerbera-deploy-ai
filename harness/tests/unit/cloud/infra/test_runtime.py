@@ -439,15 +439,15 @@ def test_foundation_reuses_only_matching_owned_resources(tmp_path):
 
 def test_review_fixes_static_codebuild_and_cidr():
     codebuild = """resource "aws_codebuild_project" "build" {
-  name = "ddak-codebuild"
+  name = "ddak-demo-build"
   environment { compute_type="BUILD_GENERAL1_SMALL"
     image="aws/codebuild/standard:7.0"
     type="LINUX_CONTAINER"
   }
 }"""
     codebuild = codebuild.replace(
-        '  name = "ddak-codebuild"',
-        '  name = "ddak-codebuild"\n  source { type="GITHUB"\n buildspec='
+        '  name = "ddak-demo-build"',
+        '  name = "ddak-demo-build"\n  source { type="GITHUB"\n buildspec='
         + json.dumps(OVERRIDE_REQUIRED_BUILDSPEC)
         + "\n }",
     )

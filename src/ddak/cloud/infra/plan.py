@@ -328,7 +328,10 @@ def summarize_plan(
                                 )
                                 dbinit = (
                                     path == "/ddak/app/"
-                                    and role_address == "aws_iam_role.dbinit_execution"
+                                    and (
+                                        role_address == "aws_iam_role.dbinit_execution"
+                                        or role.get("name") == f"ddak-{project}-dbinit-exec"
+                                    )
                                     and (
                                         ref == rds_master_secret_arn
                                         or (
