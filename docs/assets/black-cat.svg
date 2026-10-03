@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 96" width="800" height="96" role="img" aria-labelledby="t">
+  <title id="t">README 위로 한 발짝씩 걸어 들어와 잠깐 앉았다가 다시 걸어가는 검은 고양이</title>
+  <style>
+    /* 같은 몸을 두 번 그린다: 밝은 회색 층(조금 두껍게) 위에 검은 면 층. 바깥 윤곽에만 선이 남아 다크 모드에서도 보인다 */
+    .outline { fill: #c9d1d9; stroke: #c9d1d9; stroke-width: 3.2; stroke-linejoin: round; --tl: #c9d1d9; --tlw: 7.6px; }
+    .solid { fill: #111114; stroke: none; --tl: #111114; --tlw: 4.4px; }
+    .tl { fill: none; stroke: var(--tl); stroke-width: var(--tlw); stroke-linecap: round; }
+    .eye { fill: #f5c518; }
+    .pupil { fill: #111114; }
+
+    /* 한 바퀴 52초
+       0~5초 걸어 들어옴 → 5~5.8초 앉는 중 → 5.8~9.2초 앉아 쉼 → 9.2~10초 일어나는 중 → 10~52초 걸어 나감(초당 20px)
+       앉을 때: 엉덩이를 앞발 기준으로 낮춘 뒤(0.4초) 비슷하게 기운 앉은 모습으로 바꾸고 바로 세운다(0.4초). 일어날 때는 거꾸로 */
+    .walker { animation: walk 52s linear infinite; }
+    .walking { animation: show-walk 52s linear infinite; }
+    .walk-tilt { transform-origin: 76px 82px; animation: walk-tilt 52s ease-in-out infinite; }
+    .sitting { opacity: 0; animation: show-sit 52s linear infinite; }
+    .sit-tilt { transform-origin: 76px 82px; animation: sit-tilt 52s ease-in-out infinite; }
+
+    /* 걸음: 한 걸음 주기 1.2초. 발을 딛고 있는 동안(70%) 다리를 천천히 뒤로 밀고,
+       나머지 30%에 관절을 굽혀 발을 들어 앞으로 옮긴다. 뒷발 → 같은 쪽 앞발 → 반대쪽 뒷발 → 반대쪽 앞발 순서 */
+    .up { transform-origin: 0px 0px; animation: swing 1.2s infinite; }
+    .lo { transform-origin: 0.5px 14px; animation: bend-h 1.2s infinite; }
+    .lo.f { animation-name: bend-f; }
+    .p1 { animation-delay: -0.3s; }
+    .p2 { animation-delay: -0.6s; }
+    .p3 { animation-delay: -0.9s; }
+    .bob { animation: bob 0.6s ease-in-out infinite; }
+    .tail { transform-box: fill-box; transform-origin: 100% 100%; animation: sway 3.6s ease-in-out infinite; }
+    .tail-sit { transform-box: fill-box; transform-origin: 100% 100%; animation: sway-slow 3.2s ease-in-out infinite; }
+    .blink { transform-box: fill-box; transform-origin: 50% 50%; animation: blink 5s infinite; }
+
+    @keyframes walk { 0% { transform: translateX(-105px); } 9.62% { transform: translateX(-5px); } 19.23% { transform: translateX(-5px); } 100% { transform: translateX(830px); } }
+    @keyframes show-walk { 0%, 10.37% { opacity: 1; } 10.38%, 18.45% { opacity: 0; } 18.46%, 100% { opacity: 1; } }
+    @keyframes show-sit { 0%, 10.37% { opacity: 0; } 10.38%, 18.45% { opacity: 1; } 18.46%, 100% { opacity: 0; } }
+    @keyframes walk-tilt { 0%, 9.62% { transform: rotate(0deg); } 10.38%, 18.46% { transform: rotate(-9deg); } 19.23%, 100% { transform: rotate(0deg); } }
+    @keyframes sit-tilt { 0%, 10.38% { transform: rotate(7deg); } 11.15%, 17.69% { transform: rotate(0deg); } 18.46%, 100% { transform: rotate(7deg); } }
+    @keyframes swing {
+      0% { transform: rotate(-17deg); animation-timing-function: linear; }
+      70% { transform: rotate(17deg); animation-timing-function: ease-in-out; }
+      100% { transform: rotate(-17deg); }
+    }
+    @keyframes bend-h { 0%, 66% { transform: rotate(0deg); } 80% { transform: rotate(46deg); } 93% { transform: rotate(10deg); } 100% { transform: rotate(0deg); } }
+    @keyframes bend-f { 0%, 66% { transform: rotate(0deg); } 80% { transform: rotate(56deg); } 93% { transform: rotate(12deg); } 100% { transform: rotate(0deg); } }
+    @keyframes bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-0.9px); } }
+    @keyframes sway { 0%, 100% { transform: rotate(-5deg); } 50% { transform: rotate(6deg); } }
+    @keyframes sway-slow { 0%, 100% { transform: rotate(-4deg); } 50% { transform: rotate(5deg); } }
+    @keyframes blink { 0%, 94%, 100% { transform: scaleY(1); } 97% { transform: scaleY(0.1); } }
+
+    /* 움직임을 줄이도록 설정한 사람에게는 가운데에 앉아 있는 모습으로 멈춘다 */
+    @media (prefers-reduced-motion: reduce) {
+      .walker { animation: none; transform: translateX(345px); }
+      .walking { animation: none; opacity: 0; }
+      .sitting { animation: none; opacity: 1; }
+      .walk-tilt, .sit-tilt, .up, .lo, .bob, .tail, .tail-sit, .blink { animation: none; transform: none; }
+    }
+  </style>
+  <g class="walker">
+    <g class="walking"><g class="walk-tilt"><g class="bob">
+      <g class="outline"><g transform="translate(0 -6)"><g class="tail"><path class="tl" d="M24 52 C10 52 4 44 4 34 C4 24 10 18 14 16"/></g></g>
+<g transform="translate(38 54)"><g class="up h p2"><path d="M-5 -7 C-6.5 2 -2 8 -0.6 14.5 L4.4 14.5 C4.6 8 4.4 1 3.4 -7 Z"/><g class="lo h p2"><path d="M-1 13 L-1.6 25.5 C-2 27.2 -0.8 28 1.2 28 L4.4 28 C5.6 28 5.4 26.4 4 25.8 L4.2 13 Z"/></g></g></g>
+<g transform="translate(79 54)"><g class="up f p3"><path d="M-2.8 -2 L-2.4 14.5 L3.2 14.5 L3.4 -2 Z"/><g class="lo f p3"><path d="M-2.4 13 L-2.1 25 C-2.5 26.8 -1.4 28 0.8 28 L4.2 28 C5.4 28 5.2 26.4 3.7 25.6 L3.2 13 Z"/></g></g></g>
+<g transform="translate(0 -6)"><path d="M23 52 C33 45 51 45 63 46 C69 46 73 44 76 41 C78 39 81 38 84 39 C88 41 88 45 87 50 C86 55 84 59 81 62 C78 64 74 64 70 63 C62 61 52 60 44 62 C36 64 28 63 24 59 C21 57 21 54 23 52 Z"/></g>
+<g transform="translate(32 54)"><g class="up h p0"><path d="M-5 -7 C-6.5 2 -2 8 -0.6 14.5 L4.4 14.5 C4.6 8 4.4 1 3.4 -7 Z"/><g class="lo h p0"><path d="M-1 13 L-1.6 25.5 C-2 27.2 -0.8 28 1.2 28 L4.4 28 C5.6 28 5.4 26.4 4 25.8 L4.2 13 Z"/></g></g></g>
+<g transform="translate(74 54)"><g class="up f p1"><path d="M-2.8 -2 L-2.4 14.5 L3.2 14.5 L3.4 -2 Z"/><g class="lo f p1"><path d="M-2.4 13 L-2.1 25 C-2.5 26.8 -1.4 28 0.8 28 L4.2 28 C5.4 28 5.2 26.4 3.7 25.6 L3.2 13 Z"/></g></g></g>
+<g transform="translate(-2 -1)"><path d="M81 33 C80 29 81 27 83 25 L84 17.5 L88.5 23 C90 22.7 91.3 22.7 92.6 23 L95.8 16.5 L96.2 24.6 C97.8 26.2 98.6 28 99 29.5 L102 32 C101.6 33.6 100.2 34.6 98.2 35 C96.8 36.6 94.6 37.6 91.6 37.6 C87.6 37.6 83 36.2 81 33 Z"/></g></g>
+      <g class="solid"><g transform="translate(0 -6)"><g class="tail"><path class="tl" d="M24 52 C10 52 4 44 4 34 C4 24 10 18 14 16"/></g></g>
+<g transform="translate(38 54)"><g class="up h p2"><path d="M-5 -7 C-6.5 2 -2 8 -0.6 14.5 L4.4 14.5 C4.6 8 4.4 1 3.4 -7 Z"/><g class="lo h p2"><path d="M-1 13 L-1.6 25.5 C-2 27.2 -0.8 28 1.2 28 L4.4 28 C5.6 28 5.4 26.4 4 25.8 L4.2 13 Z"/></g></g></g>
+<g transform="translate(79 54)"><g class="up f p3"><path d="M-2.8 -2 L-2.4 14.5 L3.2 14.5 L3.4 -2 Z"/><g class="lo f p3"><path d="M-2.4 13 L-2.1 25 C-2.5 26.8 -1.4 28 0.8 28 L4.2 28 C5.4 28 5.2 26.4 3.7 25.6 L3.2 13 Z"/></g></g></g>
+<g transform="translate(0 -6)"><path d="M23 52 C33 45 51 45 63 46 C69 46 73 44 76 41 C78 39 81 38 84 39 C88 41 88 45 87 50 C86 55 84 59 81 62 C78 64 74 64 70 63 C62 61 52 60 44 62 C36 64 28 63 24 59 C21 57 21 54 23 52 Z"/></g>
+<g transform="translate(32 54)"><g class="up h p0"><path d="M-5 -7 C-6.5 2 -2 8 -0.6 14.5 L4.4 14.5 C4.6 8 4.4 1 3.4 -7 Z"/><g class="lo h p0"><path d="M-1 13 L-1.6 25.5 C-2 27.2 -0.8 28 1.2 28 L4.4 28 C5.6 28 5.4 26.4 4 25.8 L4.2 13 Z"/></g></g></g>
+<g transform="translate(74 54)"><g class="up f p1"><path d="M-2.8 -2 L-2.4 14.5 L3.2 14.5 L3.4 -2 Z"/><g class="lo f p1"><path d="M-2.4 13 L-2.1 25 C-2.5 26.8 -1.4 28 0.8 28 L4.2 28 C5.4 28 5.2 26.4 3.7 25.6 L3.2 13 Z"/></g></g></g>
+<g transform="translate(-2 -1)"><path d="M81 33 C80 29 81 27 83 25 L84 17.5 L88.5 23 C90 22.7 91.3 22.7 92.6 23 L95.8 16.5 L96.2 24.6 C97.8 26.2 98.6 28 99 29.5 L102 32 C101.6 33.6 100.2 34.6 98.2 35 C96.8 36.6 94.6 37.6 91.6 37.6 C87.6 37.6 83 36.2 81 33 Z"/></g></g>
+      <g transform="translate(-2 -1)"><g class="blink"><path class="eye" d="M90.8 28 C91.7 26.5 94 26.5 94.8 28.2 C93.9 29.7 91.7 29.7 90.8 28 Z"/><ellipse class="pupil" cx="92.9" cy="28.1" rx="0.55" ry="1.25"/></g></g>
+    </g></g></g>
+    <g class="sitting"><g class="sit-tilt">
+      <g class="outline"><g class="tail-sit"><path class="tl" d="M32 80 C22 82 14 78 14 72 C14 68 17 66 20 66"/></g>
+<g transform="translate(75 54)"><path d="M-2.8 -2 L-2.4 14.5 L3.2 14.5 L3.4 -2 Z"/><path d="M-2.4 13 L-2.1 25 C-2.5 26.8 -1.4 28 0.8 28 L4.2 28 C5.4 28 5.2 26.4 3.7 25.6 L3.2 13 Z"/></g>
+<path d="M30 82 C25 74 26 62 34 55 C42 48 52 46 60 44 C64 42 66 40 70 37 C73 35 77 36 78 39 C80 44 80 50 78 58 C77 66 76 74 76 82 Z"/>
+<path d="M28 82 C25 74 30 64 40 64 C50 64 56 72 56 82 Z"/>
+<g transform="translate(70 54)"><path d="M-2.8 -2 L-2.4 14.5 L3.2 14.5 L3.4 -2 Z"/><path d="M-2.4 13 L-2.1 25 C-2.5 26.8 -1.4 28 0.8 28 L4.2 28 C5.4 28 5.2 26.4 3.7 25.6 L3.2 13 Z"/></g>
+<g transform="translate(-14 2)"><path d="M81 33 C80 29 81 27 83 25 L84 17.5 L88.5 23 C90 22.7 91.3 22.7 92.6 23 L95.8 16.5 L96.2 24.6 C97.8 26.2 98.6 28 99 29.5 L102 32 C101.6 33.6 100.2 34.6 98.2 35 C96.8 36.6 94.6 37.6 91.6 37.6 C87.6 37.6 83 36.2 81 33 Z"/></g></g>
+      <g class="solid"><g class="tail-sit"><path class="tl" d="M32 80 C22 82 14 78 14 72 C14 68 17 66 20 66"/></g>
+<g transform="translate(75 54)"><path d="M-2.8 -2 L-2.4 14.5 L3.2 14.5 L3.4 -2 Z"/><path d="M-2.4 13 L-2.1 25 C-2.5 26.8 -1.4 28 0.8 28 L4.2 28 C5.4 28 5.2 26.4 3.7 25.6 L3.2 13 Z"/></g>
+<path d="M30 82 C25 74 26 62 34 55 C42 48 52 46 60 44 C64 42 66 40 70 37 C73 35 77 36 78 39 C80 44 80 50 78 58 C77 66 76 74 76 82 Z"/>
+<path d="M28 82 C25 74 30 64 40 64 C50 64 56 72 56 82 Z"/>
+<g transform="translate(70 54)"><path d="M-2.8 -2 L-2.4 14.5 L3.2 14.5 L3.4 -2 Z"/><path d="M-2.4 13 L-2.1 25 C-2.5 26.8 -1.4 28 0.8 28 L4.2 28 C5.4 28 5.2 26.4 3.7 25.6 L3.2 13 Z"/></g>
+<g transform="translate(-14 2)"><path d="M81 33 C80 29 81 27 83 25 L84 17.5 L88.5 23 C90 22.7 91.3 22.7 92.6 23 L95.8 16.5 L96.2 24.6 C97.8 26.2 98.6 28 99 29.5 L102 32 C101.6 33.6 100.2 34.6 98.2 35 C96.8 36.6 94.6 37.6 91.6 37.6 C87.6 37.6 83 36.2 81 33 Z"/></g></g>
+      <g transform="translate(-14 2)"><g class="blink"><path class="eye" d="M90.8 28 C91.7 26.5 94 26.5 94.8 28.2 C93.9 29.7 91.7 29.7 90.8 28 Z"/><ellipse class="pupil" cx="92.9" cy="28.1" rx="0.55" ry="1.25"/></g></g>
+    </g></g>
+  </g>
+</svg>
