@@ -6,6 +6,12 @@ smoke 툴이 결과를 run_id·target별로 남기고 compare 툴이 두 환경 
   compare는 "비교 불가"로 끝난다.
 - 같은 run·target을 다시 돌리면 마지막 결과로 바꾼다. 오래된 run은 MAX_RUNS개를 넘으면 버린다.
 - 결과에는 주소·쿠키 값·비밀값이 없다(C-10). 그대로 보관해도 된다.
+
+합의된 예외(정준우 확인, 2026-10-03): 툴 규약 C-5(툴은 상태를 들고 있지 않는다)와
+불변 조건 (f)(툴 모듈끼리 import하지 않는다)에 어긋나지만 대회(10/4)까지는 이 방식을 쓴다.
+실패한 smoke 결과는 실행기 after_step을 거치지 않아 RunContext로 넘길 수 없고, diagnose가
+그 결과를 써야 하기 때문이다. 읽는 쪽은 compare_env_results·diagnose_parity_gap 둘뿐이다.
+RunContext에 검증 결과 칸이 생기면(대회 뒤) 그쪽으로 옮기고 이 파일을 지운다.
 """
 
 from __future__ import annotations

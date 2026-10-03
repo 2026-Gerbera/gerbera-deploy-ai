@@ -56,6 +56,7 @@ class ReviewResult:
 
     proposals: list[CodeProposal]
     source: Source
+    warnings: tuple[str, ...] = ()
 
 
 class PatchReviewRequest(BaseModel):

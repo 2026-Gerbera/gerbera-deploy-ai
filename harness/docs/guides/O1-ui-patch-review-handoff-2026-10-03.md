@@ -90,3 +90,32 @@ gitleaks git --redact --no-banner --report-format json \
 ## 남은 운영 확인
 
 실제 provider 응답 품질, AWS·VM·Docker를 쓰는 배포 및 3분 시연은 이 작업의 검증 범위 밖이다. 이전 성공 원장의 필수 수정은 이 UI에서 제거할 수 없다. 원장 손실이나 파일 단위 검사 실패가 생기면 승인 전에 중단하며, 범위를 넓히려면 패치 계약을 별도로 설계해야 한다.
+
+## #31 결정 12 병합 충돌 해결 — 2026-10-03
+
+- 사용자 커밋 `2befb3c4b4f23d197950a3145f7280618c0c0068`에서 `git fetch origin` 후 `git merge --no-commit --no-ff origin/main`을 실행했다. 병합 대상 `MERGE_HEAD`는 #31의 `dfe99968ceffcb3b44fd5108d2ad802f8d9d1cfa`다. 작업 중 다른 작업이 공유 origin/main을 `be528396a0d409febf00cbf5b1c659623f419a08`로 갱신했으며 이후 변경은 이 병합·검증에 포함하지 않았다.
+- `generate.py` 두 충돌 구간은 v3·파일별 재사용·손실 출력에 검토 요청·옆 프롬프트·가린 reason을 합쳤다. `O1.md`의 두 부모 기록을 모두 보존하고 줄 순서까지 비교했다.
+- 손실 내용 판정은 main의 `plan/patch/history.py`에 유지한다. `core.patch_ledger`는 툴의 `patch_lost`를 위치만 담은 예외로 전달하고 의미를 재판정하지 않는다. `prepare_review`는 손실을 일반 불일치로 바꾸지 않으며, 새 승인 준비에 `checked.review`를 전달한다.
+- 이전 원장의 optional 환경 읽기는 그대로 재사용하지 않는다. 파일별로 검사해 정상 파일은 필수 제안으로 유지하고, ON은 부적합 파일만 재제안한다. OFF는 호출 없이 파일·현재 줄 번호가 있는 `patch_lost`, `passed=False`로 중단한다.
+- 검토·승인 화면에 **이전 승인 수정 손실 · 승인 중단**과 위치를 표시한다. 코드·설정값은 표시하지 않는다. 검토 취소·채택·저장·완료·재시작으로 차단을 풀 수 없고 직접 승인도 거부한다. 기존 요청을 거절한 뒤 새 자료를 준비해야 한다.
+- 추가 수정: `app.py`, `core/patch_ledger.py`, `executor/patch_review.py`, `plan/patch/tool_review.py`, `_patch_loss.html`, `_status.html`, `patch_review.html`, `approval.html`, 검토 툴·조립·HTTP 회귀 3개 파일. 내부 ReviewResult에는 기본값이 빈 tuple인 warnings를 추가해 기존 두 인자 호출을 유지했다. 공개 툴 입력·출력 필드는 추가·삭제·이름 변경하지 않았다. contracts-update를 다시 실행했으며 추가 스냅샷 차이는 없다.
+
+검증 근거는 기존 검증 디렉토리의 `d12-*` 파일에 별도로 보관한다.
+
+- 관련 회귀: **167 passed, 64.64초**, `d12-focused-second.log`. 첫 검증의 14 failed / 58 passed는 옛 optional 허용 fixture·관문 메시지·예외 반환 기대를 정정했다(`d12-focused-first.log`). 관문은 완화하지 않았다.
+- 브라우저: 실제 등록 툴·손실 판정·저장소를 사용하고 생성 응답만 fixture로 주입했다. 검토와 승인 2화면 × 1440/1280/390px **6조합 모두 가로 넘침 0**, 승인 버튼 비활성화 확인. `d12-browser-layout.json`, `d12-loss-{1440,1280,390}.jpg`, `d12-approval-blocked-{1440,1280,390}.jpg`.
+- Git 이력: `gitleaks git` **발견 0건**, 별도로 `--log-opts='HEAD MERGE_HEAD'`의 두 병합 부모 이력도 **발견 0건**, 모두 exit 0. `d12-gitleaks-git.log/json`, `d12-gitleaks-parents.log/json`.
+- 최종 전체 CI·독립 POST·stage 결과는 아래 완료 기록에 남긴다.
+- 검증 서버는 `quit` 입력으로 정상 종료했다. 시작 전부터 있던 `.venv -> ../../.venv`는 보존하고 stage에서 제외한다. 테스트 증거 사본은 `.py.evidence.txt` 이름만 쓴다. 커밋·push·PR·태그·git config 변경과 실제 AWS/VM/Docker/Claude 호출은 하지 않았다.
+
+### #31 완료 검증
+
+`UV_NO_SYNC=1 PYTHONPATH=<wt>/src make -C harness ci`의 경고 전달 보완 전 결과는 **3930 passed, 0 failed, 1 skipped, 4 deselected**, pytest 295.73초 / 전체 301.5초, exit 0이다. lint/type/boundary/contracts/test 모두 PASS. 로그는 `d12-ci-final.log`다. 기존 Flask 앱의 격리 환경 테스트 1개는 동일하게 skip이며 실제 외부 배포는 수행하지 않았다. 최종 UI 문구 이후 기록한 소스·테스트·스키마 입력 해시는 종료 검사에서도 동일하다(`d12-inputs.json`).
+
+독립 POST에서 기존 경고 유실을 확인했다. 이전 패치 재사용은 성공하고 새 제안은 실패할 때 경고를 숨기지 않도록 `ReviewResult.warnings → 검토 저장·화면 → 최종 context.preparation_warnings`로 전달했다. 재사용 성공과 새 제안 실패를 구별하며, 패치 손실 차단은 그대로 유지한다. 관련 40개 회귀가 32.36초에 통과했다(`d12-warning-regression.log`). 1440px 실제 등록 툴 fixture 화면도 확인했다(`d12-warning-1440.jpg`, `d12-warning-browser.json`).
+
+보완 후 최종 전체 CI는 **3931 passed, 0 failed, 1 skipped, 4 deselected**, pytest 285.75초 / 명령 전체 290.809초, exit 0이다. 시작 2026-10-03T10:33:33.945851+00:00, 종료 2026-10-03T10:38:24.753703+00:00. lint/type/boundary/contracts/test 모두 PASS이며 입력 557개 전후 해시가 같다. 최종 근거는 `d12-ci-verified.log`, `d12-ci-verified-summary.json`, `d12-verified-inputs.json`이다.
+
+독립 PRE는 REVISED, 최종 집중 POST는 **PASS**, 남은 차단 지적은 없다. 외부 Claude는 사용자 금지에 따라 실행하지 않았다. 경고 가림·중복 제거·HTML 이스케이프·재검토 이후 보존도 fake 검토로 확인했다. `d12-review-final.json`.
+
+최종 45파일을 `git add`했고 충돌 0개, unstaged tracked 변경 0개다. HEAD는 2befb3c, MERGE_HEAD는 dfe9996으로 유지되며 **병합 커밋은 아직 만들지 않았다**. 변경 파일 45개 사본의 gitleaks dir도 발견 0건이며 테스트 사본은 `.py.evidence.txt`다(`d12-changed-files.json`, `d12-gitleaks-changed.log/json`). 기존 `.venv` 링크는 untracked 상태로 보존했다.

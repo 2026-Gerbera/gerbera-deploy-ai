@@ -3,10 +3,14 @@
 {% block title %}코드 수정 검토 · Gerbera{% endblock %}
 {% block head %}{% if review and review.busy %}<meta http-equiv="refresh" content="3{% if review.state == 'publishing' %}; url=/runs/{{ run_id }}/patch-review?wait_for_approval=1{% endif %}">{% endif %}{% endblock %}
 {% block content %}
-<section class="page-heading"><div><p class="note">{{ project }} · 배포 승인 전</p><h1>코드 수정 검토</h1><p>적용할 수정을 고르세요. 바꾸고 싶은 부분은 옆에 적으면 됩니다.</p></div><a href="/runs/{{ run_id }}/approval">승인 화면</a></section>
+<section class="page-heading"><div><p class="note">{{ project }} · 배포 승인 전</p><h1>코드 수정 검토</h1><p>{% if review and review.state == 'patch_lost' %}이전 승인 수정의 손실을 확인해야 합니다.{% else %}적용할 수정을 고르세요. 바꾸고 싶은 부분은 옆에 적으면 됩니다.{% endif %}</p></div><a href="/runs/{{ run_id }}/approval">승인 화면</a></section>
 {% if error %}<div class="notice error" role="alert"><h2>요청을 반영하지 못했습니다</h2><p>{{ error }}</p><p>현재 저장된 내용을 기준으로 다시 확인하세요.</p></div>{% endif %}
 {% if review and review.error %}<div class="notice error" role="alert"><h2>검토 요청을 완료하지 못했습니다</h2><p>{{ review.error }}</p><p>기존 제안을 유지했습니다.</p></div>{% endif %}
+{% if review and review.warnings %}<section class="notice" role="status"><h2>일부 수정 제안을 준비하지 못했습니다</h2><ul>{% for warning in review.warnings %}<li>{{ warning }}</li>{% endfor %}</ul><p>아래에 표시된 수정만 승인 자료에 포함됩니다. 이 경고는 최종 승인 화면에도 남습니다.</p></section>{% endif %}
 {% if blocked %}<section class="section"><h2>승인 자료를 다시 준비해야 합니다</h2><p>이 검토에서 코드를 선택하거나 승인할 수 없습니다. 기존 승인 화면에서 요청을 거절한 뒤, 프로젝트 대시보드에서 다시 준비하세요.</p><a class="button secondary" href="/runs/{{ run_id }}/approval">기존 승인 확인</a> <a href="/?project={{ project|urlencode }}">프로젝트 대시보드</a></section>
+{% elif review and review.state == 'patch_lost' %}
+{% with patch_loss=review %}{% include '_patch_loss.html' %}{% endwith %}
+<section class="approval-bar"><p>손실이 해결된 새 승인 자료가 필요합니다.</p><button class="button" type="button" disabled>승인 자료 준비 중단</button></section>
 {% elif not review or review.state in ('cancelled','sealed') %}
 <section class="section"><h2>코드 수정 제안</h2><p>서명 키, 서비스 주소, 쿠키와 프록시 설정을 검토합니다. 제안만 생성하며 원본 코드나 배포 상태를 바꾸지 않습니다.</p><p class="note">수정 제안을 받은 뒤 적용 여부를 선택할 수 있습니다. 임의 기능 추가는 현재 지원하지 않습니다.</p><form method="post" data-deploy-form><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button" name="action" value="begin" type="submit">코드 수정 제안 받기</button></form></section>
 {% elif review.busy %}

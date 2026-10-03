@@ -128,7 +128,7 @@ def test_new_api_sends_only_positions_and_uses_real_renderer(source: Path, tmp_p
     assert provider.contexts == [("patch_config", ON.run_id)]
     request = provider.seen[0]
     assert request.purpose == "patch_config"
-    assert request.prompt_version == "patch_config-intents-v2"
+    assert request.prompt_version == "patch_config-intents-v3"
     assert request.model == CFG.llm_model
     assert set(request.json_schema["properties"]) == {"intents", "reason"}
     assert request.json_schema["additionalProperties"] is False

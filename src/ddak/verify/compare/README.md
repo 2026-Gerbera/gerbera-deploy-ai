@@ -1,7 +1,7 @@
 # verify/compare (담당: 장민영)
 - 할 일: 교차 검증(compare_env_results)
 - 구조: 비교 로직은 `logic.py`의 순수 함수(`compare_env`), 등록은 `tool.py`(@tool("compare_env_results")).
-- 입력 경로: 실행기는 단계 출력을 다음 툴에 넘기지 않는다. 그래서 smoke 툴이 결과를 같은 프로세스의 보관소(`verify/smoke/results.py`)에 run_id·target별로 남기고, compare 툴이 `results_for(run_id)`로 두 환경 결과를 꺼낸다. 이미지 관측은 `RunContext.release_artifacts`에서 읽는다. 한쪽 결과라도 없거나, 어느 한쪽 smoke가 `passed=False`면 PRECONDITION_FAILED(실행기가 "비교 불가"로 기록). 둘 다 똑같이 실패하면 값이 같아 match가 되므로, 패리티 성공으로 보고하지 않는다.
+- 입력 경로: 실행기는 단계 출력을 다음 툴에 넘기지 않는다. 그래서 smoke 툴이 결과를 같은 프로세스의 보관소(`verify/smoke/results.py`)에 run_id·target별로 남기고(툴 규약 C-5·불변 조건 (f)의 합의된 예외, 정준우 확인 10/3, 대회 뒤 RunContext 칸으로 이전), compare 툴이 `results_for(run_id)`로 두 환경 결과를 꺼낸다. 이미지 관측은 `RunContext.release_artifacts`에서 읽는다. 한쪽 결과라도 없거나, 어느 한쪽 smoke가 `passed=False`면 PRECONDITION_FAILED(실행기가 "비교 불가"로 기록). 둘 다 똑같이 실패하면 값이 같아 match가 되므로, 패리티 성공으로 보고하지 않는다.
 - 두 smoke 단계는 서로 기다리지 않는다. compare 단계가 `local_verified`·`cloud_verified`를 기다린 뒤 순서와 상관없이 비교한다.
 - 스키마 서명(S10)은 아직 넘겨받는 경로가 없어서 skipped로 나온다. 실행기가 run 결과를 RunContext로 넘기게 되면 보관소 대신 그쪽을 읽는다(O1과 협의).
 - 비교 대상: smoke 결과(시나리오별 ok·status·normalized, 정규화 화면 지문 `page.head`·`page.post` 포함), 이미지(두 환경의 실제 digest가 같은 index에 속하는지), 스키마 서명(S10), DB 지문(S12: sql_mode 순서 무관·collation은 같아야 함, version은 major.minor, time_zone은 예상된 차이, 클라우드 ssl_version 필수). S10·S12는 prepare_db 결과를 넘겨받는 경로가 없어 지금은 skipped

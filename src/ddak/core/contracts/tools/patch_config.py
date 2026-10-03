@@ -24,7 +24,7 @@ Sha256Digest = Annotated[str, Field(pattern=r"^sha256:[0-9a-f]{64}$")]
 RelPath = Annotated[str, Field(min_length=1, max_length=200)]
 EnvName = Annotated[str, Field(pattern=r"^[A-Z][A-Z0-9_]{1,63}$")]
 PatternName = Literal["secret_key", "local_address", "cookie_secure", "proxy_fix"]
-PatchStatus = Literal["proposed", "reused", "no_targets", "rejected"]
+PatchStatus = Literal["proposed", "reused", "no_targets", "rejected", "patch_lost"]
 
 
 class ApprovedPatch(ContractModel):
@@ -66,6 +66,9 @@ class PatchConfigOutput(ContractModel):
     - no_targets: 패치 없음. 성공 원장의 손실 관문을 통과한 원본으로 진행한다.
     - rejected: 새 제안 실패. patch=None, passed=False, 경고를 남긴다.
       실패한 diff를 prepare에 넘기지 않는다.
+    - patch_lost: 이전 승인 패치를 유지하지 못했다. passed=False이며 patch·patch_sha256·meta는
+      None이다. violations에는 "patch_lost"와 파일·줄 번호만 남긴다. 승인 전에 run을 중단한다.
+    토글 OFF는 새 AI 제안 없이 이전 승인 패치의 파일별 재적용만 허용한다.
     """
 
     run_id: RunId

@@ -2,7 +2,8 @@
 
 등록 툴은 intents 생성과 검사·성공 원장 재사용을 함께 수행한다.
 patch_session은 조립부의 실행별 설정·경로만 주입하며 툴을 직접 호출하지 않는다.
-propose_config_patch는 이전 제안 API 호환용이다.
+토글 ON은 새 AI 제안, OFF는 AI 없이 이전 승인 패치 유지만 허용한다. 손실이면 승인 전에 멈춘다.
+propose_config_patch는 파일별 재적용·patch_lost 관문을 가진 이전 줄 편집 API 호환용이다.
 """
 
 from __future__ import annotations

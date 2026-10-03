@@ -26,7 +26,7 @@ from ddak.core.contracts.tools.patch_config import (
     PatchConfigInput,
     PatchConfigOutput,
 )
-from ddak.core.patch_ledger import save_ledger
+from ddak.core.patch_ledger import file_diff, save_ledger
 from ddak.core.runtime import current_run_id, current_tool, tool_context
 from ddak.core.snapshots import digest_bytes
 from ddak.plan.patch import (
@@ -86,11 +86,9 @@ class ReviewHarness:
         self.settings = Settings(llm_backend=LLMBackend.REPLAY, ai_retries=0)
         self.ctx = RunContext("review-run", toggles={"code_patch": True})
         self.scans = []
-        self.loss_checks = []
         self.reject_scan = False
         self.facts = None
         real_call = generate.call_ai
-        real_loss = pipeline.guard_patch_loss
 
         def call(**kwargs):
             assert kwargs["settings"] is self.settings
@@ -101,13 +99,8 @@ class ReviewHarness:
             if self.reject_scan:
                 raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "fixture scan rejected")
 
-        def loss(*args):
-            self.loss_checks.append(args[2])
-            return real_loss(*args)
-
         monkeypatch.setattr(generate, "call_ai", call)
         monkeypatch.setattr(pipeline, "strict_patch_scan", scanner)
-        monkeypatch.setattr(pipeline, "guard_patch_loss", loss)
         self.tool = load_tools().get("patch_config")
 
     def run(self, action="propose", *, previous=None, **kwargs):
@@ -194,7 +187,7 @@ def test_propose_uses_registry_groups_entire_files_and_preserves_source(review):
     assert proposal_for(output, "config.py").env_vars == ["APP_BASE_URL", "SECRET_KEY"]
     assert {k.name for k in output.env_keys} == set(output.env_vars)
     assert output.changed_files == ["config.py", "cookie.py"]
-    assert review.scans == [output.patch.encode()] and review.loss_checks == [{}]
+    assert review.scans == [output.patch.encode()]
     sent = review.provider.requests[0].user
     assert "localhost" not in sent and CONFIG not in sent and "dev" not in sent
     assert (review.source / "config.py").read_text() == CONFIG
@@ -341,7 +334,6 @@ def test_ledger_reuse_is_required_and_composition_preserves_original_entry(revie
     reused = review.run("compose", proposals=initial.proposals, selected=[required.id])
     assert reused.patch == first.patch and reused.status == "reused" and reused.meta.reuse
     assert reused.source is None and reused.meta.source is Source.CACHE and reused.attempts == 0
-    assert review.loss_checks[-1] == review.ctx.previous_release
     assert len(review.provider.requests) == 2
     assert proposal_diff(review.source, proposal_for(initial, "cookie.py"), initial.proposals)
 
@@ -422,9 +414,12 @@ def test_compose_uses_loss_guard_for_changed_ledger_source(review):
     (review.source / "config.py").write_text(CONFIG + "VERSION = 2\n")
     proposal_for(initial, "config.py").required = False
     chosen = proposal_for(initial, "cookie.py")
+    output = review.run("compose", proposals=initial.proposals, selected=[chosen.id])
+    assert output.status == "patch_lost" and output.passed is False
+    assert output.patch is None and output.meta is None and output.proposals == []
+    assert {v.file for v in output.violations} == {"config.py"}
     with pytest.raises(DdakToolError, match="손실"):
-        review.run("compose", proposals=initial.proposals, selected=[chosen.id])
-    assert review.loss_checks[-1] == review.ctx.previous_release
+        PatchPreparation.from_output(output)
     assert len(review.provider.requests) == 2
 
 
@@ -472,8 +467,48 @@ def test_changed_ledger_source_cannot_drop_old_patch_when_toggle_off(review):
     review.with_ledger()
     (review.source / "config.py").write_text(CONFIG + "VERSION = 2\n")
     review.ctx = replace(review.ctx, toggles={"code_patch": False})
+    output = review.run()
+    assert output.status == "patch_lost" and output.passed is False
     with pytest.raises(DdakToolError, match="손실"):
-        review.run()
+        PatchPreparation.from_output(output)
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_mixed_legacy_optional_review_reuses_valid_files_and_rechecks_only_invalid(review, enabled):
+    first = review.propose()
+    (review.source / "cookie.py").write_text(COOKIE)
+    legacy = file_diff(
+        "cookie.py",
+        COOKIE.encode(),
+        b"import os\nSESSION_COOKIE_SECURE = "
+        b'os.getenv("SESSION_COOKIE_SECURE", "false") == "true"\n',
+    )
+    directory = review.runs / "legacy"
+    directory.mkdir(parents=True)
+    entries = save_ledger(directory, review.source, first.patch.encode() + legacy)
+    review.ctx = replace(
+        review.ctx,
+        toggles={"code_patch": enabled},
+        previous_release={"local": {"release_id": "legacy", "patch_ledger": entries}},
+    )
+    if enabled:
+        review.provider.replies.append(reply([COOKIE_INTENT]))
+    output = review.run()
+    if enabled:
+        assert_ready(review, output)
+        assert proposal_for(output, "config.py").required
+        assert not proposal_for(output, "cookie.py").required
+        assert "config.py" not in review.provider.requests[-1].user
+        assert "os.getenv" not in output.patch and len(review.provider.requests) == 2
+        composed = review.run(
+            "compose", proposals=output.proposals, selected=[p.id for p in output.proposals]
+        )
+        assert composed.patch == output.patch and composed.attempts == 0
+    else:
+        assert output.status == "patch_lost" and output.passed is False
+        assert output.patch is None and output.patch_sha256 is None and output.meta is None
+        assert [(v.file, v.line) for v in output.violations] == [("cookie.py", 1)]
+        assert output.proposals == [] and len(review.provider.requests) == 1
 
 
 @pytest.mark.parametrize("ending", ["\n", "\r\n", ""])

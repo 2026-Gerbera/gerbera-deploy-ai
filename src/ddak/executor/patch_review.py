@@ -11,6 +11,7 @@ from typing import Any
 
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.contracts.patch_review import CodeProposal
+from ddak.core.patch_ledger import PatchLostError
 from ddak.core.redact import redact
 from ddak.core.snapshots import digest_json, file_manifest
 
@@ -61,6 +62,11 @@ class PatchReviews:
             raise DdakToolError(
                 ErrorCode.PRECONDITION_FAILED, "끝난 검토입니다. 최신 승인 화면을 확인하세요"
             )
+        if current["state"] == "patch_lost":
+            raise DdakToolError(
+                ErrorCode.PRECONDITION_FAILED,
+                "이전 승인 수정이 유지되지 않았습니다. 다시 준비하세요",
+            )
         return current
 
     @staticmethod
@@ -86,6 +92,7 @@ class PatchReviews:
             "source": None,
             "notes": {},
             "error": None,
+            "warnings": [],
             "successor": None,
             "source_sha": p.context.source_sha,
             "source_snapshot_hash": p.snapshot.source_snapshot_hash,
@@ -213,6 +220,11 @@ class PatchReviews:
                     )
                 )
                 self._current(run_id, current["revision"], busy=True)
+                warnings = list(
+                    dict.fromkeys(
+                        [*current.get("warnings", []), *(redact(w) for w in result.warnings)]
+                    )
+                )
                 if previous is None:
                     self._save(
                         run_id,
@@ -223,6 +235,7 @@ class PatchReviews:
                         source=result.source.value,
                         proposal_sources={p.id: result.source.value for p in result.proposals},
                         error=None,
+                        warnings=warnings,
                     )
                 else:
                     if len(result.proposals) != 1 or result.proposals[0].id != previous.id:
@@ -240,12 +253,30 @@ class PatchReviews:
                         "source": result.source.value,
                         "base_revision": current["revision"],
                     }
-                    self._save(run_id, current, state="ready", candidate=candidate, error=None)
+                    self._save(
+                        run_id,
+                        current,
+                        state="ready",
+                        candidate=candidate,
+                        error=None,
+                        warnings=warnings,
+                    )
             except asyncio.CancelledError:
                 self._failed(
                     run_id, current, "서비스 종료로 요청이 중단됐습니다. 기존 제안을 유지했습니다."
                 )
                 raise
+            except PatchLostError as exc:
+                self.service.store.abort_patch_review_children(run_id, current["revision"])
+                with contextlib.suppress(KeyError, DdakToolError):
+                    self._save(
+                        run_id,
+                        current,
+                        state="patch_lost",
+                        candidate=None,
+                        error=None,
+                        loss_locations=list(exc.locations),
+                    )
             except Exception as exc:
                 detail = (
                     redact(exc.message)
@@ -268,7 +299,7 @@ class PatchReviews:
             return None
         data = {**data, "busy": data["state"] in BUSY}
         p = self._prepared(run_id)
-        if data["busy"]:
+        if data["busy"] or data["state"] == "patch_lost":
             return data
         proposals = self.proposals(data)
         data["items"] = [

@@ -18,6 +18,8 @@ from ddak.core.contracts.enums import Source
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.contracts.plan import Plan
 from ddak.core.contracts.plan_facts import FileMeta
+from ddak.core.contracts.tools.patch_config import PatchViolation
+from ddak.core.patch_ledger import file_diff, save_ledger
 from ddak.core.registry import Registry, spec_for
 from ddak.core.snapshots import digest_bytes, digest_json
 from ddak.executor.engine import RunStatus
@@ -292,7 +294,7 @@ def test_invalid_registered_verdict_cannot_reach_replan_or_approval(
             assert draft["state"] == "ready", draft
             draft = finalize(client, reviews, draft)
         assert draft["successor"] is None
-        assert "검사 결과가 일치하지 않는다" in draft["error"]
+        assert "패치 툴 판정과 승인 대상이 다르다" in draft["error"]
         assert not harness.replans and not harness.infra
         assert service.get_run("review-parent")["status"] == "AWAITING_APPROVAL"
         assert service.get_approvals("review-parent") == []
@@ -534,3 +536,121 @@ def test_review_baseline_extension_preserves_legacy_context_encoding():
     assert RunContext(**context.to_json_dict()).review_baseline_hash is None
     with pytest.raises(ValueError, match="재검토 배포 기준 해시"):
         RunContext("invalid", review_baseline_hash="invalid")
+
+
+@pytest.mark.parametrize("phase", ["propose", "revise", "compose"])
+def test_patch_loss_verdict_is_visible_and_blocks_all_approval_routes(registered_review, phase):
+    harness = registered_review
+    prepare_review_parent(harness)
+    harness.corrupt[phase] = {
+        "status": "patch_lost",
+        "passed": False,
+        "patch": None,
+        "patch_sha256": None,
+        "meta": None,
+        "proposals": [],
+        "violations": [PatchViolation(code="patch_lost", file="app.py", line=2)],
+    }
+    service, reviews = harness.service, harness.service.patch_reviews
+    with client_for(service) as client:
+        draft = begin(client, reviews)
+        if phase == "compose":
+            draft = finalize(client, reviews, draft)
+        elif phase == "revise":
+            identity = draft["proposals"][0]["id"]
+            assert (
+                post(
+                    client,
+                    "/runs/review-parent/patch-review",
+                    action="revise:" + identity,
+                    revision=draft["revision"],
+                    **{"apply_" + identity: "on", "prompt_" + identity: "기존 설정을 검토해줘"},
+                ).status_code
+                == 303
+            )
+            wait_review(client, reviews)
+            draft = reviews.get("review-parent")
+        assert draft["state"] == "patch_lost" and draft["successor"] is None
+        assert draft["loss_locations"] == [{"file": "app.py", "line": 2}]
+        for page in ("patch-review", "approval"):
+            html = client.get("/runs/review-parent/" + page).text
+            assert 'data-code="patch_lost"' in html
+            assert "app.py" in html and "2행" in html and "지금은 승인할 수 없습니다" in html
+            assert "SECRET_KEY = " not in html and '"dev"' not in html
+            assert "disabled" in html
+        for action in ("begin", "cancel", "finalize", "save", "keep", "adopt"):
+            assert (
+                post(
+                    client,
+                    "/runs/review-parent/patch-review",
+                    action=action,
+                    revision=draft["revision"],
+                ).status_code
+                == 409
+            )
+        service.store.recover_patch_reviews()
+        assert reviews.get("review-parent")["state"] == "patch_lost"
+        assert post(client, "/runs/review-parent/approval", decision="approved").status_code == 409
+        with pytest.raises(DdakToolError):
+            service.start("review-parent")
+        assert service.get_approvals("review-parent") == []
+        assert not harness.replans and not harness.infra and not harness.calls.contexts
+        assert post(client, "/runs/review-parent/approval", decision="denied").status_code == 303
+        assert service.get_run("review-parent")["status"] == "FAILED_BEFORE_DEPLOY"
+
+
+@pytest.mark.parametrize("new_proposal_fails", [False, True])
+def test_registered_review_with_prior_ledger_reaches_one_final_approval(
+    registered_review, monkeypatch, new_proposal_fails
+):
+    harness = registered_review
+    if new_proposal_fails:
+        (harness.source / "cookie.py").write_text(COOKIE)
+
+        def unavailable(request):
+            harness.provider.requests.append(request)
+            raise DdakToolError(ErrorCode.AI_UNAVAILABLE, "fixture failure")
+
+        monkeypatch.setattr(harness.provider, "complete", unavailable)
+    prepare_review_parent(harness)
+    service, reviews = harness.service, harness.service.patch_reviews
+    directory = service.root / "runs" / "prior"
+    directory.mkdir(parents=True)
+    patch = file_diff(
+        "app.py", ORIGINAL.encode(), b'import os\nSECRET_KEY = os.environ["SECRET_KEY"]\n'
+    )
+    entries = save_ledger(directory, harness.source, patch)
+    environments = {
+        "local": {
+            "status": "SUCCEEDED",
+            "current": {
+                "release_id": "prior",
+                "patch_ledger": entries,
+            },
+            "previous": None,
+        }
+    }
+    monkeypatch.setattr(service.store, "environments", lambda project: environments)
+    with client_for(service) as client:
+        draft = begin(client, reviews)
+        assert draft["state"] == "ready" and draft["proposals"][0]["required"], draft
+        if new_proposal_fails:
+            assert draft["warnings"] and "AI_UNAVAILABLE" in draft["warnings"][0]
+            html = client.get("/runs/review-parent/patch-review").text
+            assert "일부 수정 제안을 준비하지 못했습니다" in html
+            assert "AI_UNAVAILABLE" in html
+        warnings = draft["warnings"]
+        draft = finalize(client, reviews, draft)
+        assert draft["state"] == "complete", draft
+        child = draft["successor"]
+        prepared = service._load_prepared(child)
+        assert prepared.patch == patch and prepared.snapshot.patch_sha256 == digest_bytes(patch)
+        assert bool(harness.provider.requests) is new_proposal_fails
+        assert prepared.context.preparation_warnings == warnings
+        if new_proposal_fails:
+            assert "AI_UNAVAILABLE" in client.get(f"/runs/{child}/approval").text
+        service.approve(child, approver="fixture")
+        approvals = service.get_approvals(child)
+        assert {record.kind for record in approvals} == {"patch", "deploy"}
+        assert len({record.approval_id for record in approvals}) == 1
+        assert len({record.bound_to for record in approvals}) == 2

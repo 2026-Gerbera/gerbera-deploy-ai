@@ -3,11 +3,11 @@
   'PATCH_GENERATING':'코드 수정 제안 준비 중','PATCH_REVIEWING':'수정 요청 검토 중','PATCH_FINALIZING':'선택한 수정으로 승인 자료 준비 중','PATCH_PUBLISHING':'새 승인 자료 연결 중',
   'SUCCEEDED':'배포 완료','FAILED_BEFORE_DEPLOY':'배포 전에 중단','FAILED_LOCAL':'온프렘 배포 실패','FAILED_CLOUD':'클라우드 배포 실패','FAILED_VERIFY':'배포 후 검증 실패','PARITY_FAILED':'두 환경 결과가 다름','CANCELLED':'취소됨','NEEDS_HUMAN':'직접 확인 필요','SUPERSEDED':'새 승인 자료로 대체됨',
   'IDLE':'실행 없음','PENDING':'대기','WAITING':'앞 단계 기다리는 중','DONE':'완료','FAILED':'실패','ROLLED_BACK':'이전 버전으로 되돌림','ROLLBACK_FAILED':'되돌리기 실패 · 직접 확인 필요','N/A':'이번 대상 아님','SKIPPED':'건너뜀',
-  'succeeded':'성공','failed':'실패','check_failed':'검사 불합격','skipped':'건너뜀','UNKNOWN':'확인 중'
+  'patch_lost':'이전 승인 수정 손실 · 승인 중단','succeeded':'성공','failed':'실패','check_failed':'검사 불합격','skipped':'건너뜀','UNKNOWN':'확인 중'
 } %}
 {% macro label(code) -%}{{ labels.get(code, code or '확인 중') }}{%- endmacro %}
 {% macro state(code) -%}
-{% set kind = 'success' if code in ('SUCCEEDED','DONE','succeeded') else 'failure' if code in ('FAILED_BEFORE_DEPLOY','FAILED_LOCAL','FAILED_CLOUD','FAILED_VERIFY','PARITY_FAILED','NEEDS_HUMAN','FAILED','ROLLBACK_FAILED','failed','check_failed') else 'waiting' if code in ('AWAITING_APPROVAL','ROLLED_BACK','WAITING','PENDING') else 'running' if code in ('APPROVED','RUNNING','DEPLOYING','FINALIZING','PREPARING','PATCH_GENERATING','PATCH_REVIEWING','PATCH_FINALIZING','PATCH_PUBLISHING') else 'neutral' %}
+{% set kind = 'success' if code in ('SUCCEEDED','DONE','succeeded') else 'failure' if code in ('FAILED_BEFORE_DEPLOY','FAILED_LOCAL','FAILED_CLOUD','FAILED_VERIFY','PARITY_FAILED','NEEDS_HUMAN','FAILED','ROLLBACK_FAILED','failed','check_failed','patch_lost') else 'waiting' if code in ('AWAITING_APPROVAL','ROLLED_BACK','WAITING','PENDING') else 'running' if code in ('APPROVED','RUNNING','DEPLOYING','FINALIZING','PREPARING','PATCH_GENERATING','PATCH_REVIEWING','PATCH_FINALIZING','PATCH_PUBLISHING') else 'neutral' %}
 <span class="state {{ kind }}" data-code="{{ code }}"><i aria-hidden="true"></i><span>{{ label(code) }}</span></span>
 {%- endmacro %}
 {% macro target(name) -%}{{ {'local':'온프렘','onprem':'온프렘','cloud':'클라우드','both':'온프렘 + 클라우드','build':'빌드','verify':'공통 검증','common':'공통'}.get(name, name or '공통') }}{%- endmacro %}

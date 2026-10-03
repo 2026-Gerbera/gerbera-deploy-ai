@@ -1,4 +1,4 @@
-"""승인 트리의 파일별 패치 재사용과 손실 방지. AI·툴 import 없음."""
+"""승인 패치의 기록·무결성·재사용. 내용 판정은 patch_config 결과를 따른다."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
-from ddak.core.patch_patterns import scan_patch_targets
+from ddak.core.contracts.tools.patch_config import PatchConfigOutput
 from ddak.core.snapshots import apply_diff, copy_source, digest_bytes, digest_json, file_manifest
 
 
@@ -205,13 +205,12 @@ def save_ledger(directory: Path, source: Path, patch: bytes | None) -> dict[str,
     return entries
 
 
-def reuse_patches(
-    source: Path, previous: Mapping[str, Mapping[str, Any]], runs_root: Path
-) -> tuple[bytes | None, list[str]]:
-    """환경별 성공 원장. 서로 다른 결과를 요구하면 임의 선택하지 않는다."""
-    manifest = file_manifest(source)
+def approved_patches(
+    previous: Mapping[str, Mapping[str, Any]], runs_root: Path
+) -> dict[str, bytes]:
+    """변경 파일도 포함해 승인 diff를 읽는다. 경로·해시·환경 간 일치만 검사한다."""
     patches: dict[str, bytes] = {}
-    changed: set[str] = set()
+    entries: dict[str, tuple[str, str]] = {}
     for release in previous.values():
         rid = release.get("release_id")
         if not isinstance(rid, str) or Path(rid).name != rid or rid in (".", ".."):
@@ -219,68 +218,109 @@ def reuse_patches(
                 raise _fail("release_id")
             continue
         for name, entry in release.get("patch_ledger", {}).items():
+            pure = Path(name)
+            if pure.is_absolute() or ".." in pure.parts or pure.as_posix() != name:
+                raise _fail("파일 경로")
+            hashes = tuple(
+                entry.get(key) for key in ("source_sha256", "result_sha256", "patch_sha256")
+            )
+            if any(
+                not isinstance(h, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", h)
+                for h in hashes
+            ):
+                raise _fail(name)
+            source_hash, result_hash, digest = hashes
+            path = runs_root / rid / "patches" / (digest[7:] + ".diff")
+            if (
+                any(parent.is_symlink() for parent in (path, path.parent, path.parent.parent))
+                or not path.is_file()
+                or path.stat().st_size > 65536
+            ):
+                raise _fail(name)
+            data = path.read_bytes()
+            identity = (source_hash, result_hash)
+            if digest_bytes(data) != digest or (
+                name in patches and (patches[name] != data or entries[name] != identity)
+            ):
+                raise _fail(name)
+            patches[name], entries[name] = data, identity
+    return patches
+
+
+def reuse_patches(
+    source: Path, previous: Mapping[str, Mapping[str, Any]], runs_root: Path
+) -> tuple[bytes | None, list[str]]:
+    """승인 원본과 결과의 정확한 해시 일치. 패치의 내용·손실 여부는 판단하지 않는다."""
+    manifest = file_manifest(source)
+    approved = approved_patches(previous, runs_root)
+    patches: dict[str, bytes] = {}
+    changed: set[str] = set()
+    for release in previous.values():
+        for name, entry in release.get("patch_ledger", {}).items():
             if manifest.get(name, {}).get("sha256") != entry["source_sha256"]:
                 changed.add(name)
                 continue
-            digest = entry["patch_sha256"]
-            if not isinstance(digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
-                raise _fail(name)
-            path = runs_root / rid / "patches" / (digest[7:] + ".diff")
-            if path.is_symlink() or not path.is_file() or path.stat().st_size > 65536:
-                raise _fail(name)
-            data = path.read_bytes()
-            if digest_bytes(data) != digest or (name in patches and patches[name] != data):
-                raise _fail(name)
+            data = approved[name]
             with tempfile.TemporaryDirectory(prefix="ddak-reuse-") as tmp:
                 built = Path(tmp) / "source"
-                copy_source(source, built)
+                before = copy_source(source, built)
                 apply_diff(built, data)
-                if file_manifest(built).get(name, {}).get("sha256") != entry["result_sha256"]:
+                after = file_manifest(built)
+                if (
+                    after.get(name, {}).get("sha256") != entry["result_sha256"]
+                    or before.keys() != after.keys()
+                    or any(before[n] != after[n] for n in before if n != name)
+                ):
                     raise _fail(name)
             patches[name] = data
-    # 한 환경은 같은 원본, 다른 환경은 변경 원본이면 새 제안 단계에서 합의한다.
-    if changed & patches.keys():
-        raise _fail(", ".join(sorted(changed & patches.keys())))
     return b"".join(patches[k] for k in sorted(patches)) or None, sorted(changed)
 
 
-def guard_patch_loss(source: Path, built: Path, previous: Mapping[str, Mapping[str, Any]]) -> None:
-    before, after = file_manifest(source), file_manifest(built)
-    remaining = {t.file for t in scan_patch_targets(built, ()) if t.severity == "patch"}
-    for release in previous.values():
-        for name, entry in release.get("patch_ledger", {}).items():
-            if name not in after or name in remaining:
-                raise _fail(name)
-            if before[name]["sha256"] == entry["source_sha256"]:
-                if after[name]["sha256"] != entry["result_sha256"]:
-                    raise _fail(name)
-            else:
-                hashes = {
-                    digest_bytes(line.strip()) for line in (built / name).read_bytes().splitlines()
-                }
-                if hashes & set(entry["removed_lines"]):
-                    raise _fail(name)
-                if after[name]["sha256"] == entry["result_sha256"]:
-                    continue  # 의미 증거가 없는 구 원장도 정확한 승인 결과는 허용한다.
-                expected = entry.get("required_env_expressions")
-                if not isinstance(expected, dict) or not expected:
-                    raise _fail(name)
-                sites, required = _semantic_sites((built / name).read_bytes())
-                for owner, expressions in expected.items():
-                    if (
-                        not isinstance(owner, str)
-                        or not re.fullmatch(r"sha256:[0-9a-f]{64}", owner)
-                        or not isinstance(expressions, list)
-                        or not expressions
-                        or any(
-                            not isinstance(value, str)
-                            or not re.fullmatch(r"sha256:[0-9a-f]{64}", value)
-                            for value in expressions
-                        )
-                        or owner not in required
-                        or sites.get(owner) != expressions
-                    ):
-                        raise _fail(name)
+class PatchLostError(DdakToolError):
+    """툴의 손실 판정을 위치만 담아 전달한다. 내용은 다시 판정하지 않는다."""
+
+    def __init__(self, review: PatchConfigOutput) -> None:
+        self.locations = tuple({"file": v.file, "line": v.line} for v in review.violations[:50])
+        locations = (
+            ", ".join(
+                f"{v.file}:{v.line}" if v.line else (v.file or "이전 패치")
+                for v in review.violations[:50]
+            )
+            or "이전 패치"
+        )
+        super().__init__(
+            ErrorCode.PRECONDITION_FAILED,
+            f"패치 툴 손실(patch_lost): {locations} (값 가림); 재제안 필요",
+        )
+
+
+def guard_patch_loss(
+    review: PatchConfigOutput | None,
+    *,
+    run_id: str,
+    patch: bytes | None,
+    has_previous: bool = False,
+) -> None:
+    """내용을 다시 판정하지 않고 툴 결과의 중단·승인 연결만 강제한다."""
+    if review is None:
+        if has_previous:
+            raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "이전 패치의 툴 판정이 필요하다")
+        return
+    if review.run_id != run_id:
+        raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "패치 툴 판정의 run ID가 다르다")
+    if review.status == "patch_lost":
+        raise PatchLostError(review)
+    accepted = review.status in {"proposed", "reused"}
+    if (
+        accepted
+        and (
+            review.passed is not True
+            or not patch
+            or review.patch_sha256 != digest_bytes(patch)
+            or review.patch != patch.decode("utf-8")
+        )
+    ) or (not accepted and (review.passed or review.patch is not None or patch is not None)):
+        raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "패치 툴 판정과 승인 대상이 다르다")
 
 
 def read_ledger(directory: Path) -> dict[str, Any]:

@@ -611,6 +611,7 @@ async def _prepare_commit_inner(
             subjects=subjects,
             patch=getattr(bundle, "patch", None),
             patch_meta=getattr(bundle, "patch_meta", None),
+            patch_review=getattr(bundle, "patch_review", None),
             infra_summary=infra_summary,
             expected_settings_version=saved.get("version", 0),
         )
@@ -1085,7 +1086,7 @@ def _configure_patch_review(service: DeploymentService, settings: Settings) -> N
         elif combine_review(source, proposals, [item.id for item in proposals]) != checked.patch:
             raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "제안과 검사된 패치가 다릅니다")
         origin = output.source or (output.meta.source if output.meta else Source.LIVE)
-        return ReviewResult(proposals, origin)
+        return ReviewResult(proposals, origin, checked.warnings)
 
     async def finalize(prepared, patch: bytes | None, draft: dict, guard) -> str:
         guard()
@@ -1172,7 +1173,9 @@ def _configure_patch_review(service: DeploymentService, settings: Settings) -> N
             context = replace(
                 bundle.context,
                 review_baseline_hash=baseline,
-                preparation_warnings=list(checked.warnings),
+                preparation_warnings=list(
+                    dict.fromkeys([*draft.get("warnings", []), *checked.warnings])
+                ),
                 required_env_keys=tuple(key.name for key in bundle.facts.env_keys if key.required),
                 preparation_failures=missing_track_tools(bundle.plan, service.registry),
             )
@@ -1217,6 +1220,7 @@ def _configure_patch_review(service: DeploymentService, settings: Settings) -> N
                 source,
                 patch=checked.patch,
                 patch_meta=checked.meta,
+                patch_review=checked.review,
                 subjects=subjects,
                 infra_summary=infra_summary,
                 expected_settings_version=original.project_settings.get("version", 0),

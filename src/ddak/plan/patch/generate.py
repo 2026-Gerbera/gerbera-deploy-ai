@@ -1,23 +1,20 @@
-"""patch_config 패치 제안(AI). 담당 장민영(O3). 공통 계약 3-5·3-6절, 10/2 결정 8번.
+"""설정 패치 생성과 등록 툴. 담당 장민영(O3), 10/3 결정 12.
 
-제품 진입점 propose_intents는 위치 메타데이터만 AI에 전달하고, 코드·값을 받지 않는다.
-EditIntent와 reason을 받은 뒤 결정적 render_intents로 diff를 만든다. 검사·승인은 파이프라인 담당.
+제품은 등록된 patch_config → prepare_patch로 검사·성공 원장 재사용을 수행한다.
+새 제안은 propose_intents가 위치·허용 키 이름만 AI에 보내고 render_intents가 결정적으로 만든다.
+코드·값·diff를 AI에 전달하지 않는다. 토글 OFF는 새 AI 제안 없이 이전 승인 패치만 유지한다.
+패치 손실은 patch_lost로 반환하며 호출자가 승인 전에 run을 중단한다.
 
-아래는 호환용 propose_config_patch의 기존 흐름(토글 ctx.toggles["code_patch"]가 켜진 run만):
-1. 대상 찾기(코드): 허용 파일에서 패턴과 리터럴 값이 있고 환경변수 읽기가 없는 줄.
-   없거나 AI가 빈 edits를 반환하면 no_targets다.
-2. 재사용(코드, AI 없음): 이전에 승인된 패치가 새 원본에서도 check_patch를 통과하면 그대로 쓴다.
-   build_patch는 파일 전체를 문맥으로 쓰므로, 대상 파일이 한 글자라도 바뀌면 통과하지 못하고
-   3으로 간다.
-3. 생성(AI): 대상 파일을 줄 번호와 함께 call_ai에 넘기고(비밀값은 관문이 가린다) "줄 범위 → 새 줄"
-   수정만 받는다. 코드가 원본에 적용해 build_patch로 diff를 만들고 check_patch로 검사한다.
-   불합격이면 위반 코드만 알려 주고 1회 다시 묻는다. 그래도 불합격이면 rejected(예외 아님).
-- AI에는 가린 원본만 간다. 줄 번호로 고치므로 가린 값이 실제 파일에 들어가지 않는다.
-  가림이 줄 수를 바꾸면(여러 줄 비밀값) 줄 번호가 어긋나므로 AI 없이 rejected다.
-- 결과의 patch·meta는 실행기 prepare(patch=, patch_meta=)에 그대로 넘길 수 있는 모양이다
-  (meta = reason·reuse·source, executor/approval_meta의 _PatchMeta).
-- 제품은 등록된 patch_config가 intents·원장 파이프라인을 실행한다.
-  propose_config_patch는 기존 제안 API 호환용이며 제품에서 직접 호출하지 않는다.
+propose_config_patch는 이전 줄 편집 API 호환용이며 제품에서는 직접 호출하지 않는다.
+1. 허용 파일에서 환경변수 읽기가 없는 하드코딩 대상 줄을 찾는다.
+2. 이전 승인 패치를 파일별로 나눠 원본 바이트가 같은 파일만 이전 수정본으로 재적용한다.
+   재적용분도 현재 check_patch 규칙을 통과해야 한다.
+3. 토글 ON만 재적용하지 못한 대상 파일을 AI에 보내고 재적용분과 합쳐 검사한다.
+   AI에는 가린 원본만 보내며 가림이 줄 수를 바꾸면 새 제안을 폐기하고 손실부터 판정한다.
+   불합격이면 위반 코드로 1회 재시도한다. 실패한 diff·meta는 반환하지 않는다.
+4. 이전 패치가 지운 값 줄이 최종 결과에 다시 나타나면 patch_lost다.
+   결과가 없으면 no_targets, 재적용만이면 reused, 새 제안이 섞이면 proposed다.
+   OFF이고 이전 패치도 없으면 TOGGLE_OFF다. OFF 재적용은 AI 호출 문맥 없이도 가능하다.
 """
 
 from __future__ import annotations
@@ -25,7 +22,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -60,10 +57,15 @@ from ddak.plan.patch.check import (
     build_patch,
     check_patch,
 )
+from ddak.plan.patch.history import PreviousFile as _PreviousFile
+from ddak.plan.patch.history import lost_violations
+from ddak.plan.patch.history import previous_files as _previous_files
 from ddak.plan.patch.intents import EditIntent, render_intents
 from ddak.plan.patch.pipeline import current_patch_session, prepare_patch
 
-PROMPT_VERSION = "patch_config-v2"  # v2: DB 접속 주소 안내(patch_db_access 흡수), 빈 edits 허용
+# v2: DB 접속 주소 안내(patch_db_access 흡수), 빈 edits 허용
+# v3: 기본값 없는 필수 환경변수 읽기만(결정 12의 4)
+PROMPT_VERSION = "patch_config-v3"
 MAX_SOURCE_BYTES = 64 * 1024  # 대상 파일 하나의 크기 상한(검사기의 패치 상한과 같다)
 MAX_SCAN_FILES = 500
 MAX_ATTEMPTS = 2  # 처음 + 위반 코드를 알려 주고 다시 묻기 1회
@@ -90,15 +92,18 @@ INSTRUCTION = """\
 - secret_key: 서명 키(SECRET_KEY) 하드코딩 → os.environ["SECRET_KEY"]처럼 환경변수에서 읽기
 - local_address: 코드 안 localhost·127.0.0.1 주소 → 환경변수에서 읽기
   (앱 주소면 APP_BASE_URL, DB 접속 주소면 DATABASE_URL)
-- cookie_secure: SESSION_COOKIE_SECURE 고정값 → 환경변수에서 읽어 bool로
+- cookie_secure: SESSION_COOKIE_SECURE 고정값
+  → os.environ["SESSION_COOKIE_SECURE"].lower() == "true"처럼 환경변수에서 읽어 bool로
 - proxy_fix: ProxyFix 신뢰 hop 수 고정값
-  → 환경변수(PROXY_FIX_X_FOR, PROXY_FIX_X_PROTO)에서 읽어 int로
+  → int(os.environ["PROXY_FIX_X_FOR"])처럼 환경변수(PROXY_FIX_X_FOR, PROXY_FIX_X_PROTO)에서
+    읽어 int로
 규칙:
 - edits의 각 항목은 한 파일의 줄 범위 start..end(1부터, 둘 다 포함)를 lines로 바꾼다. 줄을 넣기만
   하려면 end = start - 1. lines에는 줄바꿈 문자를 넣지 않고 원래 들여쓰기를 지킨다.
 - 대상 패턴이 있는 줄만 바꾼다. 다른 줄은 고치지 않는다. import는 `import os`만 새로 넣을 수 있다.
-- 환경변수 읽기는 os.environ["KEY"], os.environ.get("KEY"), os.getenv("KEY")와 int()/bool()/str()
-  변환만 쓴다. 비밀 이름(SECRET·PASSWORD·TOKEN·KEY)에는 기본값 문자열을 두지 않는다.
+- 환경변수 읽기는 기본값 없는 필수 읽기 os.environ["KEY"]와 int()/str()/.lower() 변환만 쓴다.
+  os.environ.get·os.getenv·기본값은 쓰지 않는다(키가 없으면 앱이 바로 실패해야 한다).
+  개발용 기본값(dev, localhost 주소, 숫자 등)을 남기지 않는다.
 - 주석을 새로 쓰지 않는다. 문자열 이어 붙이기·별칭 import·세미콜론을 쓰지 않는다.
 - [REDACTED]로 가려진 값은 원래 값을 모른다. 그 줄은 통째로 환경변수 읽기로 바꾼다.
 - 이미 환경변수에서 읽고 있어 고칠 줄이 없으면 edits를 빈 목록으로 둔다.
@@ -106,7 +111,7 @@ INSTRUCTION = """\
 - env_vars: 패치가 새로 읽는 환경변수 이름 목록.
 """
 
-_INTENTS_PROMPT_VERSION = "patch_config-intents-v2"
+_INTENTS_PROMPT_VERSION = "patch_config-intents-v3"
 _INTENTS_INSTRUCTION = """\
 너는 배포 설정의 편집 위치만 선택한다. 데이터는 targets와 allowed_keys이며 원문과 값은 없다.
 intents와 reason만 JSON으로 반환한다.
@@ -116,7 +121,8 @@ intents와 reason만 JSON으로 반환한다.
 - key는 반드시 allowed_keys에서 고른다. target.key가 있으면 그대로 쓴다.
   target.key가 없으면 allowed_keys에서 서로 중복되지 않는 이름을 고른다. 새 키를 만들지 않는다.
 - 코드가 문자열은 필수 os.environ 읽기, bool은 lower() == 'true', ProxyFix 숫자는 int로 바꾼다.
-  변환식이나 기본값은 출력하지 않는다.
+  기본값 없는 필수 읽기만 허용한다. getenv·environ.get·env_bool·env_int 등 선택적 읽기는
+  코드 검사에서 env_optional로 거부한다. 변환식이나 기본값은 출력하지 않는다.
 - reason은 변경 이유를 한국어 200자 이내로 설명한다. 코드·원문·비밀값·주소는 쓰지 않는다.
 """
 
@@ -169,7 +175,7 @@ class PreviousPatch:
 
 @dataclass
 class PatchProposal:
-    status: Literal["proposed", "reused", "no_targets", "rejected"]
+    status: Literal["proposed", "reused", "no_targets", "rejected", "patch_lost"]
     patch: bytes | None = None
     meta: dict[str, object] | None = None  # prepare(patch_meta=)용: reason·reuse·source
     check: PatchCheck | None = None
@@ -180,6 +186,9 @@ class PatchProposal:
     usage: list[AIUsage] = field(default_factory=list)
     source: Source | None = None  # 마지막 AI 결과의 출처(AI를 안 불렀으면 None)
     reason: str | None = None  # 검토 UI용 실제 모델 이유(가림 후); 승인 메타와 별개다.
+    reapplied: list[str] = field(default_factory=list)  # 이전 패치를 그대로 다시 적용한 파일
+    lost: list[str] = field(default_factory=list)  # 이전 패치가 지운 값 줄이 다시 나타난 파일
+    violations: tuple[PatchViolation, ...] = ()  # 공유 손실 판정의 현재 파일·줄 번호
 
 
 # ---- 1. 대상 찾기 ----------------------------------------------------------------
@@ -303,9 +312,28 @@ def _numbered(originals: Mapping[str, str], targets: Mapping[str, list[str]]) ->
     return "\n\n".join(blocks)
 
 
+_REQUIRED_READ = re.compile(
+    r"""(?:\benviron\s*\[\s*|\brequire_env\s*\(\s*)(?P<q>["'])(?P<k>[A-Z][A-Z0-9_]{1,63})(?P=q)"""
+)
+
+
 def _clean_env_vars(names: list[str], patch: bytes) -> list[str]:
-    added = "\n".join(line for line in patch.decode("utf-8").splitlines() if line.startswith("+"))
-    return sorted({n for n in names if _ENV_NAME.match(n) and n in added})
+    """패치가 추가한 줄에서 실제로 읽는 이름만. AI가 적은 이름 + 추가한 줄의 필수 읽기 키."""
+    added = "\n".join(
+        line
+        for line in patch.decode("utf-8").splitlines()
+        if line.startswith("+") and not line.startswith("+++")
+    )
+    found = {m.group("k") for m in _REQUIRED_READ.finditer(added)}
+    return sorted(found | {n for n in names if _ENV_NAME.match(n) and n in added})
+
+
+# ---- 호환 손실 파일 목록(판정은 공유 history helper가 수행한다) -----------------------
+
+
+def _lost_files(previous: Mapping[str, _PreviousFile], final: Mapping[str, str]) -> list[str]:
+    """이전 API의 파일 목록 모양만 유지한다. 줄 단위 판정은 history와 같다."""
+    return sorted({violation.file for violation in lost_violations(previous, final)})
 
 
 # ---- 진입점 -------------------------------------------------------------------------
@@ -481,108 +509,177 @@ def propose_config_patch(
     provider: LLMProvider | None = None,
     settings: Settings | None = None,
 ) -> PatchProposal:
-    """source(새 prod 원본 스냅샷)에 맞는 설정 패치를 제안한다. source는 바꾸지 않는다.
+    """호환 줄 편집 API. 원본은 바꾸지 않으며 실패한 diff는 반환하지 않는다.
 
-    AI를 부르는 경우 tool_context("patch_config", run_id) 안에서 불러야 한다(call_ai 허용 툴 확인).
+    OFF는 파일별 재적용만 수행한다. 새 제안 실패·빈 응답도 손실을 먼저 판정한다.
     """
-    if not ctx.toggles.get("code_patch", False):
-        raise DdakToolError(ErrorCode.TOGGLE_OFF, "코드 수정 토글이 꺼져 있다")
-    _ensure_patch_context()
+    toggle_on = bool(ctx.toggles.get("code_patch", False))
+    if not toggle_on and previous is None:
+        raise DdakToolError(
+            ErrorCode.TOGGLE_OFF, "코드 수정 토글이 꺼져 있고 유지할 이전 패치도 없다"
+        )
+    if toggle_on:
+        _ensure_patch_context()
     base = policy or PatchPolicy()
+    limit = min(MAX_FILES, base.max_files)
+
+    def policy_for(paths: Iterable[str]) -> PatchPolicy:
+        return PatchPolicy(
+            allowed_files=frozenset(paths),
+            allowed_suffixes=base.allowed_suffixes,
+            forbidden_parts=base.forbidden_parts,
+            max_files=base.max_files,
+        )
+
+    prev_files = _previous_files(previous.patch) if previous is not None else {}
     targets = find_targets(source, base)
-    if not targets:
-        return PatchProposal(status="no_targets")
-    chosen = dict(sorted(targets.items())[: min(MAX_FILES, base.max_files)])
-    originals: dict[str, str] = {}
-    for path in chosen:
-        text = _read(source, path)
-        if text is not None:
-            originals[path] = text
-    hashes = {p: digest_bytes(t.encode("utf-8")) for p, t in originals.items()}
-    check_policy = PatchPolicy(
-        allowed_files=frozenset(originals),
-        allowed_suffixes=base.allowed_suffixes,
-        forbidden_parts=base.forbidden_parts,
-        max_files=base.max_files,
+    current: dict[str, str] = {}
+    for name in sorted(set(targets) | set(prev_files)):
+        relative = Path(name)
+        if any((source / part).is_symlink() for part in (relative, *relative.parents)):
+            raise DdakToolError(
+                ErrorCode.PRECONDITION_FAILED, "원본 스냅샷 심볼릭 링크는 허용하지 않는다"
+            )
+        value = _read(source, name)
+        if value is not None:
+            current[name] = value
+        elif (source / name).exists():
+            raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "이전 패치의 원본을 읽을 수 없다")
+
+    # 한 파일의 옛 env_optional 패치 때문에 다른 정상 파일까지 버리지 않는다.
+    reapplied: dict[str, tuple[str, str]] = {}
+    for name, prev in sorted(prev_files.items()):
+        if base.allowed_files and name not in base.allowed_files:
+            continue
+        if current.get(name) != prev.old or len(reapplied) >= limit:
+            continue
+        pair = {name: (current[name], prev.new)}
+        checked = check_patch(source, build_patch(pair), policy_for(pair))
+        if checked.passed:
+            reapplied.update(pair)
+
+    ai_paths = (
+        [name for name in sorted(targets) if name not in reapplied and name in current][
+            : max(0, limit - len(reapplied))
+        ]
+        if toggle_on
+        else []
     )
-
-    if previous is not None:
-        reused = check_patch(source, previous.patch, check_policy)
-        if reused.passed:
-            return PatchProposal(
-                status="reused",
-                patch=previous.patch,
-                meta={
-                    "reason": _checked_reason(reused),
-                    "reuse": True,
-                    "source": previous.source.value,
-                },
-                check=reused,
-                targets=chosen,
-                target_hashes=hashes,
-            )
-
-    proposal = PatchProposal(status="rejected", targets=chosen, target_hashes=hashes)
-    try:
-        data = _numbered(originals, chosen)
-    except DdakToolError as exc:
-        if exc.code in {ErrorCode.AI_NOT_ALLOWED, ErrorCode.TOGGLE_OFF}:
-            raise
-        return proposal
-    feedback = ""
-    for _ in range(MAX_ATTEMPTS):
-        proposal.attempts += 1
+    reported = sorted(set(ai_paths) | set(reapplied))
+    proposal = PatchProposal(
+        status="rejected",
+        targets={name: targets[name] for name in reported if name in targets},
+        target_hashes={name: digest_bytes(current[name].encode("utf-8")) for name in reported},
+        reapplied=sorted(reapplied),
+    )
+    ai_changes: dict[str, tuple[str, str]] = {}
+    draft: PatchDraft | None = None
+    ai_source: Source | None = None
+    ai_failed = False
+    if ai_paths:
+        originals = {name: current[name] for name in ai_paths}
         try:
-            result = call_ai(
-                instruction=INSTRUCTION + feedback,
-                data=data,
-                output_model=PatchDraft,
-                prompt_version=PROMPT_VERSION,
-                settings=settings,
-                provider=provider,
-            )
+            data = _numbered(originals, {name: targets[name] for name in ai_paths})
         except DdakToolError as exc:
             if exc.code in {ErrorCode.AI_NOT_ALLOWED, ErrorCode.TOGGLE_OFF}:
                 raise
-            if exc.code is not ErrorCode.AI_OUTPUT_INVALID:
-                return proposal
-            feedback = "\n이전 응답은 AI_OUTPUT_INVALID로 거부됐다. 출력 계약을 지켜 다시 쓴다."
-            continue
-        if result.usage is not None:
-            proposal.usage.append(result.usage)
-        proposal.source = result.source
-        draft = result.value
-        if not draft.edits:
-            proposal.status, proposal.patch, proposal.check = "no_targets", None, None
-            return proposal
-        try:
-            patch = build_patch(apply_edits(originals, draft.edits))
-        except DdakToolError as exc:
-            feedback = f"\n이전 제안은 적용할 수 없었다: {exc.message}. 줄 번호를 다시 확인한다."
-            continue
-        if not patch:
-            feedback = "\n이전 제안은 아무것도 바꾸지 않았다. 대상 패턴 줄을 고친다."
-            continue
-        checked = check_patch(source, patch, check_policy)
-        proposal.check = checked
-        if checked.passed:
-            proposal.status, proposal.patch = "proposed", patch
-            proposal.meta = {
-                "reason": _checked_reason(checked),
-                "reuse": False,
-                "source": result.source.value,
-            }
-            proposal.env_vars = _clean_env_vars(draft.env_vars, patch)
-            return proposal
-        codes = sorted({v.code for v in checked.violations})
-        feedback = (
-            f"\n이전 제안은 검사에서 거부됐다(위반 코드: {', '.join(codes)}). "
-            "규칙을 지켜 다시 쓴다."
-        )
+            data, ai_failed = "", True
+        feedback = ""
+        if not ai_failed:
+            ai_failed = True
+            for _ in range(MAX_ATTEMPTS):
+                proposal.attempts += 1
+                try:
+                    result = call_ai(
+                        instruction=INSTRUCTION + feedback,
+                        data=data,
+                        output_model=PatchDraft,
+                        prompt_version=PROMPT_VERSION,
+                        settings=settings,
+                        provider=provider,
+                    )
+                except DdakToolError as exc:
+                    if exc.code in {ErrorCode.AI_NOT_ALLOWED, ErrorCode.TOGGLE_OFF}:
+                        raise
+                    if exc.code is not ErrorCode.AI_OUTPUT_INVALID:
+                        break
+                    feedback = (
+                        "\n이전 응답은 AI_OUTPUT_INVALID로 거부됐다. 출력 계약을 지켜 다시 쓴다."
+                    )
+                    continue
+                if result.usage is not None:
+                    proposal.usage.append(result.usage)
+                proposal.source = result.source
+                if not result.value.edits:
+                    ai_failed = False
+                    break  # 재적용분을 유지한 최종 결과로 손실을 먼저 판정한다.
+                try:
+                    changes = apply_edits(originals, result.value.edits)
+                except DdakToolError as exc:
+                    feedback = (
+                        f"\n이전 제안은 적용할 수 없었다: {exc.message}. 줄 번호를 다시 확인한다."
+                    )
+                    continue
+                if not build_patch(changes):
+                    feedback = "\n이전 제안은 아무것도 바꾸지 않았다. 대상 패턴 줄을 고친다."
+                    continue
+                combined = {**reapplied, **changes}
+                checked = check_patch(source, build_patch(combined), policy_for(combined))
+                proposal.check = checked
+                if checked.passed:
+                    ai_changes, draft, ai_source = changes, result.value, result.source
+                    ai_failed = False
+                    break
+                codes = sorted({v.code for v in checked.violations})
+                feedback = (
+                    f"\n이전 제안은 검사에서 거부됐다(위반 코드: {', '.join(codes)}). "
+                    "규칙을 지켜 다시 쓴다."
+                )
+
+    final = {**reapplied, **ai_changes}
+    after = {name: (final[name][1] if name in final else value) for name, value in current.items()}
+    proposal.violations = lost_violations(prev_files, after)
+    proposal.lost = sorted({violation.file for violation in proposal.violations})
+    if proposal.lost:
+        proposal.status, proposal.check = "patch_lost", None
+        return proposal
+    patch = build_patch(final) if final else None
+    if not patch:
+        if not ai_failed:
+            proposal.status, proposal.check = "no_targets", None
+        return proposal  # rejected도 patch·meta는 None이며 검사 결과만 남긴다.
+    checked = check_patch(source, patch, policy_for(final))
+    proposal.check = checked
+    if not checked.passed:
+        # 승인 불가능한 최종 diff는 적용된 결과로 간주하지 않는다.
+        proposal.violations = lost_violations(prev_files, current)
+        proposal.lost = sorted({violation.file for violation in proposal.violations})
+        if proposal.lost:
+            proposal.status, proposal.check = "patch_lost", None
+        return proposal
+    proposal.patch = patch
+    if draft is not None and ai_source is not None:
+        proposal.status = "proposed"
+        proposal.meta = {
+            "reason": _checked_reason(checked),
+            "reuse": False,
+            "source": ai_source.value,
+        }
+        proposal.env_vars = _clean_env_vars(draft.env_vars, patch)
+    else:
+        if previous is None:
+            raise DdakToolError(ErrorCode.INTERNAL, "이전 패치 없이 재적용 결과가 생겼다")
+        proposal.status = "reused"
+        proposal.meta = {
+            "reason": _checked_reason(checked),
+            "reuse": True,
+            "source": previous.source.value,
+        }
+        proposal.env_vars = _clean_env_vars([], patch)
     return proposal
 
 
-# ---- 툴 입출력(core/contracts/tools/patch_config.py 초안) -----------------------------
+# ---- 툴 입출력(core/contracts/tools/patch_config.py) ----------------------------------
 
 
 def _source_root(source_dir: str, root: Path | None) -> Path:
@@ -646,6 +743,7 @@ def patch_config(
             settings=session.settings if session else settings,
             provider=provider,
             trace=trace,
+            policy=policy,
         )
     else:
         result = prepare_patch(
@@ -663,19 +761,23 @@ def patch_config(
                 trace=trace,
             ),
             approved_patch=inp.previous.patch.encode("utf-8") if inp.previous else None,
+            policy=policy,
         )
-    if result.patch and policy is not None:
-        check = check_patch(source, result.patch, policy)
-        if not check.passed:
-            return PatchConfigOutput(
-                run_id=inp.run_id,
-                status="rejected",
-                passed=False,
-                violations=[
-                    PatchViolation(code=v.code, file=v.file, line=v.line) for v in check.violations
-                ][:50],
-                warnings=["패치 정책 검사 불합격"],
-            )
+    if result.violations:
+        return PatchConfigOutput(
+            run_id=inp.run_id,
+            status="patch_lost",
+            passed=False,
+            patch=None,
+            meta=None,
+            targets=chosen,  # type: ignore[arg-type]
+            target_hashes={name: digest_bytes((source / name).read_bytes()) for name in chosen},
+            violations=list(result.violations)[:50],
+            attempts=trace.attempts,
+            source=trace.source,
+            ai_usage=trace.usage,
+            warnings=list(result.warnings),
+        )
     meta = result.meta or {}
     return PatchConfigOutput(
         run_id=inp.run_id,

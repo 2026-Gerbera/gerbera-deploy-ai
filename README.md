@@ -19,6 +19,13 @@ Gerbera Deploy AI는 애플리케이션 저장소의 변경을 감지해 필요�
 |:---:|:---:|:---:|:---:|
 | 변경 분석·패치·Terraform 초안 | 소스·인프라·IAM·시크릿 승인 | 빌드·배포·검증·롤백은 코드 실행 | 공통 Control Plane과 Provider 경계 |
 
+## 👥 **Team Gerbera**
+
+| 김준석 | 안승환 | 양서윤 | 장민영 | 정준우 |
+| :-----: | :-----: | :-----: | :-----: | :-----: |
+| <img src="https://github.com/LyleKim.png" width=150px alt="김준석"> | <img src="https://github.com/anshwan.png" width=150px alt="안승환"> | <img src="https://github.com/seoyun0311.png" width=150px alt="양서윤"> | <img src="https://github.com/minch-070605.png" width=150px alt="장민영"> | <img src="https://github.com/JungJoonWoo.png" width=150px alt="정준우"> |
+| [@LyleKim](https://github.com/LyleKim) | [@anshwan](https://github.com/anshwan) | [@seoyun0311](https://github.com/seoyun0311) | [@minch-070605](https://github.com/minch-070605) | [@JungJoonWoo](https://github.com/JungJoonWoo) |
+
 ## ✨ 핵심 기능
 
 - 애플리케이션 저장소 `prod` 브랜치 Polling 감지 및 수동 배포 요청

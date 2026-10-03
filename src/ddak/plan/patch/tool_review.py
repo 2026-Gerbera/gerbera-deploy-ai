@@ -13,8 +13,9 @@ from ddak.core.contracts.plan_facts import Facts
 from ddak.core.contracts.tools.patch_config import PatchConfigInput
 from ddak.core.patch_ledger import file_diff, reuse_patches
 from ddak.core.patch_patterns import scan_patch_targets
-from ddak.plan.patch.check import check_patch
+from ddak.plan.patch.check import PatchPolicy, check_patch
 from ddak.plan.patch.generate import PatchProposal, propose_intents
+from ddak.plan.patch.history import previous_files
 from ddak.plan.patch.pipeline import PatchPreparation, prepare_patch
 from ddak.plan.patch.review import combine_review, file_proposals, patch_changes
 
@@ -33,15 +34,24 @@ def prepare_review(
     settings: Settings | None,
     provider: LLMProvider | None,
     trace: PatchProposal,
+    policy: PatchPolicy | None = None,
 ) -> tuple[PatchPreparation, list[CodeProposal]]:
     request = inp.review
     if request is None:
         raise _fail("검토 요청이 없다")
     approved = inp.previous.patch.encode() if inp.previous else None
     reuse, _ = reuse_patches(source, ctx.previous_release, runs_root)
-    if approved and not ctx.previous_release and check_patch(source, approved).passed:
+    if approved and not ctx.previous_release:
         reuse = approved
-    reused = patch_changes(source, reuse) if reuse else {}
+    reused = {
+        name: (previous.old, previous.new)
+        for name, previous in (previous_files(reuse) if reuse else {}).items()
+        if check_patch(
+            source,
+            file_diff(name, previous.old.encode(), previous.new.encode()),
+            policy or PatchPolicy(allowed_files=frozenset({name})),
+        ).passed
+    }
 
     if request.action == "propose":
         result = prepare_patch(
@@ -51,6 +61,7 @@ def prepare_review(
             previous=ctx.previous_release,
             runs_root=runs_root,
             approved_patch=approved,
+            policy=policy,
             proposer=lambda tree, active, context: propose_intents(
                 tree, active, context, settings=settings, provider=provider, trace=trace
             ),
@@ -142,8 +153,11 @@ def prepare_review(
         previous=ctx.previous_release,
         runs_root=runs_root,
         approved_patch=approved,
+        policy=policy,
         proposer=selected_proposer,
     )
+    if result.violations:
+        return result, []
     if result.patch != expected or result.warnings:
         raise _fail("선택된 패치와 검사 결과가 다르다; 선택 결과를 폐기할 수 없다")
     return result, proposals

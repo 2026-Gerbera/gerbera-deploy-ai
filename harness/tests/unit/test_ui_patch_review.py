@@ -45,7 +45,7 @@ def review_rig(rig):
         proposal(
             "cookie",
             2,
-            'SESSION_COOKIE_SECURE = os.environ.get("SESSION_COOKIE_SECURE", "false") == "true"',
+            'SESSION_COOKIE_SECURE = os.environ["SESSION_COOKIE_SECURE"] == "true"',
             "SESSION_COOKIE_SECURE",
             path="cookie.py",
         ),
@@ -122,9 +122,7 @@ def test_partial_selection_reprepares_immutable_approval_and_exact_build(review_
         materialize(source, tmp_path / "built", child.snapshot, child.patch)
         built = (tmp_path / "built/app.py").read_text()
         assert 'SECRET_KEY = "dev"' in built
-        assert (
-            "SESSION_COOKIE_SECURE = os.environ.get" in (tmp_path / "built/cookie.py").read_text()
-        )
+        assert "SESSION_COOKIE_SECURE = os.environ[" in (tmp_path / "built/cookie.py").read_text()
         assert not calls.contexts
         assert (
             client.get("/runs/review-parent/patch-review", follow_redirects=False).headers[
