@@ -263,7 +263,8 @@ def _scan_file(tree: ast.AST) -> Iterator[tuple[int, str, Literal["patch", "warn
             names[child] = name
         if value in env_nodes:
             continue
-        if name == STORAGE_ENV_KEY and _string(value) and "://" not in _string(value):
+        literal = _string(value)
+        if name == STORAGE_ENV_KEY and literal and "://" not in literal:
             yield value.lineno, "local_storage_dir", "patch", STORAGE_ENV_KEY
         if name.lower() == "secret_key" and _string(value) is not None:
             yield value.lineno, "secret_key", "patch", "SECRET_KEY"

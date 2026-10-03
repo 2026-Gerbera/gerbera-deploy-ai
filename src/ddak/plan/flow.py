@@ -29,15 +29,12 @@ from ddak.core.contracts.tools.generate_plan import GeneratePlanInput
 from ddak.core.contracts.tools.patch_config import PatchConfigOutput
 from ddak.core.contracts.tools.receive_deploy_request import ReceiveDeployRequestInput
 from ddak.core.contracts.tools.validate_plan import ValidatePlanInput
-from ddak.core.defaults import load_aws_defaults
 from ddak.core.logging import get_logger
 from ddak.core.patch_patterns import iter_source_texts
-from ddak.core.project_settings import cloud_platform_name
 from ddak.core.runtime import tool_context
 from ddak.core.storage import (
     OUTPUT_KEY,
     STORAGE_SMOKE_GROUP,
-    bucket_name,
     scan_storage,
     storage_intent,
 )
@@ -204,17 +201,16 @@ def plan_deployment(
         project_settings = dict(ctx.project_settings)
         project_settings.pop("_infra_storage", None)
         if request.target in {"cloud", "both"} and storage is not None:
-            account = (
-                project_settings.get("aws_expected_account_id")
-                or load_aws_defaults()["expected_account_id"]
-            )
             project_settings["_infra_storage"] = {
                 "intent": storage,
                 "evidence": [
                     asdict(e)
                     for e in scan_storage(dict(iter_source_texts(checkout, python_only=True)))
                 ],
-                "bucket": bucket_name(cloud_platform_name(ctx.project, project_settings), account),
+                # 생성 이름은 읽기 세션을 가진 조립부가 순번을 예약한 뒤 채운다.
+                "bucket": ctx.platform.get("cloud", {}).get(OUTPUT_KEY)
+                if storage == "remove"
+                else None,
             }
         ctx = replace(ctx, project_settings=project_settings)
         facts = Facts(

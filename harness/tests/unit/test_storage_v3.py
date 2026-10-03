@@ -36,7 +36,7 @@ def store(image, name):
     directory = Path(IMG_DIR)
     image.save(directory / name)
 """
-BUCKET = bucket_name("flaskr", "123456789012")
+BUCKET = bucket_name("flaskr", 1)
 
 
 def test_storage_evidence_is_ast_locations_without_values():
@@ -95,7 +95,7 @@ def test_plan_flow_carries_storage_intent_and_smoke(tmp_path, cloud, target, sou
     meta = bundle.context.project_settings.get("_infra_storage")
     assert (meta["intent"] if meta else None) == intent
     if intent:
-        assert meta["bucket"] == BUCKET
+        assert meta["bucket"] == (BUCKET if intent == "remove" else None)
         assert bundle.facts.infra_inputs_changed
         assert any(s.tool == "apply_infra" for s in bundle.plan.deploy.cloud.steps)
     if source == CODE:

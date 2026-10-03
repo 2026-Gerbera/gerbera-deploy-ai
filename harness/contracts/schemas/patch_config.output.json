@@ -240,7 +240,8 @@
               "secret_key",
               "local_address",
               "cookie_secure",
-              "proxy_fix"
+              "proxy_fix",
+              "local_storage_dir"
             ],
             "type": "string"
           },
@@ -494,7 +495,8 @@
             "secret_key",
             "local_address",
             "cookie_secure",
-            "proxy_fix"
+            "proxy_fix",
+            "local_storage_dir"
           ],
           "type": "string"
         },

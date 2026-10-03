@@ -76,7 +76,7 @@ def test_reset_removes_secret_before_recreate_updates_ledger_and_repeats(demo):
     first = reset_demo(state, ctx.project, inv, "rel-v1", runner=runner)
     assert first["status"] == "SUCCEEDED" and first["secret_key_removed"]
     assert first["replicas"]["was"]["detail"] == "복구 replica: [1, 2, 3]"
-    assert path.read_text() == "# preserve\nOTHER_KEY=fixture-value\n"
+    assert path.read_text() == "IMG_DIR=img\n# preserve\nOTHER_KEY=fixture-value\n"
     env = store.environments(ctx.project)
     assert env["local"]["current"]["release_id"] == "rel-v1"
     assert env["local"]["previous"]["release_id"] == "rel-v2"

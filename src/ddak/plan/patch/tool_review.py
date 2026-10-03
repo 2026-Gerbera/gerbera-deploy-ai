@@ -16,7 +16,7 @@ from ddak.core.patch_patterns import scan_patch_targets
 from ddak.plan.patch.check import PatchPolicy, check_patch
 from ddak.plan.patch.generate import PatchProposal, propose_intents
 from ddak.plan.patch.history import previous_files
-from ddak.plan.patch.pipeline import PatchPreparation, prepare_patch
+from ddak.plan.patch.pipeline import PatchPreparation, prepare_patch, required_storage_targets
 from ddak.plan.patch.review import combine_review, file_proposals, patch_changes
 
 
@@ -52,6 +52,11 @@ def prepare_review(
             policy or PatchPolicy(allowed_files=frozenset({name})),
         ).passed
     }
+    required_files = (
+        {t.file for t in required_storage_targets(source, ctx)}
+        if ctx.toggles.get("code_patch", False)
+        else set()
+    )
 
     if request.action == "propose":
         result = prepare_patch(
@@ -65,6 +70,7 @@ def prepare_review(
             proposer=lambda tree, active, context: propose_intents(
                 tree, active, context, settings=settings, provider=provider, trace=trace
             ),
+            proposal_reason=lambda: (trace.meta or {}).get("reason"),
         )
         proposals = (
             file_proposals(
@@ -76,9 +82,17 @@ def prepare_review(
             if result.patch
             else []
         )
+        proposals = [
+            p.model_copy(update={"required": True}) if p.edits[0].path in required_files else p
+            for p in proposals
+        ]
         return result, proposals
 
     proposals = request.proposals
+    for name in required_files:
+        owners = [p for p in proposals if any(e.path == name for e in p.edits)]
+        if len(owners) != 1 or not owners[0].required:
+            raise _fail("클라우드 IMG_DIR 필수 제안이 누락되거나 선택 해제됐다")
     # 원장의 필수성은 클라이언트의 required 플래그만 믿지 않고 재확인한다.
     all_patch = combine_review(source, proposals, [p.id for p in proposals])
     all_changes = patch_changes(source, all_patch) if all_patch else {}
@@ -155,6 +169,14 @@ def prepare_review(
         approved_patch=approved,
         policy=policy,
         proposer=selected_proposer,
+        proposal_reason=lambda: (
+            (trace.meta or {}).get("reason")
+            or (
+                "이미지 저장 경로를 필수 환경변수로 전환; 규칙으로 보완"
+                if any("규칙으로 보완" in p.reason for p in proposals if p.id in selected)
+                else None
+            )
+        ),
     )
     if result.violations:
         return result, []

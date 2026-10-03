@@ -1,9 +1,8 @@
 """저장소 생성기·캐시·요약의 fixture 계약. 외부 서비스나 실행기는 호출하지 않는다."""
 
 import json
-import sys
 from dataclasses import replace
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -34,13 +33,16 @@ def context(intent="create", **settings):
         adapter_mode=AdapterMode.FAKE,
         project="flaskr",
         mode=RunMode.UPDATE,
+        platform={"cloud": {"upload_bucket": "gerbera-flaskr-images-1"}}
+        if intent == "remove"
+        else {},
         project_settings={
             "_infra_storage": {
                 "intent": intent,
                 "evidence": [{"file": "flaskr/uploads.py", "line": 7, "kind": "file_write"}]
                 if intent == "create"
                 else [],
-                "bucket": "ddak-flaskr-uploads-123456789012",
+                "bucket": "gerbera-flaskr-images-1",
             },
             **settings,
         },
@@ -49,7 +51,7 @@ def context(intent="create", **settings):
 
 def hcl():
     return """resource "aws_s3_bucket" "uploads" {
-  bucket = "ddak-flaskr-uploads-123456789012"
+  bucket = var.upload_bucket
   force_destroy = true
 }
 resource "aws_s3_bucket_public_access_block" "uploads" {
@@ -70,9 +72,9 @@ resource "aws_iam_role_policy" "uploads" {
   role = "flaskr-task"
   policy = jsonencode({ Version = "2012-10-17", Statement = [
     { Effect = "Allow", Action = ["s3:GetObject", "s3:PutObject"],
-      Resource = "arn:aws:s3:::ddak-flaskr-uploads-123456789012/*" },
+      Resource = "arn:aws:s3:::${var.upload_bucket}/*" },
     { Effect = "Allow", Action = ["s3:ListBucket"],
-      Resource = "arn:aws:s3:::ddak-flaskr-uploads-123456789012" }
+      Resource = "arn:aws:s3:::${var.upload_bucket}" }
   ] })
 }
 """
@@ -80,12 +82,6 @@ resource "aws_iam_role_policy" "uploads" {
 
 @pytest.fixture(autouse=True)
 def fake_core_storage(monkeypatch):
-    # 공통 모듈을 작성하는 작업과 독립적으로 생성기 계약만 확인한다.
-    core = ModuleType("ddak.core.storage")
-    core.STORAGE_ENV_KEY = "IMG_DIR"
-    core.OUTPUT_KEY = "upload_bucket"
-    core.bucket_name = lambda platform, account_id: f"ddak-{platform}-uploads-{account_id}"
-    monkeypatch.setitem(sys.modules, "ddak.core.storage", core)
     monkeypatch.setattr(Settings, "from_env", classmethod(lambda cls: Settings()))
     monkeypatch.setattr(logic, "call_ai", Mock(side_effect=AssertionError("예상하지 않은 호출")))
 
@@ -135,15 +131,20 @@ def test_create_uses_only_evidence_identity_and_separate_prompt(monkeypatch, tmp
     from ddak.cloud.infra.policy import static_gate
 
     assert static_gate(
-        files, layer="app", storage_intent="create", project="flaskr", account_id="123456789012"
+        files,
+        layer="app",
+        storage_intent="create",
+        project="flaskr",
+        account_id="123456789012",
+        storage_bucket="gerbera-flaskr-images-1",
     ).passed
     assert result.files == {name: digest_bytes(value.encode()) for name, value in files.items()}
     assert not (tmp_path / "infra-baselines").exists()
     summary = bundle.storage_summary(files, ctx, result.source)
     assert len(summary["rationale"]) == 5
     assert summary["source"] == "fixture"
-    assert summary["bucket"] == "ddak-flaskr-uploads-************"
-    assert summary["env"] == {"IMG_DIR": "s3://ddak-flaskr-uploads-************/img"}
+    assert summary["bucket"] == "gerbera-flaskr-images-1"
+    assert summary["env"] == {"IMG_DIR": "s3://gerbera-flaskr-images-1/img"}
     assert "123456789012" not in json.dumps(summary)
     assert len(json.dumps({"storage": summary, "counts": {"create": 4}}).encode()) <= 8192
 
@@ -181,6 +182,7 @@ def test_cache_is_explicit_versioned_and_bound_to_account_platform_role(monkeypa
         _infra_storage={
             "intent": "create",
             "evidence": ctx.project_settings["_infra_storage"]["evidence"],
+            "bucket": "gerbera-flaskr-images-1",
         },
     )
     assert bundle.load_storage_baseline(tmp_path, account_ctx) is None
@@ -191,6 +193,7 @@ def test_cache_is_explicit_versioned_and_bound_to_account_platform_role(monkeypa
             "_infra_storage": {
                 "intent": "create",
                 "evidence": ctx.project_settings["_infra_storage"]["evidence"],
+                "bucket": "gerbera-other-images-1",
             },
         },
     )
@@ -255,3 +258,30 @@ def test_live_bundle_is_cached_only_after_validation_and_plan(monkeypatch, tmp_p
     )
     assert cached.source == Source.CACHE
     assert request.call_count == 1
+
+
+def test_cached_hcl_is_reused_for_a_different_reserved_number(monkeypatch, tmp_path):
+    request = Mock(return_value=ai_result(Source.LIVE))
+    monkeypatch.setattr(logic, "call_ai", request)
+    ctx = context()
+    _, files = generate(tmp_path, ctx)
+    bundle.save_storage_baseline(tmp_path, "flaskr", files)
+    changed = replace(
+        ctx,
+        project_settings={
+            **ctx.project_settings,
+            "_infra_storage": {
+                **ctx.project_settings["_infra_storage"],
+                "bucket": "gerbera-flaskr-images-2",
+            },
+        },
+    )
+    assert bundle.load_storage_baseline(tmp_path, changed) == files
+    directory = tmp_path / "bundles" / "next-number"
+    directory.mkdir()
+    out = logic.generate_infra(
+        GenerateInfraInput(run_id=ctx.run_id, directory=str(directory), layer="app"), changed
+    )
+    assert out.source is Source.CACHE and request.call_count == 1
+    assert (directory / "storage.tf").read_text() == files["storage.tf"]
+    assert bundle.storage_summary(files, changed, out.source)["bucket"] == "gerbera-flaskr-images-2"

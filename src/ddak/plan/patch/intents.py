@@ -240,13 +240,58 @@ def _check_bindings(tree: ast.Module, *, needs_int: bool) -> bool:
 
 
 def _env_keys(tree: ast.Module) -> set[str]:
-    """동적 키는 기존 키와의 충돌을 증명할 수 없어 거부한다."""
+    """직접 읽기와 함수 인자 래퍼의 리터럴 호출만 키 충돌 검사에 사용한다."""
     keys: set[str] = set()
-    for _, key in environment_reads(tree):
+    parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
+    wrappers: dict[str, tuple[ast.FunctionDef | ast.AsyncFunctionDef, set[str]]] = {}
+    for read, key in environment_reads(tree):
         value = _string(key)
-        if value is None:
+        if value is not None:
+            keys.add(value)
+            continue
+        owner = parents.get(read)
+        while owner is not None and not isinstance(
+            owner, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
+        ):
+            owner = parents.get(owner)
+        if not isinstance(owner, (ast.FunctionDef, ast.AsyncFunctionDef)) or owner not in tree.body:
             raise ValueError("동적 환경키가 있어 키 충돌을 검증할 수 없다")
-        keys.add(value)
+        parameters = {
+            a.arg for a in (*owner.args.posonlyargs, *owner.args.args, *owner.args.kwonlyargs)
+        }
+        if not isinstance(key, ast.Name) or key.id not in parameters:
+            raise ValueError("동적 환경키가 있어 키 충돌을 검증할 수 없다")
+        if any(
+            name == key.id and not isinstance(node, ast.arg) for name, node in _bound_names(owner)
+        ):
+            raise ValueError("동적 환경키 인자가 다시 대입되어 키 충돌을 검증할 수 없다")
+        wrappers.setdefault(owner.name, (owner, set()))[1].add(key.id)
+    for call in ast.walk(tree):
+        if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Name):
+            continue
+        if call.func.id not in wrappers:
+            continue
+        fn, parameters = wrappers[call.func.id]
+        if any(isinstance(a, ast.Starred) for a in call.args) or any(
+            k.arg is None for k in call.keywords
+        ):
+            raise ValueError("동적 환경키 래퍼 인자를 검증할 수 없다")
+        positional = [a.arg for a in (*fn.args.posonlyargs, *fn.args.args)]
+        bound = (
+            dict(zip(positional[-len(fn.args.defaults) :], fn.args.defaults, strict=False))
+            if fn.args.defaults
+            else {}
+        )
+        bound.update(
+            (a.arg, d) for a, d in zip(fn.args.kwonlyargs, fn.args.kw_defaults, strict=True)
+        )
+        bound.update(zip(positional, call.args, strict=False))
+        bound.update((kw.arg, kw.value) for kw in call.keywords if kw.arg is not None)
+        for parameter in parameters:
+            value = _string(bound.get(parameter))
+            if value is None:
+                raise ValueError("동적 환경키 래퍼 호출은 리터럴 키가 필요하다")
+            keys.add(value)
     return keys
 
 

@@ -66,6 +66,11 @@ def _binding(run_id: str, ctx: RunContext) -> InfraBinding:
         or binding.runtime.settings.run_project != ctx.project
         or binding.runtime.settings.storage_intent
         != (ctx.project_settings.get("_infra_storage") or {}).get("intent")
+        or (
+            binding.runtime.settings.storage_intent
+            and binding.runtime.settings.storage_bucket
+            != (ctx.project_settings.get("_infra_storage") or {}).get("bucket")
+        )
     ):
         raise DdakToolError(ErrorCode.INFRA_MISSING, "해당 실행의 인프라 세션 연결이 필요하다")
     return binding

@@ -9,7 +9,7 @@ from typing import Any
 from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.enums import Source
 from ddak.core.project_settings import cloud_platform_name
-from ddak.core.storage import OUTPUT_KEY, bucket_name
+from ddak.core.storage import OUTPUT_KEY
 
 from .bindings import InfraBinding
 from .fixture import _FixtureRunner, _FixtureSDK, _FixtureSession
@@ -21,7 +21,7 @@ _ACCOUNT = "123456789012"
 
 
 def storage_hcl(platform: str, account: str) -> str:
-    bucket = bucket_name(platform, account)
+    bucket = "${var.upload_bucket}"
     policy = json.dumps(
         {
             "Version": "2012-10-17",
@@ -40,18 +40,18 @@ def storage_hcl(platform: str, account: str) -> str:
         }
     )
     return f'''resource "aws_s3_bucket" "uploads" {{
-  bucket = "{bucket}"
+  bucket = var.upload_bucket
   force_destroy = true
 }}
 resource "aws_s3_bucket_public_access_block" "uploads" {{
-  bucket = "{bucket}"
+  bucket = var.upload_bucket
   block_public_acls = true
   block_public_policy = true
   ignore_public_acls = true
   restrict_public_buckets = true
 }}
 resource "aws_s3_bucket_server_side_encryption_configuration" "uploads" {{
-  bucket = "{bucket}"
+  bucket = var.upload_bucket
   rule {{ apply_server_side_encryption_by_default {{ sse_algorithm = "AES256" }} }}
 }}
 resource "aws_iam_role_policy" "uploads" {{
@@ -119,7 +119,7 @@ def storage_fixture_binding(
 ) -> InfraBinding:
     platform = cloud_platform_name(ctx.project, ctx.project_settings)
     intent = ctx.project_settings["_infra_storage"]["intent"]
-    bucket = bucket_name(platform, _ACCOUNT)
+    bucket = ctx.project_settings["_infra_storage"]["bucket"]
     create = intent == "create"
     settings = AwsSettings(
         platform,
@@ -129,6 +129,7 @@ def storage_fixture_binding(
         {OUTPUT_KEY: ("aws_s3_bucket.uploads.id", "string")} if create else {},
         approval_project=ctx.project,
         storage_intent=intent,
+        storage_bucket=bucket,
         task_role_arn=f"arn:aws:iam::{_ACCOUNT}:role/ddak/app/{platform}-task",
     )
     hcl = storage_hcl(platform, _ACCOUNT)
@@ -150,7 +151,10 @@ def storage_fixture_binding(
         ),
         Source.FIXTURE,
     )
-    runner = _FixtureRunner(hcl, {OUTPUT_KEY: bucket} if create else {})
+    resolved = hcl.replace("${var.upload_bucket}", bucket).replace(
+        "bucket = var.upload_bucket", f"bucket = {json.dumps(bucket)}"
+    )
+    runner = _FixtureRunner(resolved, {OUTPUT_KEY: bucket} if create else {})
     if not create:
         for resource in runner.raw["resource_changes"]:
             change = resource["change"]

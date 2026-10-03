@@ -6,6 +6,8 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
+from ddak.core.storage import valid_bucket
+
 from .policy import policy_json, require, statements, strings
 
 STORAGE_ADDRESSES = frozenset(
@@ -22,6 +24,10 @@ _PUBLIC_BLOCK = {
     "ignore_public_acls",
     "restrict_public_buckets",
 }
+
+
+def _reserved_bucket(project: str, name: str | None) -> bool:
+    return isinstance(name, str) and valid_bucket(project, name)
 
 
 def storage_resource(kind: str, address: str) -> bool:
@@ -101,7 +107,7 @@ def inspect_storage_policy(value: Any, bucket: str) -> None:
 def inspect_storage_body(
     kind: str, body: dict[str, Any], *, bucket: str, role: str, hcl: bool = False
 ) -> None:
-    expected_buckets = {bucket}
+    expected_buckets = {"${var.upload_bucket}"} if hcl else {bucket}
     if hcl and kind != "aws_s3_bucket":
         expected_buckets |= {"${aws_s3_bucket.uploads.id}", "${aws_s3_bucket.uploads.bucket}"}
     require(
@@ -134,7 +140,7 @@ def inspect_storage_body(
     else:
         require(body.get("role") == role, "STORAGE_ROLE_SCOPE")
         require(body.get("name") == "uploads" and not body.get("name_prefix"), "STORAGE_NAME_SCOPE")
-        inspect_storage_policy(body.get("policy"), bucket)
+        inspect_storage_policy(body.get("policy"), "${var.upload_bucket}" if hcl else bucket)
 
 
 def inspect_storage_hcl(
@@ -145,8 +151,11 @@ def inspect_storage_hcl(
     external_roles: Mapping[str, Any] | None,
     project: str,
     account: str,
+    storage_bucket: str | None = None,
 ) -> None:
     require(intent in (None, "create", "remove"), "STORAGE_INTENT")
+    if intent is not None:
+        require(_reserved_bucket(project, storage_bucket), "STORAGE_NAME_SCOPE")
     rows = [
         (kind, address, body)
         for kind, address, body in resources
@@ -181,10 +190,7 @@ def inspect_storage_hcl(
     require({address for _, address, _ in rows} == STORAGE_ADDRESSES, "STORAGE_RESOURCE_SET")
     require(bool(re.fullmatch(r"[a-z][a-z0-9-]{0,39}", project)), "STORAGE_NAME_SCOPE")
     require(bool(re.fullmatch(r"[0-9]{12}", account)), "STORAGE_NAME_SCOPE")
-    literal_bucket = f"ddak-{project}-uploads-{account}"
-    template_bucket = "ddak-${var.project}-uploads-${var.account_id}"
-    bucket = next(body.get("bucket") for kind, _, body in rows if kind == "aws_s3_bucket")
-    require(bucket in (literal_bucket, template_bucket), "STORAGE_NAME_SCOPE")
+    bucket = "${var.upload_bucket}"
     role_name = f"{project}-task"
     for kind, _, body in rows:
         # 변수로 표현한 이름도 이번 플랫폼의 단일 태스크 역할에만 대응한다.
@@ -205,9 +211,12 @@ def inspect_storage_plan(
     boundary: str,
     external_roles: Mapping[str, Any] | None,
     configured_buckets: dict[str, str],
+    storage_bucket: str | None = None,
 ) -> set[str]:
     """삭제 예외를 부여하기 전에 네 리소스의 before까지 검증한다."""
     require(intent in (None, "create", "remove"), "STORAGE_INTENT")
+    if intent is not None:
+        require(_reserved_bucket(project, storage_bucket), "STORAGE_NAME_SCOPE")
     rows = [row for row in changes if storage_resource(row["type"], row["address"])]
     if (
         layer == "platform"
@@ -223,7 +232,7 @@ def inspect_storage_plan(
     _, _, role = external_task_role(
         external_roles, project=project, account=account, boundary=boundary
     )
-    bucket = f"ddak-{project}-uploads-{account}"
+    bucket = storage_bucket or ""
     for row in rows:
         kind, address, change = row["type"], row["address"], row["change"]
         if intent == "remove":

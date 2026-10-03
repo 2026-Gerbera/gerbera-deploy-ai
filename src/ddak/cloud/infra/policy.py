@@ -25,6 +25,7 @@ _GENERATED_VARIABLES = {
     "app_boundary_arn",
     "build_boundary_arn",
     "project",
+    "upload_bucket",
 }
 
 
@@ -251,6 +252,7 @@ def static_gate(
     layer: str,
     state_bucket: str | None = None,
     storage_intent: str | None = None,
+    storage_bucket: str | None = None,
     external_roles: Mapping[str, Any] | None = None,
     project: str = "",
     account_id: str = "",
@@ -260,6 +262,8 @@ def static_gate(
         from .storage_policy import inspect_storage_hcl
 
         removing_storage = layer == "app" and storage_intent == "remove"
+        if storage_intent is not None and state_bucket is not None:
+            require(storage_bucket != state_bucket, "FOUNDATION_BUCKET_OWNED_BY_CODE")
         require(
             layer in ("app", "platform") and (bool(files) or removing_storage), "BUNDLE_REQUIRED"
         )
@@ -308,6 +312,7 @@ def static_gate(
             external_roles=external_roles,
             project=project,
             account=account_id,
+            storage_bucket=storage_bucket,
         )
         bluegreen_rules = bluegreen_listener_addresses(resources)
         for kind, address, body in resources:

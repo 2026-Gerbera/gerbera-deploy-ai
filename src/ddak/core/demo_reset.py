@@ -132,7 +132,7 @@ class DemoReset:
                         value.update(
                             sha=live.get("source_sha", ""),
                             version=live.get("version")
-                            if live.get("version") in ("v1", "v2")
+                            if live.get("version") in ("v1", "v2", "v3")
                             else "확인 불가",
                             detail="/version 응답과 제품 성공 기록 일치 미확인",
                         )
@@ -195,4 +195,5 @@ class DemoReset:
             "stages": STAGES,
             "warning": warning,
             "targets": selected_targets(saved),
+            "available_tags": remote.get("available_tags", []),
         }

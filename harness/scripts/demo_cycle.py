@@ -5,7 +5,8 @@ PR merge는 시연 장면이라 사람이 GitHub에서 한다. 이 스크립트�
 - reset-v1: 임시 clone에서 prod를 부모로, 태그 v1의 트리를 그대로 쓰는 커밋을 만든다
   (git commit-tree). demo/reset-v1-<시각> 새 브랜치를 push하고 prod 대상 PR을 연다.
 - prepare-v2: 같은 방식으로 태그 v2의 트리 커밋을 만들어 demo/v2-<시각> PR을 연다.
-- status: prod HEAD 트리가 v1·v2 중 무엇과 같은지, 열린 demo/* PR이 지금 merge해도 되는지 본다.
+- prepare-v3: 태그 v3 트리로 이미지 업로드·조회 PR을 준비한다.
+- status: prod HEAD 트리가 v1·v2·v3 중 무엇과 같은지, 열린 demo/* PR이 지금 merge해도 되는지 본다.
 
 안전 조건:
 - force push·prod 직접 push·태그 변경을 하지 않는다. demo/ 새 브랜치만 일반 push한다.
@@ -151,10 +152,10 @@ def print_status(repo: str, snap: Snapshot, prs: list[DemoPr]) -> None:
     print(f"{BASE_BRANCH} HEAD: {short(snap.prod_sha)} 트리={label}")
     if label == "v1":
         print("  다음: v1 배포 확인 뒤 prepare-v2로 시연용 v2 PR을 연다.")
-    elif label == "v2":
+    elif label in ("v2", "v3"):
         print("  다음: reset-v1으로 v1 되돌림 PR을 열고 merge한다.")
     else:
-        print("  주의: prod 내용이 v1·v2 어느 태그와도 다르다. reset-v1으로 v1부터 맞춘다.")
+        print("  주의: prod 내용이 v1·v2·v3 어느 태그와도 다르다. reset-v1으로 v1부터 맞춘다.")
     print("열린 demo PR:")
     if not prs:
         print("  (없음)")
@@ -175,6 +176,8 @@ def prepare(repo: str, remote: str, name: str, dry_run: bool) -> int:
     prefix = "[dry-run] " if dry_run else ""
     with cloned(remote) as clone:
         snap = snapshot(clone)
+        if action.tag not in snap.tag_trees:
+            raise DemoError(f"{action.tag} 태그 없음")
         target_tree = snap.tag_trees[action.tag]
         print(f"{prefix}저장소: {repo}")
         print(
@@ -244,7 +247,7 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="시연 반복용 앱 저장소 PR 준비(merge는 사람이 GitHub에서 한다)"
     )
-    parser.add_argument("action", choices=("reset-v1", "prepare-v2", "status"))
+    parser.add_argument("action", choices=(*ACTIONS, "status"))
     parser.add_argument("--repo", default=DEFAULT_REPO, help="GitHub 저장소 OWNER/NAME")
     parser.add_argument(
         "--remote", help="clone URL(기본 https://github.com/<repo>.git, 시험용 로컬 경로 가능)"

@@ -13,6 +13,7 @@
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="project" value="{{ project }}">
       <button type="submit" class="button secondary">v2 시연 PR 준비</button>
     </form>{{ form_error('demo-prepare-v2') }}</div>
+    <div><form method="post" action="/ops/demo/prepare-v3">{{ form_fields('demo-prepare-v3') }}<input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="project" value="{{ project }}"><button id="demo-prepare-v3" type="submit" class="button secondary" disabled>v3 태그 확인 중</button></form>{{ form_error('demo-prepare-v3') }}</div>
   </div>
   <div id="demo-state" data-url="/ops/demo/status?project={{ project|urlencode }}" aria-live="polite"><p>서비스 버전·시연 PR 상태 확인 중…</p></div>
   <noscript><a href="/ops/demo/status?project={{ project|urlencode }}">서비스 버전·시연 상태 확인</a></noscript>

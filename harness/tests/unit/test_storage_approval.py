@@ -6,8 +6,11 @@ import pytest
 
 from ddak import app
 from ddak.cloud.infra import unbind_infra
+from ddak.cloud.infra.storage_allocation import prepare_storage_context
 from ddak.core.config import AdapterMode, Settings
 from ddak.core.contracts.enums import RunMode
+from ddak.core.contracts.errors import DdakToolError
+from ddak.core.contracts.tools.plan_infra import PlanInfraInput
 from ddak.core.registry import Registry, spec_for
 from ddak.executor.infra import refresh_infra_context
 from ddak.plan.intake import FetchPolicy, WatchTarget
@@ -53,12 +56,57 @@ async def test_v3_to_v1_remove_is_shown_before_approval(rig):
         unbind_infra(plan.run_id)
 
 
+async def test_reserved_name_is_displayed_and_bound_before_approval(rig):
+    from ddak.cloud.infra import run_plan
+
+    service, source, _ = rig
+    infra_registry(service)
+    plan = infra_plan("storage-create")
+    ctx = replace(
+        context(),
+        run_id=plan.run_id,
+        project=plan.project,
+        project_settings={
+            "cloud_platform": "flaskr",
+            "_infra_storage": {
+                "intent": "create",
+                "evidence": [{"file": "flaskr/uploads.py", "line": 3, "kind": "hardcoded_dir"}],
+            },
+        },
+    )
+    ctx = prepare_storage_context(ctx, service.root)
+    try:
+        subjects, metadata = await app._infra_approval(service, plan, ctx)
+        run_id = service.prepare(plan, ctx, source, subjects=subjects, infra_summary=metadata)
+        view = service.approval_view(run_id)
+        assert service.get_run(run_id)["status"] == "AWAITING_APPROVAL"
+        assert view["infra_summary"]["storage"]["bucket"] == "gerbera-flaskr-images-1"
+        assert view["project_settings"]["_infra_storage"]["bucket"] == "gerbera-flaskr-images-1"
+        changed = replace(
+            ctx,
+            project_settings={
+                **ctx.project_settings,
+                "_infra_storage": {
+                    **ctx.project_settings["_infra_storage"],
+                    "bucket": "gerbera-flaskr-images-2",
+                },
+            },
+        )
+        with pytest.raises(DdakToolError, match="인프라 세션"):
+            run_plan(PlanInfraInput(run_id=run_id), changed)
+    finally:
+        unbind_infra(plan.run_id)
+
+
 async def test_auto_prepare_preserves_storage_intent_from_plan(rig, monkeypatch):
     from types import SimpleNamespace
 
     service, source, _ = rig
     infra_registry(service)
     seen = []
+    service.store.save_project_settings(
+        "demo", {"cloud_platform": "flaskr"}, updated_by="operator", expected_version=0
+    )
 
     def planned(request, **kwargs):
         plan = infra_plan(kwargs["run_id"]).model_copy(update={"mode": RunMode.UPDATE})
@@ -77,6 +125,11 @@ async def test_auto_prepare_preserves_storage_intent_from_plan(rig, monkeypatch)
         seen.append(ctx.project_settings["_infra_storage"])
         return {}, None
 
+    monkeypatch.setattr(
+        service,
+        "get_platform_outputs",
+        lambda *_: context("remove").platform["cloud"],
+    )
     monkeypatch.setattr(app, "plan_deployment", planned)
     monkeypatch.setattr(app, "_infra_approval", capture)
     await app._prepare_commit(

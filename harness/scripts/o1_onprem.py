@@ -110,8 +110,8 @@ def initialize(directory: Path, layout: str, base_url: str, platform: str) -> di
             "ports": [],
             "ready": {"timeout_s": 30},
             "volumes": [
-                {"name": project + "-uploads", "target": "/app/img"},
                 *([{"name": project + "-sqlite", "target": "/data"}] if layout == "was" else []),
+                {"name": project + "-uploads", "target": "/app/img"},
             ],
             "traefik_labels": {
                 "traefik.enable": "true",

@@ -24,6 +24,14 @@ ACTIONS = {
         title="demo: prod를 v1 상태로 되돌림(시연 반복 준비)",
         purpose="시연 반복을 위해 prod 내용을 v1으로 되돌린다. merge하면 제품이 v1을 배포한다.",
     ),
+    "prepare-v3": Action(
+        tag="v3",
+        branch_prefix="demo/v3-",
+        title="v3: 이미지 업로드·조회 추가",
+        purpose=(
+            "merge하면 제품이 로컬 이미지 저장소를 탐지해 S3를 만들고 IMG_DIR를 주입한 뒤 배포한다."
+        ),
+    ),
     "prepare-v2": Action(
         tag="v2",
         branch_prefix="demo/v2-",
@@ -73,7 +81,9 @@ def resolve(git: Callable[..., str], spec: str, what: str) -> str:
 
 def snapshot(git: Callable[..., str]) -> Snapshot:
     prod = f"refs/remotes/origin/{BASE_BRANCH}"
-    tags = sorted({action.tag for action in ACTIONS.values()})
+    tags = ["v1", "v2"]
+    if git("rev-parse", "--verify", "--quiet", "refs/tags/v3^{commit}", check=False):
+        tags.append("v3")
     return Snapshot(
         prod_sha=resolve(git, f"{prod}^{{commit}}", f"{BASE_BRANCH} 브랜치"),
         prod_tree=resolve(git, f"{prod}^{{tree}}", f"{BASE_BRANCH} 트리"),
@@ -88,7 +98,7 @@ def tree_label(snap: Snapshot, tree: str | None) -> str:
     for tag, tag_tree in snap.tag_trees.items():
         if tree == tag_tree:
             return tag
-    return "v1·v2 아님"
+    return "v1·v2·v3 아님"
 
 
 def build_commit(git: Callable[..., str], snap: Snapshot, name: str, action: Action) -> str:

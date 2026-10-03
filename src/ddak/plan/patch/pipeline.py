@@ -20,6 +20,7 @@ from ddak.core.contracts.tools.patch_config import PatchConfigOutput, PatchViola
 from ddak.core.patch_ledger import approved_patches, file_diff, guard_patch_loss, reuse_patches
 from ddak.core.patch_patterns import scan_patch_targets
 from ddak.core.snapshots import apply_diff, copy_source, digest_bytes, file_manifest
+from ddak.core.storage import STORAGE_ENV_KEY, scan_storage
 from ddak.plan.patch.check import PatchPolicy, check_patch
 from ddak.plan.patch.history import lost_violations, previous_files
 
@@ -103,6 +104,29 @@ Proposer = Callable[
 ]
 
 
+def required_storage_targets(source: Path, ctx: RunContext) -> tuple[PatchTarget, ...]:
+    """클라우드 저장 경로의 필수 위치를 원본의 정적 증거로 확인한다."""
+    if ctx.targets == "onprem":
+        return ()
+    files = {
+        name: (source / name).read_text(encoding="utf-8")
+        for name in file_manifest(source)
+        if name.endswith(".py")
+    }
+    return tuple(
+        PatchTarget(
+            file=e.file,
+            line=e.line,
+            pattern_id="local_storage_dir",
+            key=STORAGE_ENV_KEY,
+            severity="patch",
+            is_new=False,
+        )
+        for e in scan_storage(files)
+        if e.kind == "hardcoded_dir"
+    )
+
+
 def _required_env_names(path: Path) -> set[str]:
     return {
         node.slice.value
@@ -125,6 +149,7 @@ def prepare_patch(
     scanner: Callable[[Path, bytes], None] | None = None,
     approved_patch: bytes | None = None,
     policy: PatchPolicy | None = None,
+    proposal_reason: Callable[[], str | None] | None = None,
 ) -> PatchPreparation:
     # core는 승인 diff의 무결성만 확인한다. 파일별 재사용 적합성은 이 툴이 판단한다.
     saved = approved_patches(previous, runs_root)
@@ -166,10 +191,13 @@ def prepare_patch(
     reuse = b"".join(reusable[name] for name in sorted(reusable)) or None
     reused_files = set(reusable)
     found = facts.patch_targets if facts is not None else scan_patch_targets(source, ())
+    enabled = facts.code_patch if facts is not None else ctx.toggles.get("code_patch", False)
+    required = required_storage_targets(source, ctx)
+    identities = {(t.file, t.line, t.pattern_id) for t in found}
+    found = (*found, *(t for t in required if (t.file, t.line, t.pattern_id) not in identities))
     targets = tuple(t for t in found if t.severity == "patch" and t.file not in reused_files)
     proposed, env_keys, origin = None, (), "cache"
     warnings: list[str] = []
-    enabled = facts.code_patch if facts is not None else ctx.toggles.get("code_patch", False)
     if targets and enabled:
         try:
             if proposer is None:
@@ -194,6 +222,13 @@ def prepare_patch(
             try:
                 if proposed:
                     apply_diff(built, proposed)
+                if required and required_storage_targets(built, ctx):
+                    raise DdakToolError(
+                        ErrorCode.PRECONDITION_FAILED,
+                        "클라우드 IMG_DIR 필수 패치가 누락됐다"
+                        if enabled
+                        else "클라우드 IMG_DIR 패치 필요, 코드수정 켜기",
+                    )
                 after = file_manifest(built)
                 changes = tuple(sorted(name for name in before if before[name] != after.get(name)))
                 patch = b"".join(
@@ -256,7 +291,8 @@ def prepare_patch(
     return PatchPreparation(
         patch,
         {
-            "reason": "개발 설정을 필수 환경변수로 전환",
+            "reason": (proposal_reason() if proposed and proposal_reason else None)
+            or "개발 설정을 필수 환경변수로 전환",
             "reuse": not bool(proposed),
             "source": origin,
             "passed": True,

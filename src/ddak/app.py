@@ -40,6 +40,7 @@ from ddak.cloud.infra import (
     has_infra_binding,
     read_bundle,
 )
+from ddak.cloud.infra.storage_allocation import prepare_storage_context
 from ddak.cloud.tls import ensure_tls
 from ddak.core.ai.gateway import get_jev_client
 from ddak.core.ai.providers import (
@@ -145,7 +146,26 @@ def _previous_manifests(store: Any, project: str) -> dict[Any, dict[str, FileMet
 
 
 def _platform_bootstrap_plan(plan: Plan, ctx: RunContext, summary: dict | None) -> Plan:
-    """승인 전에 첫 플랫폼의 선행 의존성을 조립한다. 실행 중 계획을 우회하지 않는다."""
+    """승인 전에 빌드의 인프라 의존성을 조립한다. 실행 중 계획을 우회하지 않는다."""
+    if ctx.mode is RunMode.UPDATE:
+        cloud = ctx.platform.get("cloud") or {}
+        required = (
+            (ctx.image_repository,)
+            if ctx.build_backend == "local"
+            else (cloud.get("codebuild_project_name"), cloud.get("image_repository"))
+        )
+        if not all(isinstance(value, str) and value.strip() for value in required):
+            return plan
+        if not any("infra_ready" in step.wait_for for step in plan.build.steps):
+            return plan
+        prepared = plan.model_copy(deep=True, update={"plan_hash": None})
+        prepared.build.steps[:] = [
+            step.model_copy(
+                update={"wait_for": [signal for signal in step.wait_for if signal != "infra_ready"]}
+            )
+            for step in prepared.build.steps
+        ]
+        return prepared
     if ctx.mode is not RunMode.BOOTSTRAP or not summary or summary["layer"] != "platform":
         return plan
     prepared = plan.model_copy(deep=True, update={"plan_hash": None})
@@ -671,6 +691,7 @@ async def _prepare_commit_inner(
             )
         phase = "infra"
         try:
+            context = await asyncio.to_thread(prepare_storage_context, context, service.root)
             subjects, infra_summary = await _infra_approval(service, bundle.plan, context)
         except DdakToolError as exc:
             if request.target != "both" or not bundle.plan.deploy.local.steps:
@@ -1344,6 +1365,7 @@ def _configure_patch_review(service: DeploymentService, settings: Settings) -> N
             if service.repository_factory is not None:
                 context = await _source_preflight(service, context, patch=checked.patch)
             try:
+                context = await asyncio.to_thread(prepare_storage_context, context, service.root)
                 subjects, infra_summary = await _infra_approval(service, bundle.plan, context)
             except DdakToolError as exc:
                 if request.target != "both" or not bundle.plan.deploy.local.steps:

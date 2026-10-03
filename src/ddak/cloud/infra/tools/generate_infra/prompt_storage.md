@@ -4,7 +4,8 @@ items with file, line, kind. Never request source code, credentials, state or pl
 
 The mapping is fixed: the local IMG_DIR upload directory needs S3 for shared storage
 across two ECS tasks. The caller has already selected create; do not invent other
-infrastructure. Bucket name is exactly `ddak-<platform>-uploads-<account>`.
+infrastructure. The product reserves a name matching `gerbera-<platform>-images-<n>`.
+Always use `var.upload_bucket`; never embed a literal name or choose a number.
 
 Return JSON matching StorageDraft: files contains exactly one file named storage.tf,
 with lines (one HCL line per array item), plus rationale containing exactly five
@@ -17,7 +18,7 @@ short Korean sentences, each <= 240 UTF-8 bytes, in this order:
 Describe steps 4 and 5 as future actions, never as completed or approved actions.
 
 The HCL must be concise, at most 3072 UTF-8 bytes, with exactly these four addresses:
-- aws_s3_bucket.uploads: bucket is the fixed name; force_destroy = true.
+- aws_s3_bucket.uploads: bucket = var.upload_bucket; force_destroy = true.
 - aws_s3_bucket_public_access_block.uploads: bucket = aws_s3_bucket.uploads.id;
   block_public_acls, block_public_policy, ignore_public_acls, restrict_public_buckets
   are all true.
@@ -27,10 +28,10 @@ The HCL must be concise, at most 3072 UTF-8 bytes, with exactly these four addre
 - aws_iam_role_policy.uploads: role = the supplied task_role_name;
   name = "uploads"; policy = jsonencode({ Version = "2012-10-17", Statement =
   [ { Effect = "Allow", Action = ["s3:GetObject", "s3:PutObject"], Resource =
-  "arn:aws:s3:::<bucket>/*" }, { Effect = "Allow", Action = ["s3:ListBucket"],
-  Resource = "arn:aws:s3:::<bucket>" } ] }).
+  "arn:aws:s3:::${var.upload_bucket}/*" }, { Effect = "Allow", Action = ["s3:ListBucket"],
+  Resource = "arn:aws:s3:::${var.upload_bucket}" } ] }).
 
 Do not declare outputs, variables, providers, backend, modules, data sources, IAM
 roles, permission boundaries, extra resources or extra permissions. The framework
-owns upload_bucket output and boundary updates. Use supplied safe literals only.
+owns upload_bucket output and boundary updates. Use the supplied task role and var.upload_bucket only.
 Do not include a metadata header or repeat the rationale in HCL comments.

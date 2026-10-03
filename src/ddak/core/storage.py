@@ -11,7 +11,7 @@ from typing import Literal
 STORAGE_ENV_KEY = "IMG_DIR"
 OUTPUT_KEY = "upload_bucket"
 STORAGE_SMOKE_GROUP = "storage"
-UPLOAD_BUCKET_PATTERN = r"ddak-[a-z][a-z0-9-]{0,36}-uploads-[0-9]{12}"
+UPLOAD_BUCKET_PATTERN = r"gerbera-[a-z][a-z0-9-]{0,30}-images-[1-9][0-9]{0,5}"
 
 
 @dataclass(frozen=True)
@@ -21,11 +21,25 @@ class StorageEvidence:
     kind: Literal["hardcoded_dir", "env_read", "file_write"]
 
 
-def bucket_name(platform: str, account_id: str) -> str:
-    name = f"ddak-{platform}-uploads-{account_id}"
-    if not re.fullmatch(UPLOAD_BUCKET_PATTERN, name):
-        raise ValueError("업로드 버킷 이름에는 유효한 플랫폼 이름과 12자리 계정이 필요하다")
-    return name
+def bucket_prefix(platform: str) -> str:
+    if not re.fullmatch(r"[a-z][a-z0-9-]{0,30}", platform):
+        raise ValueError("업로드 플랫폼 이름은 소문자 1~31자여야 한다")
+    return f"gerbera-{platform}-images-"
+
+
+def bucket_name(platform: str, n: int) -> str:
+    if type(n) is not int or not 1 <= n <= 999999:
+        raise ValueError("업로드 버킷 순번은 1~999999여야 한다")
+    return f"{bucket_prefix(platform)}{n}"
+
+
+def valid_bucket(platform: str, name: str) -> bool:
+    try:
+        return bool(re.fullmatch(UPLOAD_BUCKET_PATTERN, name)) and bool(
+            re.fullmatch(re.escape(bucket_prefix(platform)) + r"[1-9][0-9]{0,5}", name)
+        )
+    except (TypeError, ValueError):
+        return False
 
 
 def storage_intent(needs: bool, present: bool) -> Literal["create", "remove"] | None:

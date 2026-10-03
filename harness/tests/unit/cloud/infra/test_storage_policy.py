@@ -12,10 +12,12 @@ from ddak.cloud.infra.plan import summarize_plan
 from ddak.cloud.infra.policy import PolicyViolation, static_gate
 from ddak.cloud.infra.providers.aws import boundary_document
 from ddak.cloud.infra.storage_policy import STORAGE_ADDRESSES
+from ddak.core.storage import bucket_name, bucket_prefix
 
 ACCOUNT = "123456789012"
 PROJECT = "flaskr"
-BUCKET = f"ddak-{PROJECT}-uploads-{ACCOUNT}"
+BUCKET = bucket_name(PROJECT, 1)
+VARIABLE = "${var.upload_bucket}"
 BOUNDARY = f"arn:aws:iam::{ACCOUNT}:policy/ddak/boundary/ddak-app-boundary"
 ROLES = {
     "flaskr-task": {
@@ -51,7 +53,7 @@ def document(bucket=BUCKET):
     }
 
 
-def hcl(*, bucket=BUCKET, role="flaskr-task", policy=None):
+def hcl(*, bucket=VARIABLE, role="flaskr-task", policy=None):
     policy = document(bucket) if policy is None else policy
     return {
         "storage.tf": f'''
@@ -84,24 +86,30 @@ resource "aws_iam_role_policy" "uploads" {{
 
 
 def gate(files=None, **overrides):
-    kwargs = dict(layer="app", storage_intent="create", project=PROJECT, account_id=ACCOUNT)
+    kwargs = dict(
+        layer="app",
+        storage_intent="create",
+        storage_bucket=BUCKET,
+        project=PROJECT,
+        account_id=ACCOUNT,
+    )
     kwargs.update(overrides)
     return static_gate(hcl() if files is None else files, **kwargs)
 
 
-def plan(actions=None):
+def plan(actions=None, *, bucket=BUCKET):
     actions = ["create"] if actions is None else actions
     bodies = {
-        "aws_s3_bucket.uploads": {"bucket": BUCKET, "force_destroy": True},
+        "aws_s3_bucket.uploads": {"bucket": bucket, "force_destroy": True},
         "aws_s3_bucket_public_access_block.uploads": {
-            "bucket": BUCKET,
+            "bucket": bucket,
             "block_public_acls": True,
             "block_public_policy": True,
             "ignore_public_acls": True,
             "restrict_public_buckets": True,
         },
         "aws_s3_bucket_server_side_encryption_configuration.uploads": {
-            "bucket": BUCKET,
+            "bucket": bucket,
             "rule": [
                 {
                     "apply_server_side_encryption_by_default": [{"sse_algorithm": "AES256"}],
@@ -111,7 +119,7 @@ def plan(actions=None):
         "aws_iam_role_policy.uploads": {
             "name": "uploads",
             "role": "flaskr-task",
-            "policy": json.dumps(document()),
+            "policy": json.dumps(document(bucket)),
         },
     }
     return {
@@ -140,6 +148,7 @@ def summarize(raw=None, **overrides):
     kwargs = dict(
         layer="app",
         storage_intent="create",
+        storage_bucket=BUCKET,
         update=True,
         external_roles=deepcopy(ROLES),
         account_id=ACCOUNT,
@@ -160,7 +169,7 @@ def test_create_four_and_exact_boundary_scope():
     assert summary["counts"] == {"create": 4, "update": 0, "delete": 0, "replace": 0}
     assert not summary["destructive"]
     assert summary["iam_diff"][0]["boundary_attached"]
-    expected = document()["Statement"]
+    expected = document(bucket_prefix(PROJECT) + "*")["Statement"]
     observed = [
         row
         for row in boundary_document(ACCOUNT, PROJECT)["Statement"]
@@ -170,9 +179,101 @@ def test_create_four_and_exact_boundary_scope():
 
 
 def test_hcl_template_names():
-    assert gate(
-        hcl(bucket="ddak-${var.project}-uploads-${var.account_id}", role="${var.project}-task")
-    ).passed
+    assert gate(hcl(role="${var.project}-task")).passed
+
+
+@pytest.mark.parametrize("project", ["flaskr", "inventory-api"])
+def test_boundary_storage_scope_is_only_platform_prefix(project):
+    expected = document(bucket_prefix(project) + "*")["Statement"]
+    for account in (ACCOUNT, "999999999999"):
+        observed = [
+            row
+            for row in boundary_document(account, project)["Statement"]
+            if any(
+                action.startswith("s3:")
+                for action in (
+                    row["Action"] if isinstance(row["Action"], list) else [row["Action"]]
+                )
+            )
+        ]
+        assert observed == expected
+
+
+@pytest.mark.parametrize("n", [1, 2, 999999])
+def test_numbered_bucket_uses_same_variable_hcl(n):
+    bucket = bucket_name(PROJECT, n)
+    assert gate(storage_bucket=bucket).passed
+    assert summarize(plan(bucket=bucket), storage_bucket=bucket)["counts"]["create"] == 4
+
+
+@pytest.mark.parametrize(
+    "bucket",
+    [
+        None,
+        "",
+        "gerbera-other-images-1",
+        "gerbera-flaskr-images-x-images-1",
+        "gerbera-flaskr-images-0",
+        "gerbera-flaskr-images-01",
+        "gerbera-flaskr-images-1000000",
+        "gerbera-flaskr-images-2-extra",
+        "gerbera-flaskr-images-2\n",
+        f"ddak-flaskr-uploads-{ACCOUNT}",
+    ],
+)
+@pytest.mark.parametrize("intent", ["create", "remove"])
+def test_reserved_bucket_must_match_project_and_pattern(bucket, intent):
+    files = hcl() if intent == "create" else {}
+    assert gate(files, storage_intent=intent, storage_bucket=bucket).detail == "STORAGE_NAME_SCOPE"
+    with pytest.raises(PolicyViolation, match="STORAGE_NAME_SCOPE"):
+        summarize(
+            plan(["delete"] if intent == "remove" else ["create"]),
+            storage_intent=intent,
+            storage_bucket=bucket,
+        )
+
+
+@pytest.mark.parametrize("bucket", [BUCKET, "ddak-${var.project}-uploads-${var.account_id}"])
+def test_hcl_bucket_must_read_owned_variable(bucket):
+    assert gate(hcl(bucket=bucket)).detail == "STORAGE_NAME_SCOPE"
+
+
+def test_hcl_dependent_buckets_can_read_owned_variable():
+    files = hcl()
+    files["storage.tf"] = files["storage.tf"].replace(
+        "aws_s3_bucket.uploads.id", "var.upload_bucket"
+    )
+    assert gate(files).passed
+    files["storage.tf"] += '\nvariable "upload_bucket" { type = string }\n'
+    assert gate(files).detail == "RESOURCE_BLOCKS_ONLY"
+
+
+@pytest.mark.parametrize("bucket", [BUCKET, "${var.upload_bucket}-other"])
+def test_hcl_dependent_buckets_cannot_use_literal_or_modified_variable(bucket):
+    files = hcl()
+    files["storage.tf"] = files["storage.tf"].replace("aws_s3_bucket.uploads.id", f'"{bucket}"')
+    assert gate(files).detail == "STORAGE_NAME_SCOPE"
+
+
+@pytest.mark.parametrize("intent", ["create", "remove"])
+def test_valid_second_bucket_cannot_replace_approved_bucket(intent):
+    second = bucket_name(PROJECT, 2)
+    raw = plan(["delete"] if intent == "remove" else ["create"], bucket=second)
+    with pytest.raises(PolicyViolation, match="STORAGE_NAME_SCOPE"):
+        summarize(raw, storage_intent=intent)
+    assert summarize(raw, storage_intent=intent, storage_bucket=second)
+
+
+def test_update_before_bucket_and_policy_must_match_reservation():
+    second = bucket_name(PROJECT, 2)
+    raw = plan(["update"], bucket=second)
+    raw["resource_changes"][0]["change"]["before"]["bucket"] = BUCKET
+    with pytest.raises(PolicyViolation, match="STORAGE_NAME_SCOPE"):
+        summarize(raw, storage_bucket=second)
+    raw = plan(bucket=second)
+    raw["resource_changes"][-1]["change"]["after"]["policy"] = json.dumps(document())
+    with pytest.raises(PolicyViolation, match="STORAGE_POLICY_SCOPE"):
+        summarize(raw, storage_bucket=second)
 
 
 @pytest.mark.parametrize("files", [{}, {"storage.tf": "# 저장소 제거\n"}])
@@ -299,7 +400,8 @@ def test_exact_policy_scope_for_creation_and_removal(mutation, deleting):
         policy["Statement"].pop()
     else:
         policy["Statement"][0]["Condition"] = {"StringEquals": {"fixture": "value"}}
-    assert not gate(hcl(policy=policy)).passed
+    variable_policy = json.loads(json.dumps(policy).replace(BUCKET, VARIABLE))
+    assert not gate(hcl(policy=variable_policy)).passed
     raw = plan(["delete"] if deleting else ["create"])
     raw["resource_changes"][-1]["change"]["before" if deleting else "after"]["policy"] = json.dumps(
         policy

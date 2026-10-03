@@ -1,9 +1,10 @@
 {% from '_status.html' import target %}
+<span hidden data-demo-v3="{{ 'ready' if 'v3' in demo.available_tags else 'unknown' if demo.warning else 'missing' }}"></span>
 {% if demo.warning %}<p class="watch-warning">⚠ 확인 필요: {{ demo.warning }}</p>{% endif %}
 <table><thead><tr><th scope="col">환경</th><th scope="col">지금 서비스 중인 버전</th><th scope="col">원본 커밋</th><th scope="col">실제 응답</th></tr></thead><tbody>
 {% for env in demo.environments %}<tr><td>{{ env.label }}</td><td>{{ env.version }}<small>{{ env.detail }}</small></td><td><code>{{ env.sha[:7] or '확인 불가' }}</code></td><td>{% if env.url %}<a href="{{ env.url }}/version" target="_blank" rel="noopener noreferrer">/version</a>{% endif %}{% if env.response %}<details><summary>응답 확인</summary><pre>{{ env.response|tojson(indent=2) }}</pre></details>{% endif %}</td></tr>{% endfor %}
 </tbody></table>
 <p class="note">PR 열림 → merge됨 → 배포 준비 → 승인 대기 → v1 배포 완료</p>
-{% for item in demo.actions %}<p><strong>{{ 'v1 초기화' if item.action == 'reset-v1' else 'v2 시연' }}: {{ item.stage }}</strong>
+{% for item in demo.actions %}<p><strong>{{ 'v1 초기화' if item.action == 'reset-v1' else item.tag ~ ' 시연' }}: {{ item.stage }}</strong>
 {% if item.url %} · <a href="{{ item.url }}" target="_blank" rel="noopener noreferrer">PR #{{ item.number }} 열기</a>{% elif item.already_source %} · prod는 이미 {{ item.tag }} 트리입니다.{% endif %}
 {% if item.run_id %} · <a href="/runs/{{ item.run_id }}/{{ 'approval' if item.run_status == 'AWAITING_APPROVAL' else 'progress' if item.run_status == 'RUNNING' else 'result' }}">배포 {{ item.run_id }} 확인</a>{% endif %}</p>{% else %}<p>아직 시연 PR 요청이 없습니다.</p>{% endfor %}

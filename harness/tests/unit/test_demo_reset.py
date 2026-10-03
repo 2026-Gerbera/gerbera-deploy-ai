@@ -36,6 +36,7 @@ class FakeGit:
         self.calls = []
         self.prod = SHA2
         self.trees = {SHA1: T1, SHA2: T2}
+        self.tags = {"v1": SHA1, "v2": SHA2}
         self.parents = {}
         self.refs = {}
 
@@ -46,7 +47,10 @@ class FakeGit:
         if args[0] == "rev-parse":
             ref = args[-1]
             ref = ref.replace("refs/remotes/origin/prod", self.prod)
-            ref = ref.replace("refs/tags/v1", SHA1).replace("refs/tags/v2", SHA2)
+            for tag, sha in self.tags.items():
+                ref = ref.replace("refs/tags/" + tag, sha)
+            if ref.startswith("refs/tags/"):
+                return ""
             if ref.endswith("^1^{tree}"):
                 return self.trees[self.parents[ref.removesuffix("^1^{tree}")]]
             if ref.endswith("^{tree}"):
@@ -61,6 +65,8 @@ class FakeGit:
             self.parents[sha] = args[args.index("-p") + 1]
             return sha
         if args[0] == "ls-remote":
+            if args[-1].startswith("refs/tags/"):
+                return self.tags.get(args[-1].removeprefix("refs/tags/"), "")
             return self.refs.get(args[-1], "")
         if args[0] == "push":
             sha, ref = args[-1].split(":")
@@ -447,3 +453,139 @@ def test_cli_still_uses_same_tree_and_push_helpers(monkeypatch, tmp_path):
     cli.push_branch(tmp_path, commit, "demo/reset-v1-fixture")
     assert repo.trees[commit] == T1 and repo.parents[commit] == SHA2
     assert repo.refs == {"refs/heads/demo/reset-v1-fixture": commit}
+
+
+def test_v3_missing_does_not_break_v1_v2_and_v3_create_explains(backend):
+    service, git, github, _ = backend
+    info = service.inspect(PROJECT, SAVED, {}, {SHA1, SHA2})
+    assert info["available_tags"] == ["v1", "v2"]
+    with pytest.raises(DdakToolError, match="v3 태그 없음"):
+        service.create(PROJECT, SAVED, "prepare-v3")
+    assert not github.creates
+    assert not any("refs/tags/v3:refs/tags/v3" in call for call in git.calls)
+    assert service.create(PROJECT, SAVED, "prepare-v2")["already_source"]
+    assert service.create(PROJECT, SAVED, "reset-v1")["tag"] == "v1"
+
+
+def test_v3_pr_fetch_label_and_reset_preserve_refs(backend):
+    service, git, github, _ = backend
+    sha3, tree3 = "6" * 40, "d" * 40
+    git.tags["v3"], git.trees[sha3] = sha3, tree3
+    out = service.create(PROJECT, SAVED, "prepare-v3")
+    head = git.refs["refs/heads/" + out["branch"]]
+    assert out["tag"] == "v3" and out["branch"].startswith("demo/v3-")
+    assert git.trees[head] == tree3 and git.parents[head] == SHA2
+    assert any("refs/tags/v3:refs/tags/v3" in call for call in git.calls)
+    assert github.creates[0][1] == "v3: 이미지 업로드·조회 추가"
+    github.prs[0].update(state="closed", merged=True, merge_commit_sha=head)
+    git.prod = head
+    info = service.inspect(PROJECT, SAVED, {"prepare-v3": out}, {head})
+    assert info["labels"][head] == "v3"
+    reset = service.create(PROJECT, SAVED, "reset-v1")
+    reset_head = git.refs["refs/heads/" + reset["branch"]]
+    assert git.trees[reset_head] == T1 and git.parents[reset_head] == head
+    assert git.tags == {"v1": SHA1, "v2": SHA2, "v3": sha3}
+    assert git.prod == head
+    assert all(
+        ":refs/heads/demo/" in call[-1]
+        and "--no-follow-tags" in call
+        and not any(a.startswith(("+", "--force")) for a in call)
+        for call in git.calls
+        if call[0] == "push"
+    )
+
+
+@pytest.mark.parametrize("available", [False, True])
+def test_v3_ops_action_and_tag_availability(rig, available):
+    deployment, _demo, backend, _ = rig
+    original = backend.inspect
+    backend.inspect = lambda *args: {
+        **original(*args),
+        "available_tags": ["v1", "v2", "v3"] if available else ["v1", "v2"],
+    }
+
+    def create(project, saved, action):
+        assert action == "prepare-v3"
+        if not available:
+            raise DdakToolError(backend_module.ErrorCode.PRECONDITION_FAILED, "v3 태그 없음")
+        return dict(
+            tag="v3",
+            target_tree="d" * 40,
+            repo_url=saved["repo_url"],
+            number=1,
+            url="https://github.com/example/app/pull/1",
+        )
+
+    backend.create = create
+    with client_for(deployment) as client:
+        page = client.get("/ops?project=" + PROJECT)
+        assert 'action="/ops/demo/prepare-v3"' in page.text
+        assert 'id="demo-prepare-v3"' in page.text and "disabled>v3 태그 확인 중" in page.text
+        status = client.get("/ops/demo/status?project=" + PROJECT)
+        assert ('data-demo-v3="ready"' if available else 'data-demo-v3="missing"') in status.text
+        result = post(client, "prepare-v3")
+        assert result.status_code == 303
+        if available:
+            status = client.get("/ops/demo/status?project=" + PROJECT)
+            assert "v3 시연: PR 열림" in status.text
+        else:
+            assert "v3 태그 없음" in client.get(result.headers["location"]).text
+
+
+def test_cli_accepts_v3_and_reports_missing_tag(monkeypatch, tmp_path, capsys):
+    from contextlib import contextmanager
+
+    from tests.support import load_script
+
+    cli = load_script("demo_cycle")
+    repo = FakeGit()
+
+    @contextmanager
+    def cloned(_):
+        yield tmp_path
+
+    monkeypatch.setattr(cli, "cloned", cloned)
+    monkeypatch.setattr(cli, "git", lambda clone, *a, **kw: repo.git(*a, **kw))
+    assert cli.main(["prepare-v3", "--dry-run", "--repo", "example/app"]) == 1
+    assert "v3 태그 없음" in capsys.readouterr().err
+    repo.tags["v3"], repo.trees["6" * 40] = "6" * 40, "d" * 40
+    monkeypatch.setattr(cli, "open_demo_prs", lambda *a: [])
+    assert cli.main(["prepare-v3", "--dry-run", "--repo", "example/app"]) == 0
+    assert "push 예정: demo/v3-" in capsys.readouterr().out
+    assert all(call[0] != "push" for call in repo.calls)
+
+
+@pytest.mark.parametrize(
+    "state,label,disabled",
+    [
+        ("ready", "v3 시연 PR 준비", False),
+        ("missing", "v3 태그 없음", True),
+        ("unknown", "v3 태그 확인 실패", True),
+    ],
+)
+def test_v3_button_status_script_without_window(state, label, disabled):
+    import json
+    import shutil
+    import subprocess
+
+    from tests.support import REPO_ROOT
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node 없음")
+    script = r"""
+const fs=require('fs'), vm=require('vm');
+const button={disabled:true,textContent:''};
+const box={dataset:{url:'/fixture'},querySelector:()=>({dataset:{demoV3:process.argv[2]}})};
+const document={getElementById:id=>id==='demo-state'?box:button};
+const context={document,fetch:async()=>({ok:true,text:async()=>'<fixture>'})};
+vm.runInNewContext(fs.readFileSync(process.argv[1],'utf8'),context);
+setImmediate(()=>process.stdout.write(JSON.stringify(button)));
+"""
+    output = subprocess.run(
+        [node, "-e", script, str(REPO_ROOT.parent / "src/ddak/web/static/demo_reset.js"), state],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert json.loads(output) == {"disabled": disabled, "textContent": label}

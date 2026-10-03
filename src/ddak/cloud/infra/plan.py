@@ -250,6 +250,7 @@ def summarize_plan(
     state_bucket: str | None = None,
     bootstrap_prepared: bool = False,
     storage_intent: str | None = None,
+    storage_bucket: str | None = None,
     external_roles: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """정책 불합격은 PolicyViolation, API 수행 실패는 호출자가 DdakToolError로 바꾼다."""
@@ -302,6 +303,7 @@ def summarize_plan(
         boundary=boundary_arn,
         external_roles=external_roles,
         configured_buckets=configured_buckets,
+        storage_bucket=storage_bucket,
     )
     for resource in changes:
         if resource.get("type") == "aws_s3_bucket":

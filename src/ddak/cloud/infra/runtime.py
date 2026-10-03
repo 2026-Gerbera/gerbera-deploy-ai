@@ -38,6 +38,7 @@ from ddak.core.runtime import publish_boundary_receipt
 from .plan import filter_outputs, summarize_plan
 from .policy import GateResult, PolicyViolation, static_gate
 from .providers.aws import CHECKS, REGION
+from .storage_policy import _reserved_bucket
 
 # 경계 정책은 계정 공용이다. 이 프로세스의 다른 프로젝트도 갱신을 직렬화한다.
 _FOUNDATION_LOCK = threading.RLock()
@@ -229,6 +230,7 @@ class AwsSettings:
     approval_project: str | None = None
     storage_intent: str | None = None
     task_role_arn: str | None = None
+    storage_bucket: str | None = None
 
     @property
     def run_project(self) -> str:
@@ -237,6 +239,7 @@ class AwsSettings:
     def __post_init__(self) -> None:
         if self.storage_intent is not None and (
             self.storage_intent not in {"create", "remove"}
+            or not _reserved_bucket(self.project, self.storage_bucket)
             or self.layer != "app"
             or self.task_role_arn
             != f"arn:aws:iam::{self.account_id}:role/ddak/app/{self.project}-task"
@@ -343,6 +346,8 @@ class AwsSettings:
 
         if not self.outputs:
             del result["output"]
+        if self.storage_intent is not None:
+            result["variable"]["upload_bucket"] = {"type": "string"}
         return result
 
     def backend(self) -> dict[str, Any]:
@@ -581,6 +586,8 @@ class InfraRuntime:
                     {
                         "plan": plan_hash,
                         "storage_intent": self.settings.storage_intent,
+                        "storage_bucket": self.settings.storage_bucket,
+                        "upload_variables": digest(self._files["upload.auto.tfvars.json"]),
                         "task_role_arn": self.settings.task_role_arn,
                         "boundary_template": digest(self._storage_boundary),
                         "boundary_snapshot": digest(self._boundary_snapshot or b""),
@@ -761,6 +768,7 @@ class InfraRuntime:
             layer=self.settings.layer,
             state_bucket=self.settings.state_bucket,
             storage_intent=self.settings.storage_intent,
+            storage_bucket=self.settings.storage_bucket,
             project=self.settings.project,
             account_id=self.settings.account_id,
         )
@@ -774,6 +782,10 @@ class InfraRuntime:
                 "backend.json": self._backend,
             }
         )
+        if self.settings.storage_intent is not None:
+            self._files["upload.auto.tfvars.json"] = canonical(
+                {"upload_bucket": self.settings.storage_bucket}
+            )
         for name, content in self._files.items():
             private_write(self.work / name, content)
         # 서식은 실행 안전성과 무관하다. AI 생성 번들의 내용을 자동 변경하지 않고
@@ -861,6 +873,7 @@ class InfraRuntime:
                 analyzer=analyzer,
                 checkov=checked,
                 storage_intent=self.settings.storage_intent,
+                storage_bucket=self.settings.storage_bucket,
                 external_roles=external_roles,
             )
             if self.settings.run_project != self.settings.project:
@@ -1130,12 +1143,18 @@ class InfraRuntime:
         try:
             if result.code != 0:
                 raise ValueError
-            return checked_outputs(
+            outputs = checked_outputs(
                 filter_outputs(
                     json.loads(result.stdout), {k: v[1] for k, v in self._outputs.items()}
                 ),
                 self.settings.layer,
             )
+            if (
+                self.settings.storage_intent == "create"
+                and outputs.get("upload_bucket") != self.settings.storage_bucket
+            ):
+                raise ValueError
+            return outputs
         except (ValueError, KeyError, TypeError):
             raise DdakToolError(
                 ErrorCode.ADAPTER_FAILED,

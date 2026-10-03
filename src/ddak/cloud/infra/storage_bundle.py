@@ -17,8 +17,9 @@ from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.project_settings import CLOUD_PLATFORM_PATTERN, cloud_platform_name
 from ddak.core.redact import redact
 from ddak.core.snapshots import digest_bytes
+from ddak.core.storage import STORAGE_ENV_KEY, valid_bucket
 
-STORAGE_PROMPT_VERSION = "infra-app-storage-v1"
+STORAGE_PROMPT_VERSION = "infra-app-storage-v2"
 MAX_STORAGE_HCL_BYTES = 3072
 MAX_STORAGE_SUMMARY_BYTES = 6144
 MAX_STORAGE_EVIDENCE = 8
@@ -61,11 +62,11 @@ def storage_request(ctx: RunContext) -> tuple[str, dict[str, str], list[dict[str
             raise DdakToolError(ErrorCode.CONFIG_INVALID, "저장소 태스크 역할 형식 오류")
         role = match[1]
     binding = {"platform": platform, "account": account, "task_role_name": role}
-    from ddak.core.storage import bucket_name
-
-    expected_bucket = bucket_name(platform, account)
-    if request.get("bucket", expected_bucket) != expected_bucket:
-        raise DdakToolError(ErrorCode.CONFIG_INVALID, "저장소 버킷 이름이 입력 계정과 다르다")
+    bucket = request.get("bucket")
+    if not isinstance(bucket, str) or not valid_bucket(platform, bucket):
+        raise DdakToolError(ErrorCode.CONFIG_INVALID, "예약된 저장소 버킷 이름이 필요하다")
+    if request["intent"] == "remove" and cloud.get("upload_bucket") != bucket:
+        raise DdakToolError(ErrorCode.CONFIG_INVALID, "제거할 버킷이 현재 출력과 다르다")
     evidence = _evidence(request.get("evidence", []))
     if request["intent"] == "create" and not evidence:
         raise DdakToolError(ErrorCode.CONFIG_INVALID, "저장소 생성에는 소스 근거가 필요하다")
@@ -188,8 +189,6 @@ def storage_summary(
     files: Mapping[str, str], ctx: RunContext, source: Source | str
 ) -> dict[str, Any]:
     """HCL 본문 → summary['storage']. 병합한 전체 요약의 8KiB 검사는 호출자가 한다."""
-    from ddak.core.storage import STORAGE_ENV_KEY, bucket_name
-
     intent, binding, evidence = storage_request(ctx)
     metadata, hcl = _read_bundle(files)
     if metadata["intent"] != intent or metadata["binding"] != binding:
@@ -199,7 +198,7 @@ def storage_summary(
     def display(text: str) -> str:
         return redact(text.replace(account, "************"), max_len=None)
 
-    bucket = display(bucket_name(binding["platform"], account))
+    bucket = ctx.project_settings["_infra_storage"]["bucket"]
     summary = {
         "intent": intent,
         "rationale": [display(item) for item in metadata["rationale"]],
