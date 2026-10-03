@@ -38,6 +38,25 @@
     "uses_ai": true
   },
   {
+    "canonical": false,
+    "destructive": false,
+    "effect": "read",
+    "kind": "tool_fn",
+    "layer": "outside",
+    "module": "plan",
+    "name": "answer_code_question",
+    "owners": {
+      "logic": "O1"
+    },
+    "read_only": true,
+    "requires_approval": false,
+    "requires_lock": false,
+    "stage": "ops",
+    "targets": [],
+    "timeout_s": 180,
+    "uses_ai": true
+  },
+  {
     "canonical": true,
     "destructive": true,
     "effect": "state_change",

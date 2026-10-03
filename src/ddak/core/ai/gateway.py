@@ -70,11 +70,17 @@ def _safe_data(
     return redact(text, max_len=max_len).replace(DATA_CLOSE, "")
 
 
-def build_user_prompt(instruction: str, data: str, *, operator_message: str | None = None) -> str:
+def build_user_prompt(
+    instruction: str,
+    data: str,
+    *,
+    operator_message: str | None = None,
+    data_limit: int = MAX_LEN,
+) -> str:
     parts = [redact(instruction, max_len=None)]
     if operator_message:
         parts.append(f"운영자 요청: {redact(operator_message)}")
-    parts.append(f"{DATA_OPEN}\n{_safe_data(data)}\n{DATA_CLOSE}")
+    parts.append(f"{DATA_OPEN}\n{_safe_data(data, max_len=data_limit)}\n{DATA_CLOSE}")
     return "\n\n".join(parts)
 
 
@@ -102,14 +108,16 @@ def _generation_request[M: BaseModel](
     operator_message: str | None = None,
     prompt_version: str = "v0",
     model: str | None = None,
+    data_limit: int = MAX_LEN,
 ) -> AIRequest:
     return AIRequest(
         purpose=purpose,
         system=SYSTEM_GUARD,
         user=build_user_prompt(
             _safe_data(instruction, settings, max_len=None),
-            _safe_data(data, settings),
+            _safe_data(data, settings, max_len=data_limit),
             operator_message=_safe_data(operator_message, settings) if operator_message else None,
+            data_limit=data_limit,
         ),
         json_schema=output_model.model_json_schema(),
         model=model,
@@ -145,7 +153,12 @@ def call_ai[M: BaseModel](
     prompt_version: str = "v0",
     settings: Settings | None = None,
     provider: LLMProvider | None = None,
+    data_limit: int = MAX_LEN,
 ) -> AIResult[M]:
+    """data_limit: 정제(redact) 뒤 data 글자 상한. 기본은 공통 MAX_LEN, 넘으면 자른다.
+
+    코드 문맥처럼 큰 입력을 받는 툴만 툴 계약의 상한 안에서 늘린다(정제는 그대로 적용).
+    """
     tool = ensure_ai_allowed()
     cfg = settings or Settings.from_env()
     req = _generation_request(
@@ -157,6 +170,7 @@ def call_ai[M: BaseModel](
         operator_message=operator_message,
         prompt_version=prompt_version,
         model=provider_model(cfg),
+        data_limit=data_limit,
     )
     result, _ = _generate(
         req, output_model, provider if provider is not None else get_provider(cfg), cfg

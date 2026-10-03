@@ -71,7 +71,7 @@ class ToolSpec(ContractModel):
     requires_lock: bool = False
     requires_approval: bool = False
     timeout_s: int = Field(default=60, gt=0)  # 💭 실행기 타임아웃(실측 전 값)
-    canonical: bool = True  # False = 40개 밖(예시 툴 ping)
+    canonical: bool = True  # False = 40개 밖(예시 툴 ping, 운영용 코드 질문)
 
 
 _PL, _IN, _BU, _CD, _VE = Module.PLAN, Module.INFRA, Module.BUILD, Module.CD, Module.VERIFY
@@ -182,6 +182,7 @@ _TIMEOUTS: Mapping[str, int] = {
     "ensure_tls": 2700,  # "도메인 연결" run의 ACM 발급 상한(45분). 데모 run은 툴이 60초로 자름
     "health_check": 120,
     "smoke_test": 120,
+    "answer_code_question": 180,  # 소스 읽기 + AI 답 1회(관리 웹이 직접 부른다)
 }
 _FLAGS = {"ai", "ro", "de", "lock", "ok"}
 _TARGETS = {"": (), "both": (Target.LOCAL, Target.CLOUD), "cloud": (Target.CLOUD,)}
@@ -221,9 +222,14 @@ def _spec(
 
 
 _PING_ROW = (PING, _CO, _S.COMMON, _L.OPTIONAL, "ro", "both", "TL")
+# 운영용 코드 질문(관리 웹 대시보드). 40개 파이프라인 툴 밖이고 step 카탈로그에도 없다.
+# 읽기 전용 AI 툴: 앱 저장소 커밋의 소스를 근거로 답만 만든다(배포·패치·커밋 없음).
+CODE_QUESTION = "answer_code_question"
+_CODE_QUESTION_ROW = (CODE_QUESTION, _PL, _S.OPS, _L.OUTSIDE, "ai ro", "", "O1")
 CATALOG: tuple[ToolSpec, ...] = (
     *(_spec(row) for row in _ROWS),
     _spec(_PING_ROW, canonical=False),
+    _spec(_CODE_QUESTION_ROW, canonical=False),
 )
 
 
@@ -356,10 +362,11 @@ def canonical_names() -> frozenset[str]:
 
 
 def ai_tools() -> frozenset[str]:
-    """call_ai·Jev를 부를 수 있는 툴 이름. 9개(tests/contract/test_registry.py가 고정).
+    """call_ai·Jev를 부를 수 있는 툴 이름. 10개(tests/contract/test_registry.py가 고정).
 
-    generate_infra(AI Terraform 초안)로 7 -> 8, generate_dockerfile(AI Dockerfile 초안)로 8 -> 9.
-    채팅 의도 JSON을 AI 툴로 등록하면 10개가 된다(이름·위치는 결정 필요, docs/harness/06).
+    generate_infra(AI Terraform 초안)로 7 -> 8, generate_dockerfile(AI Dockerfile 초안)로 8 -> 9,
+    운영용 코드 질문(answer_code_question, 40개 밖)으로 9 -> 10.
+    채팅 의도 JSON을 AI 툴로 등록하면 11개가 된다(이름·위치는 결정 필요, docs/harness/06).
     """
     return frozenset(s.name for s in CATALOG if s.uses_ai)
 
