@@ -316,7 +316,7 @@ def test_reference_hcl_and_sdk_describe_boundary_match():
     document = json.loads(
         json.dumps(policy_json(app["policy"])).replace("${var.account_id}", f.ACCOUNT)
     )
-    for candidate in (document, boundary_document(f.ACCOUNT)):
+    for candidate in (document, boundary_document(f.ACCOUNT, f.SETTINGS.project)):
         describe = [s for s in candidate["Statement"] if s["Action"] == ACTIONS[1]]
         assert describe == [
             {

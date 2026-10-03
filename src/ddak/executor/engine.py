@@ -26,6 +26,7 @@ from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.enums import Effect, Layer, Target, ToolKind
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.contracts.events import EventType, RunEvent
+from ddak.core.contracts.infra_evidence import BoundaryPolicyVersion
 from ddak.core.contracts.plan import CLOUD_VERIFIED, LOCAL_VERIFIED, Plan, PlanStep, Section
 from ddak.core.redact import redact
 from ddak.core.registry import PING, RegisteredTool, Registry, ToolSpec, UnknownToolError
@@ -732,6 +733,31 @@ class Executor:
             for signal in own:
                 state.gate(signal).fail(f"{name} 트랙이 신호를 열지 못하고 끝났다")
 
+    @staticmethod
+    def _record_infra_change(
+        step: PlanStep,
+        target: Target | None,
+        state: _RunState,
+        versions: list[dict[str, Any]],
+        status: str,
+        plan_hash: str | None,
+    ) -> None:
+        row = next((item for item in state.infra_changes if item["step_id"] == step.id), None)
+        if row is None:
+            row = {
+                "step_id": step.id,
+                "target": target.value if target else None,
+                "status": status,
+                "boundary_versions": [],
+            }
+            state.infra_changes.append(row)
+        if status == "applied":
+            row["status"] = status
+            row["plan_sha256"] = plan_hash
+        combined = {value["policy_arn"]: value for value in row["boundary_versions"]}
+        combined.update({value["policy_arn"]: value for value in versions})
+        row["boundary_versions"] = list(combined.values())
+
     async def _wait_work(
         self,
         awaitable: Awaitable[Any],
@@ -848,7 +874,22 @@ class Executor:
                 state.app_touched.add(target)
             if self._on_invoke is not None:
                 self._on_invoke(step, ctx)
-            with runtime.tool_context(step.tool, ctx.run_id):
+            loop = asyncio.get_running_loop()
+
+            def receive_receipt(value: BoundaryPolicyVersion) -> None:
+                # 동기 툴 스레드에서는 목록을 직접 바꾸지 않는다. 반환/정리 대기를
+                # 끝내기 전에 이미 확보한 증거를 이벤트 루프에서 병합한다.
+                loop.call_soon_threadsafe(
+                    self._record_infra_change,
+                    step,
+                    target,
+                    state,
+                    [value.model_dump(mode="json")],
+                    "partial",
+                    None,
+                )
+
+            with runtime.tool_context(step.tool, ctx.run_id, boundary_recorder=receive_receipt):
                 call = (
                     registered.fn(inp, ctx)
                     if registered.is_async
@@ -873,13 +914,13 @@ class Executor:
                 passed = getattr(out, "passed", True) is not False
             if passed and step.tool == "apply_infra":
                 # 실제 적용 성공은 refresh/기록 후처리 실패와 독립적으로 보존한다.
-                state.infra_changes.append(
-                    {
-                        "step_id": step.id,
-                        "target": target.value if target else None,
-                        "status": "applied",
-                        "plan_sha256": output.get("plan_sha256"),
-                    }
+                self._record_infra_change(
+                    step,
+                    target,
+                    state,
+                    output.get("boundary_versions", []),
+                    "applied",
+                    output.get("plan_sha256"),
                 )
             if passed and self._after_step is not None and advisory is None:
                 # 툴 실행 시작 때의 ctx를 다시 쓰지 않는다. hook과 교체가 하나의 임계 구역이다.
@@ -905,15 +946,28 @@ class Executor:
         except UnknownToolError:
             code, message = ErrorCode.PLAN_INVALID, f"구현이 등록되지 않은 툴: {step.tool}"
         except DdakToolError as exc:
+            if step.tool == "apply_infra" and exc.boundary_versions:
+                self._record_infra_change(
+                    step,
+                    target,
+                    state,
+                    [version.model_dump(mode="json") for version in exc.boundary_versions],
+                    "partial",
+                    None,
+                )
             if exc.needs_human or (invoked and changing and exc.code is ErrorCode.ADAPTER_TIMEOUT):
                 # 스레드/CLI 종료 확인만으로 원격 데몬 작업 종료를 증명할 수 없다.
                 state.unquiesced.add(target)
             code, message = exc.code, exc.message
         except TimeoutError:
+            if invoked and step.tool == "apply_infra":
+                state.unquiesced.add(target)
             code, message = ErrorCode.ADAPTER_TIMEOUT, "타임아웃"
         except ValidationError as exc:
             code, message = ErrorCode.PLAN_INVALID, f"입력 검증 실패({exc.error_count()}건)"
         except asyncio.CancelledError:
+            if invoked and step.tool == "apply_infra":
+                state.unquiesced.add(target)
             self._record_failure(step, target, state, started, "CANCELLED: 실행 취소")
             raise
         except Exception as exc:

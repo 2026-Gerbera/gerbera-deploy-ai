@@ -12,7 +12,11 @@ from unittest.mock import Mock
 
 import pytest
 
-from ddak.cloud.infra.foundation import apply_foundation, foundation_template
+from ddak.cloud.infra.foundation import (
+    apply_foundation,
+    foundation_approval_hash,
+    foundation_template,
+)
 from ddak.cloud.infra.plan import filter_outputs, summarize_plan
 from ddak.cloud.infra.policy import OVERRIDE_REQUIRED_BUILDSPEC, PolicyViolation, static_gate
 from ddak.cloud.infra.runtime import (
@@ -42,6 +46,24 @@ HCL = """resource "aws_secretsmanager_secret" "session" {
 }
 """
 SESSION = SessionKeys("fixture-access", "fixture-" + "secret", "fixture-session")
+
+
+def test_foundation_iam_client_disables_sdk_retries(tmp_path, monkeypatch):
+    sdk = Mock()
+    monkeypatch.setattr("ddak.cloud.infra.runtime.boto3.Session", Mock(return_value=sdk))
+    runtime = InfraRuntime(
+        root=tmp_path,
+        run_id="retry-fixture",
+        settings=SETTINGS,
+        lock_file=b"fixture",
+        approvals=lambda: [],
+        guard=Mock(),
+        runner=FakeRunner(),
+    )
+    runtime._clients(SESSION)
+    configs = {call.args[0]: call.kwargs["config"] for call in sdk.client.call_args_list}
+    assert configs["iam"].retries == {"total_max_attempts": 1}
+    assert configs["s3"].retries == configs["sts"].retries == {"max_attempts": 2}
 
 
 def approval(sha, kind="infra", **changes):
@@ -447,12 +469,30 @@ def test_foundation_reuses_only_matching_owned_resources(tmp_path):
         "TagSet": [{"Key": k, "Value": v} for k, v in template["tags"].items()]
     }
     s3.get_bucket_policy.return_value = {"Policy": json.dumps(template["bucket_policy"])}
-    iam.get_policy.return_value = {"Policy": {"DefaultVersionId": "v1"}}
-    iam.get_policy_version.side_effect = [
-        {"PolicyVersion": {"Document": template["boundary"]}},
-        {"PolicyVersion": {"Document": template["build_boundary"]}},
+    documents = {
+        SETTINGS.boundary_arn: template["boundary"],
+        SETTINGS.build_boundary_arn: template["build_boundary"],
+    }
+    iam.get_policy.side_effect = lambda **kw: {
+        "Policy": {"Arn": kw["PolicyArn"], "DefaultVersionId": "v1"}
+    }
+    iam.get_policy_version.side_effect = lambda **kw: {
+        "PolicyVersion": {
+            "Document": documents[kw["PolicyArn"]],
+            "VersionId": "v1",
+            "IsDefaultVersion": True,
+        }
+    }
+    snapshots = [
+        {
+            "policy_arn": arn,
+            "default_version_id": "v1",
+            "document_sha256": digest(canonical(document)),
+            "document": document,
+        }
+        for arn, document in documents.items()
     ]
-    records = [approval(digest(canonical(template)), "foundation")]
+    records = [approval(foundation_approval_hash(SETTINGS, snapshots), "foundation")]
     result = apply_foundation(
         settings=SETTINGS,
         run_id="run-1",
@@ -462,6 +502,7 @@ def test_foundation_reuses_only_matching_owned_resources(tmp_path):
         approvals=lambda: records,
         guard=Mock(),
         marker=tmp_path / "started",
+        expected_boundaries=snapshots,
     )
     assert result["app_boundary_arn"] == SETTINGS.boundary_arn
     s3.create_bucket.assert_not_called()
@@ -563,7 +604,7 @@ def test_build_and_app_boundaries_are_distinct():
         {"main.tf": build.replace("var.app_boundary_arn", "var.build_boundary_arn")},
         layer="platform",
     ).passed
-    assert "dockerhub-push" not in json.dumps(boundary_document(ACCOUNT))
+    assert "dockerhub-push" not in json.dumps(boundary_document(ACCOUNT, SETTINGS.project))
     assert "dockerhub-push" in json.dumps(build_boundary_document(ACCOUNT))
     assert SETTINGS.boundary_arn != SETTINGS.build_boundary_arn
 
@@ -687,7 +728,7 @@ def test_iam_policy_diff_contains_removed_denies():
 
 def test_foundation_wrong_account_stops_before_resource_access(tmp_path):
     s3, iam = Mock(), Mock()
-    records = [approval(digest(canonical(foundation_template(SETTINGS))), "foundation")]
+    records = [approval(foundation_approval_hash(SETTINGS, []), "foundation")]
     with pytest.raises(DdakToolError, match="PRECONDITION_FAILED"):
         apply_foundation(
             settings=SETTINGS,
@@ -698,6 +739,7 @@ def test_foundation_wrong_account_stops_before_resource_access(tmp_path):
             approvals=lambda: records,
             guard=Mock(),
             marker=tmp_path / "started",
+            expected_boundaries=[],
         )
     assert not s3.mock_calls and not iam.mock_calls
     assert not (tmp_path / "started").exists()

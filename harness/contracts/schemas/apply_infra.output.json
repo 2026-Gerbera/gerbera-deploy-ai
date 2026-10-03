@@ -1,5 +1,57 @@
 {
   "$defs": {
+    "BoundaryPolicyVersion": {
+      "additionalProperties": false,
+      "properties": {
+        "new_version_id": {
+          "anyOf": [
+            {
+              "pattern": "^v[1-9][0-9]*(\\.[A-Za-z0-9-]*)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "New Version Id"
+        },
+        "policy_arn": {
+          "pattern": "^arn:aws:iam::\\*{12}:policy/ddak/boundary/ddak-(app|build)-boundary$",
+          "title": "Policy Arn",
+          "type": "string"
+        },
+        "previous_version_id": {
+          "anyOf": [
+            {
+              "pattern": "^v[1-9][0-9]*(\\.[A-Za-z0-9-]*)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Previous Version Id"
+        },
+        "status": {
+          "enum": [
+            "created",
+            "updated",
+            "unchanged",
+            "unknown"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "policy_arn",
+        "status"
+      ],
+      "title": "BoundaryPolicyVersion",
+      "type": "object"
+    },
     "Source": {
       "description": "AI 결과의 출처. live가 아니면 관리 페이지가 라벨을 표시한다(목업은 목업이라고 밝힘).",
       "enum": [
@@ -14,6 +66,13 @@
   },
   "additionalProperties": false,
   "properties": {
+    "boundary_versions": {
+      "items": {
+        "$ref": "#/$defs/BoundaryPolicyVersion"
+      },
+      "title": "Boundary Versions",
+      "type": "array"
+    },
     "elapsed_seconds": {
       "minimum": 0,
       "title": "Elapsed Seconds",

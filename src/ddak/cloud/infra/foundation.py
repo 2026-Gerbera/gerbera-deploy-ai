@@ -1,4 +1,4 @@
-"""코드 소유 기반 템플릿과 승인 후 생성. 자동 삭제·정책 버전 교체는 하지 않는다."""
+"""코드 소유 기반 확보. 승인한 관측 상태에서만 경계 정책 버전을 추가한다."""
 
 from __future__ import annotations
 
@@ -11,10 +11,10 @@ from botocore.exceptions import ClientError
 
 from ddak.core.contracts.approval import ApprovalRecord
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
+from ddak.core.contracts.infra_evidence import BoundaryPolicyVersion
 
+from .boundary_versions import apply_boundaries, check_boundaries
 from .providers.aws import (
-    BOUNDARY_NAME,
-    BOUNDARY_PATH,
     REGION,
     bootstrap_dbinit_exception,
     boundary_document,
@@ -22,6 +22,12 @@ from .providers.aws import (
     ecs_infrastructure_role,
 )
 from .runtime import AwsSettings, canonical, check_approval, digest, private_write
+
+
+def foundation_approval_hash(settings: AwsSettings, snapshots: Sequence[dict[str, Any]]) -> str:
+    return digest(
+        canonical({"template": foundation_template(settings), "boundaries": list(snapshots)})
+    )
 
 
 def foundation_template(settings: AwsSettings) -> dict[str, Any]:
@@ -48,7 +54,7 @@ def foundation_template(settings: AwsSettings) -> dict[str, Any]:
                 }
             ],
         },
-        "boundary": boundary_document(settings.account_id),
+        "boundary": boundary_document(settings.account_id, settings.project),
         "boundary_arn": settings.boundary_arn,
         "build_boundary": build_boundary_document(settings.account_id),
         "build_boundary_arn": settings.build_boundary_arn,
@@ -126,21 +132,43 @@ def apply_foundation(
     marker: Path,
     infra_subject: str | None = None,
     expected_bucket_exists: bool | None = None,
-) -> dict[str, str]:
+    expected_boundaries: Sequence[dict[str, Any]] | None = None,
+    record_boundary: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
     """marker는 조립부가 project/run별 고정 영속 경로로 전달해야 한다.
 
     부분 실패 후에도 표식을 보존하고 동일 실행을 재시도하지 않는다.
     """
     template = foundation_template(settings)
     bound_to = digest(canonical(template))
+    subject = foundation_approval_hash(settings, expected_boundaries or [])
+    versions: list[BoundaryPolicyVersion] = []
+    receipt_count = 0
+
+    def record(row: dict[str, Any]) -> None:
+        nonlocal receipt_count
+        value = BoundaryPolicyVersion.model_validate(row)
+        versions[:] = [old for old in versions if old.policy_arn != value.policy_arn]
+        versions.append(value)
+        # 시도 전 unknown과 응답 직후 version을 각각 영속화한다. 덮어쓰지 않는다.
+        receipt_count += 1
+        private_write(
+            marker.with_name(marker.name + f"-boundary-{receipt_count}.json"),
+            canonical(value.model_dump(mode="json")),
+        )
+        if record_boundary is not None:
+            record_boundary(value.model_dump(mode="json"))
+
     guard()
     check_approval(
         approvals(),
         run_id=run_id,
         project=settings.project,
         kind="infra" if infra_subject else "foundation",
-        bound_to=infra_subject or bound_to,
+        bound_to=infra_subject or subject,
     )
+    if expected_boundaries is None:
+        raise DdakToolError(ErrorCode.APPROVAL_REQUIRED, "승인한 권한 경계 관측 상태가 없다")
     if marker.exists():
         raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "이전 기반 적용 상태를 확인해야 한다")
     try:
@@ -183,25 +211,7 @@ def apply_foundation(
             except ClientError as exc:
                 if exc.response["Error"]["Code"] != "NoSuchBucketPolicy":
                     raise
-        policies = [
-            (BOUNDARY_NAME, settings.boundary_arn, template["boundary"]),
-            ("ddak-build-boundary", settings.build_boundary_arn, template["build_boundary"]),
-        ]
-        create_policies = []
-        for name, arn, document in policies:
-            try:
-                policy = iam.get_policy(PolicyArn=arn)["Policy"]
-                current = iam.get_policy_version(
-                    PolicyArn=arn, VersionId=policy["DefaultVersionId"]
-                )["PolicyVersion"]["Document"]
-                if canonical(current) != canonical(document):
-                    raise DdakToolError(
-                        ErrorCode.PRECONDITION_FAILED, "기존 권한 경계가 템플릿과 다르다"
-                    )
-            except ClientError as exc:
-                if exc.response["Error"]["Code"] != "NoSuchEntity":
-                    raise
-                create_policies.append((name, document))
+        check_boundaries(settings, iam, expected_boundaries)
         ecs_role = template["ecs_infrastructure_role"]
         role_exists = _check_ecs_role(iam, ecs_role)
         private_write(marker, bound_to.encode())
@@ -250,13 +260,7 @@ def apply_foundation(
                 "Rules": [{"ApplyServerSideEncryptionByDefault": {"SSEAlgorithm": "AES256"}}]
             },
         )
-        for name, document in create_policies:
-            iam.create_policy(
-                PolicyName=name,
-                Path=BOUNDARY_PATH,
-                PolicyDocument=json.dumps(document),
-                Tags=[{"Key": k, "Value": v} for k, v in template["tags"].items()],
-            )
+        apply_boundaries(settings, iam, expected_boundaries, guard=guard, record=record)
         guard()
         if not role_exists:
             try:
@@ -280,10 +284,16 @@ def apply_foundation(
             "app_boundary_arn": settings.boundary_arn,
             "build_boundary_arn": settings.build_boundary_arn,
             "template_sha256": bound_to,
+            "boundary_versions": [version.model_dump(mode="json") for version in versions],
         }
-    except DdakToolError:
+    except DdakToolError as exc:
+        exc.boundary_versions = tuple(versions)
+        exc.needs_human = exc.needs_human or marker.exists()
         raise
     except Exception:
         raise DdakToolError(
-            ErrorCode.ADAPTER_FAILED, "기반 준비 실패; 대상 상태 확인 후 다시 승인해야 한다"
+            ErrorCode.ADAPTER_FAILED,
+            "기반 준비 실패; 대상 상태 확인 후 다시 승인해야 한다",
+            needs_human=marker.exists(),
+            boundary_versions=versions,
         ) from None

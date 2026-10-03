@@ -13,6 +13,7 @@ import shutil
 import signal
 import subprocess
 import tempfile
+import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
@@ -28,12 +29,17 @@ from botocore.exceptions import ClientError
 
 from ddak.core.contracts.approval import ApprovalRecord
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
+from ddak.core.contracts.infra_evidence import BoundaryPolicyVersion
 from ddak.core.contracts.infra_outputs import IMAGE_REPOSITORY_PATTERN, checked_outputs, output_kind
 from ddak.core.redact import redact
+from ddak.core.runtime import publish_boundary_receipt
 
 from .plan import filter_outputs, summarize_plan
 from .policy import GateResult, PolicyViolation, static_gate
 from .providers.aws import CHECKS, REGION
+
+# 경계 정책은 계정 공용이다. 이 프로세스의 다른 프로젝트도 갱신을 직렬화한다.
+_FOUNDATION_LOCK = threading.RLock()
 
 
 def digest(data: bytes) -> str:
@@ -356,6 +362,8 @@ class InfraRuntime:
         self._consumed = False
         self.foundation_clients = foundation_clients
         self._foundation: bytes | None = None
+        self._boundary_snapshot: bytes | None = None
+        self._boundary_versions: list[BoundaryPolicyVersion] = []
         self._local_backend = False
 
     def _clients(self, session: SessionKeys) -> Mapping[str, Any]:
@@ -369,10 +377,17 @@ class InfraRuntime:
             region_name=REGION,
         )
         config = Config(connect_timeout=5, read_timeout=10, retries={"max_attempts": 2})
-        return {name: sdk.client(name, config=config) for name in ("s3", "iam", "sts")}
+        # CreatePolicyVersion에는 idempotency token이 없다. 응답 유실을 재시도하면
+        # 추가 버전을 중복 생성할 수 있으므로 IAM 호출은 한 번만 시도한다.
+        iam_config = Config(connect_timeout=5, read_timeout=10, retries={"total_max_attempts": 1})
+        return {
+            name: sdk.client(name, config=iam_config if name == "iam" else config)
+            for name in ("s3", "iam", "sts")
+        }
 
     def prepare_bootstrap(self, *, session: SessionKeys) -> None:
         """플랫폼 첫 실행의 기반 확보도 같은 infra 승인에 묶는다. 여기서는 조회만 한다."""
+        from .boundary_versions import snapshot_boundaries
         from .foundation import foundation_template
 
         if self._files or self.settings.layer != "platform":
@@ -394,11 +409,13 @@ class InfraRuntime:
                 if exc.response["Error"]["Code"] not in ("404", "NoSuchBucket"):
                     raise
                 self._local_backend = True
+            snapshot = snapshot_boundaries(self.settings, clients["iam"])
         except DdakToolError:
             raise
         except Exception:
-            raise DdakToolError(ErrorCode.ADAPTER_FAILED, "기반 버킷 존재 확인 실패") from None
+            raise DdakToolError(ErrorCode.ADAPTER_FAILED, "기반 버킷·권한 경계 조회 실패") from None
         self._foundation = canonical(foundation_template(self.settings))
+        self._boundary_snapshot = canonical(snapshot)
         framework = self.settings.framework()
         if self._local_backend:
             framework["terraform"]["backend"] = {"local": {}}
@@ -416,6 +433,7 @@ class InfraRuntime:
                 {
                     "plan": plan_hash,
                     "foundation": digest(self._foundation),
+                    "boundary_snapshot": digest(self._boundary_snapshot or b""),
                     "backend": self.settings.backend(),
                     "local_backend": self._local_backend,
                 }
@@ -686,9 +704,23 @@ class InfraRuntime:
             json_plan.unlink(missing_ok=True)
         self._planned = self._approval_hash(plan_hash)
         if self._foundation is not None:
+            from .boundary_versions import boundary_changes
             from .plan import _masked, _policy_view
 
             foundation = json.loads(self._foundation)
+            changes = boundary_changes(self.settings, json.loads(self._boundary_snapshot or b"[]"))
+            # 생성/갱신 문장은 diff에 있으므로 전체 정책을 중복 첨부하지 않는다.
+            # 변경 없는 정책의 기존 뷰는 유지하고 승인 메타의 8KiB 상한도 유지한다.
+            unchanged_views = {
+                label: _policy_view(foundation[key])
+                for label, key, change in zip(
+                    ("app_boundary", "build_boundary"),
+                    ("boundary", "build_boundary"),
+                    changes,
+                    strict=True,
+                )
+                if change["action"] == "unchanged"
+            }
             summary["plan_sha256"] = self._planned
             summary["headline"] += (
                 " · 기반 버킷·권한 경계 2개·ECS 인프라 역할 확보 및 원격 state 연결"
@@ -702,8 +734,8 @@ class InfraRuntime:
                     "bucket": foundation["bucket"].replace(
                         self.settings.account_id, "************"
                     ),
-                    "app_boundary": _policy_view(foundation["boundary"]),
-                    "build_boundary": _policy_view(foundation["build_boundary"]),
+                    **unchanged_views,
+                    "boundary_changes": changes,
                     "ecs_infrastructure_role": {
                         "arn": _masked(foundation["ecs_infrastructure_role"]["arn"]),
                         "trust_policy": _policy_view(
@@ -724,6 +756,14 @@ class InfraRuntime:
                 self._planned = None
                 raise DdakToolError(ErrorCode.CONFIG_INVALID, "기반 포함 승인 요약 크기 초과")
         return summary
+
+    def _record_boundary(self, row: dict[str, Any]) -> None:
+        value = BoundaryPolicyVersion.model_validate(row)
+        self._boundary_versions[:] = [
+            old for old in self._boundary_versions if old.policy_arn != value.policy_arn
+        ]
+        self._boundary_versions.append(value)
+        publish_boundary_receipt(value)
 
     def apply(self, *, session: SessionKeys) -> dict[str, Any]:
         self.deadline = time.monotonic() + self.apply_timeout
@@ -784,18 +824,21 @@ class InfraRuntime:
                 from .foundation import apply_foundation
 
                 clients = self._clients(session)
-                apply_foundation(
-                    settings=self.settings,
-                    run_id=self.run_id,
-                    s3=clients["s3"],
-                    iam=clients["iam"],
-                    sts=clients["sts"],
-                    approvals=self._approval_reader,
-                    guard=self._guard,
-                    marker=self._attempt.with_name(self._attempt.name + "-foundation"),
-                    infra_subject=self._planned,
-                    expected_bucket_exists=not self._local_backend,
-                )
+                with _FOUNDATION_LOCK:
+                    apply_foundation(
+                        settings=self.settings,
+                        run_id=self.run_id,
+                        s3=clients["s3"],
+                        iam=clients["iam"],
+                        sts=clients["sts"],
+                        approvals=self._approval_reader,
+                        guard=self._guard,
+                        marker=self._attempt.with_name(self._attempt.name + "-foundation"),
+                        infra_subject=self._planned,
+                        expected_bucket_exists=not self._local_backend,
+                        expected_boundaries=json.loads(self._boundary_snapshot or b"[]"),
+                        record_boundary=self._record_boundary,
+                    )
                 self._guard()
                 self._unchanged()
                 check_approval(
@@ -831,6 +874,9 @@ class InfraRuntime:
             # 롤백으로 복구됐다고 판단하지 않고 잠금과 증거를 보존한다.
             code = exc.code if isinstance(exc, DdakToolError) else ErrorCode.ADAPTER_FAILED
             cause = redact(str(exc)) if isinstance(exc, DdakToolError) else type(exc).__name__
+            if isinstance(exc, DdakToolError):
+                for version in exc.boundary_versions:
+                    self._record_boundary(version.model_dump(mode="json"))
             raise DdakToolError(
                 code,
                 "인프라 적용 또는 출력 확인 실패; "
@@ -842,10 +888,14 @@ class InfraRuntime:
                     else ""
                 ),
                 needs_human=True,
+                boundary_versions=self._boundary_versions,
             ) from None
         return {
             "outputs": output,
             "elapsed_seconds": time.monotonic() - started,
+            "boundary_versions": [
+                version.model_dump(mode="json") for version in self._boundary_versions
+            ],
             "plan_sha256": self._planned,
         }
 

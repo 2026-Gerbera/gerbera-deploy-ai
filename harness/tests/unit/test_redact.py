@@ -208,3 +208,22 @@ def test_code_redaction_keeps_line_count_and_other_lines() -> None:
 )
 def test_plain_keys_and_non_literal_values_are_preserved(text: str) -> None:
     assert redact(text) == text
+
+
+def test_boolean_and_null_settings_on_secret_named_keys_are_kept() -> None:
+    # 설정 플래그는 비밀값이 아니다. 지시문이 바뀌면 AI가 잘못된 리소스를 만든다.
+    text = (
+        "manage_master_user_password = true\n"
+        "manage_master_user_password=true, publicly_accessible=false\n"
+        "SECRET_ROTATION: false\n"
+        "api_key = null\n"
+        "PASSWORD_REQUIRED=True\n"
+    )
+    assert redact(text, max_len=None) == text
+
+
+def test_secret_values_resembling_booleans_are_still_masked() -> None:
+    out = redact('DB_PASSWORD=trueish\nAPI_KEY="true"\nTOKEN=false1', max_len=None)
+    assert "trueish" not in out
+    assert '"true"' not in out
+    assert "false1" not in out
