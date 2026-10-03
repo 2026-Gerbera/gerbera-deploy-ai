@@ -35,6 +35,7 @@ from typing import Any, Protocol
 from ddak.cloud.build.registries import PLATFORMS, check_digest
 from ddak.core.contracts.base import TIER_PATTERN
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
+from ddak.core.contracts.infra_outputs import IMAGE_REPOSITORY_PATTERN
 
 # 💭 override 변수 이름(docs: TIERS / research/IAM 14-6: BUILD_TIERS·RELEASE_ID, 정준우와 확정 필요)
 ENV_TIERS = "BUILD_TIERS"
@@ -254,13 +255,16 @@ def platform_buildspec() -> str:
 
 
 def docker_hub_repo(image_repository: str) -> str:
-    """인프라 출력 image_repository(`<네임스페이스>/<저장소>`) → IMAGE_REPO(`docker.io/...`)."""
-    value = (
-        image_repository
-        if image_repository.startswith("docker.io/")
-        else ("docker.io/" + image_repository)
-    )
-    return check_image_repo(value)
+    """인프라 출력 image_repository(`<네임스페이스>/<저장소>`) → IMAGE_REPO(`docker.io/...`).
+
+    공통 패턴(IMAGE_REPOSITORY_PATTERN) fullmatch만 받는다. 태그·registry hostname·여분 경로는 거부.
+    """
+    if not re.fullmatch(IMAGE_REPOSITORY_PATTERN, image_repository):
+        raise DdakToolError(
+            ErrorCode.CONFIG_INVALID,
+            "인프라 출력 image_repository 형식이 아니다(<네임스페이스>/<저장소>)",
+        )
+    return check_image_repo("docker.io/" + image_repository)
 
 
 def check_image_repo(image_repo: str) -> str:
