@@ -486,7 +486,7 @@ def test_real_display_diff_masks_typed_or_joined_secret(review_rig, original):
         view = reviews.view("review-parent")
         assert "fixture-private-typed" not in view["items"][0]["diff"]
         assert "fixture-private-typed" not in view["candidate"]["diff"]
-        assert "[REDACTED]" in view["items"][0]["diff"]
+        assert "[가림 · 비밀값]" in view["items"][0]["diff"]
         assert "fixture-private-typed" not in client.get("/runs/review-parent/patch-review").text
         assert (
             digest_bytes(combine_review(display_source, proposals, [p.id for p in proposals]))

@@ -78,19 +78,6 @@ async def progress_page(request: Request, run_id: str):
         ),
         datetime.fromtimestamp(run["created"], UTC).isoformat(),
     )
-    pipeline["lanes_progress"] = {
-        track: {
-            "total": len(pipeline["lanes"][track]),
-            "done": sum(
-                row["status"] in {"succeeded", "failed", "check_failed", "skipped"}
-                for row in pipeline["lanes"][track]
-            ),
-            "started": next(
-                (row["started"] for row in pipeline["lanes"][track] if row["started"]), None
-            ),
-        }
-        for track in ("local", "cloud")
-    }
     links = public_links(run.get("context") or {})
     live_story = result_story(
         run,

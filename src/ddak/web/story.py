@@ -17,6 +17,17 @@ def digest(ref: str | None) -> str:
     return match[1][:12] if match else "기록 없음"
 
 
+def recorded_version(*records: dict) -> str:
+    for record in records:
+        for key in ("version", "ref"):
+            value = record.get(key)
+            if isinstance(value, str):
+                value = value.removeprefix("refs/tags/")
+                if re.fullmatch(r"v[0-9]+(?:\.[0-9]+)*", value):
+                    return value
+    return "버전 기록 없음"
+
+
 def steps(plan: dict) -> list[dict]:
     return [
         s
@@ -92,10 +103,14 @@ def result_story(run: dict, release: dict | None, data: dict) -> dict:
     rows = []
     for env in ("local", "cloud"):
         track = result.get("tracks", {}).get(env, "UNKNOWN")
-        images = release.get("environment_images", {}).get(env, {}).get("images", {})
+        deployed = release.get("environment_images", {}).get(env, {})
+        images = deployed.get("images", {})
         if not images and track == "DONE":
             images = release.get("images", {})
-        old = previous.get(env, {})
+        old = {
+            **context.get("previous_release", {}).get(env, {}),
+            **previous.get(env, {}),
+        }
         for tier in sorted(set(images) | set(old.get("images", {}))):
             rows.append(
                 {
@@ -108,13 +123,19 @@ def result_story(run: dict, release: dict | None, data: dict) -> dict:
                     if track == "ROLLED_BACK"
                     else "적용 미확인",
                     "source_before": (old.get("source_sha") or "")[:7] or "첫 배포 / 기록 없음",
-                    "source_after": (release.get("source_sha") or context.get("source_sha") or "")[
-                        :7
-                    ]
+                    "source_after": (
+                        deployed.get("source_sha")
+                        or release.get("source_sha")
+                        or context.get("source_sha")
+                        or ""
+                    )[:7]
                     or "기록 없음",
+                    "version_before": recorded_version(old),
+                    "version_after": recorded_version(deployed, release, context),
                 }
             )
     checks = []
+    scenarios = []
     for sid, record in records.items():
         if not sid.startswith("verify.") or sid in {
             "verify.report",
@@ -124,27 +145,27 @@ def result_story(run: dict, release: dict | None, data: dict) -> dict:
         }:
             continue
         output = record.get("output") or {}
+        observed = [item for item in output.get("scenarios", []) if isinstance(item, dict)]
+        scenarios.extend(observed)
         env = "local" if sid.endswith(".local") else "cloud" if sid.endswith(".cloud") else "common"
         checks.append(
             {
+                "id": sid,
                 "env": env,
                 "title": step_title(sid),
                 "status": record.get("status"),
                 "elapsed_s": record.get("elapsed_s"),
+                "scenarios": {
+                    "passed": sum(item.get("ok") is True for item in observed),
+                    "total": len(observed),
+                }
+                if "scenarios" in output
+                else None,
                 "sentence": "검증 기록을 확인했습니다."
                 if record.get("status") == "succeeded"
                 else "검증 기준을 통과하지 못했습니다.",
             }
         )
-        for scenario in output.get("scenarios", []):
-            checks.append(
-                {
-                    "env": env,
-                    "title": explain(scenario.get("id"), "scenario"),
-                    "status": "succeeded" if scenario.get("ok") is True else "check_failed",
-                    "elapsed_s": None,
-                }
-            )
     failed = next(
         (
             (sid, records[sid])
@@ -176,13 +197,8 @@ def result_story(run: dict, release: dict | None, data: dict) -> dict:
         if run.get("finished") and run.get("created")
         else None
     )
-    version = (
-        context.get("ref")
-        if re.fullmatch(r"v[0-9]+", context.get("ref") or "")
-        else "버전 기록 없음"
-    )
     return {
-        "version": version,
+        "version": recorded_version(release, context),
         "metrics": {
             "new": sum(
                 item["action"] == "새로 빌드"
@@ -197,8 +213,8 @@ def result_story(run: dict, release: dict | None, data: dict) -> dict:
                 for name, track in result.get("tracks", {}).items()
                 if name in {"local", "cloud"}
             ),
-            "passed": sum(check["status"] == "succeeded" for check in checks),
-            "checks": len(checks),
+            "passed": sum(scenario.get("ok") is True for scenario in scenarios),
+            "checks": len(scenarios),
         },
         "images": rows,
         "checks": checks,
@@ -210,7 +226,7 @@ def result_story(run: dict, release: dict | None, data: dict) -> dict:
         ),
         "build_images": approval_story({"plan": data.get("plan") or {}})["images"],
         "compare": comparison(records),
-        "diagnose": diagnosis(records),
+        "diagnose": diagnosis(records, run.get("status")),
         "execution": pipeline_view(
             run,
             data.get("plan") or {},
@@ -243,15 +259,21 @@ def comparison(records: dict) -> dict:
     }
 
 
-def diagnosis(records: dict) -> dict:
+def diagnosis(records: dict, status: str | None = None) -> dict:
     record = records.get("verify.diagnose", {})
     output = record.get("output") or {}
+    skipped = record.get("status") == "skipped"
     return {
         "available": bool(record),
-        "category": explain(output.get("category"), "category"),
+        "skipped": skipped,
+        "category": "실패가 없어 생략"
+        if skipped and status == "SUCCEEDED"
+        else "이번 실행에서는 생략"
+        if skipped
+        else explain(output.get("category"), "category"),
         "next": "해당 환경의 연결 설정과 검증 결과를 확인하고 새 배포를 준비하세요.",
         "source": SOURCES.get(output.get("source"), ""),
-        "hypothesis": True,
+        "hypothesis": not skipped,
     }
 
 
@@ -367,6 +389,33 @@ def environment_cards(run: dict, story: dict, links: list[dict]) -> list[dict]:
         status = result.get("tracks", {}).get(env, "N/A" if excluded else "RUNNING")
         rows = [row for row in story["execution"] if row["track"] == env]
         active = next((row for row in rows if row["status"] == "running"), None)
+        images = [row for row in story["images"] if row["env"] == env]
+        tiers = {row["tier"].lower() for row in images}
+        tiers.update(row["id"].split(".")[1] for row in rows if row.get("tool") == "deploy_tier")
+        shared_builds = [
+            row
+            for row in story["execution"]
+            if row["track"] == "common"
+            and (row.get("tool") == "build_image" or row["id"].startswith("build."))
+            and row["id"].split(".")[1] in tiers
+            and status not in {"N/A", "SKIPPED"}
+        ]
+        execution = []
+        checks = [row for row in story["checks"] if row["env"] == env]
+        check_ids = {row["id"] for row in checks}
+        for row in [*shared_builds, *rows]:
+            if row["id"] in check_ids:
+                continue
+            item = dict(row)
+            if row.get("tool") == "build_image" or row["id"].startswith("build."):
+                item["build_action"] = (
+                    "재사용"
+                    if row["status"] == "skipped" and "재사용" in row.get("why", "")
+                    else "빌드 생략"
+                    if row["status"] == "skipped"
+                    else "새로 빌드"
+                )
+            execution.append(item)
         cards.append(
             {
                 "env": env,
@@ -376,10 +425,12 @@ def environment_cards(run: dict, story: dict, links: list[dict]) -> list[dict]:
                     env, sum(row.get("elapsed_s") or 0 for row in rows) if rows else None
                 ),
                 "current": active["name"] if active else "다음 작업 준비",
-                "images": [row for row in story["images"] if row["env"] == env],
-                "checks": [row for row in story["checks"] if row["env"] == env],
-                "execution": rows,
-                "link": next((link for link in links if link["label"] == ENV[env]), None),
+                "images": images,
+                "checks": checks,
+                "execution": execution,
+                "link": next((link for link in links if link["label"] == ENV[env]), None)
+                if status == "DONE"
+                else None,
             }
         )
     return cards

@@ -235,7 +235,7 @@ def test_parallel_progress_events_and_confirmation():
     connection.onopen(); assert.equal(progress.dataset.stream,'live');
     send('step.finished',{seq:3,step:'deploy.infra.cloud',target:'cloud',status:'failed',
       detail:'<img onerror=bad()>',elapsed_s:30});
-    assert.equal(infra.parts['[data-step-status]'].textContent,'실패');
+    assert.equal(infra.parts['[data-step-status]'].items.at(-1).textContent,'실패');
     assert.ok(!infra.classList.values.has('is-running'));
     assert.ok(!others['cloud-events'].items.at(-1).textContent.includes('<img'));
     send('step.finished',{seq:3,step:'deploy.infra.cloud',status:'failed'});

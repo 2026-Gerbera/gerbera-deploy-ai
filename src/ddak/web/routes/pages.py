@@ -105,6 +105,7 @@ async def dashboard(request: Request, project: str | None = None):
     project = selected_project(request, project)
     runs = project_runs(service, project)
     links = {}
+    has_cloud_infra = False
     for run in runs:
         run["url"] = run_link(run)
         context = service.get_run(run["run_id"]).get("context") or {}
@@ -118,6 +119,14 @@ async def dashboard(request: Request, project: str | None = None):
             ),
             duration=(run["finished"] - run["created"]) if run.get("finished") else None,
         )
+        if run["status"] in {"AWAITING_APPROVAL", "APPROVED", "RUNNING"}:
+            plan = service.get_display_data(run["run_id"]).get("plan") or {}
+            has_cloud_infra = has_cloud_infra or any(
+                row["track"] == "cloud"
+                and row["status"] != "skipped"
+                and row["tool"] in {"generate_infra", "validate_infra", "plan_infra", "apply_infra"}
+                for row in planned_rows(plan)
+            )
         if run["status"] == "AWAITING_APPROVAL":
             data = service.get_display_data(run["run_id"])
             view = service.approval_view(run["run_id"])
@@ -151,6 +160,11 @@ async def dashboard(request: Request, project: str | None = None):
     storage = None if preparing else (awaiting or {}).get("storage")
     if preparing and service.store.prepared(preparing):
         storage = (service.approval_view(preparing).get("infra_summary") or {}).get("storage")
+    has_cloud_infra = (
+        has_cloud_infra
+        or bool(storage)
+        or any(row.get("id") == "prepare.infra.cloud" for row in preparing_rows)
+    )
     if storage and storage.get("intent") in {"create", "remove"}:
         text = wording("deploy.infra.cloud", storage=storage)
         preparing_rows.append(
@@ -174,6 +188,7 @@ async def dashboard(request: Request, project: str | None = None):
             "runs": runs,
             "settings": settings,
             "preparing_rows": preparing_rows,
+            "has_cloud_infra": has_cloud_infra,
             "state": state,
             "preparations": preparations,
             "preparation_failure": preparation_failure(list(reversed(preparations)), runs),

@@ -3,8 +3,8 @@
 {% for card in environment_cards %}<section class="env {{ card.env }}{% if card.busy %} is-working{% endif %}" data-track-result="{{ card.env }}">
 <h2>{{ target(card.env) }}</h2>{{ state(card.status) }} <span class="numeric">{{ duration(card.elapsed_s) }}</span>
 {% if card.busy %}<div class="track-working"><span class="activity-dots" aria-hidden="true"><i></i><i></i><i></i></span><strong>{{ card.current }}</strong></div>{% endif %}
-{% for image in card.images %}<p>{{ image.tier }} · {{ image.source_before }} → {{ image.source_after }}</p><small><code>{{ image.before }}</code> → <code>{{ image.after }}</code></small>{% endfor %}
-<ul class="compact-checks">{% for row in card.execution %}<li>{{ '✓' if row.status == 'succeeded' else '✕' if row.status in ('failed','check_failed') else '—' }} {{ row.name }} · {{ duration(row.elapsed_s) }}</li>{% endfor %}</ul>
-<ul class="compact-checks">{% for check in card.checks %}<li>{{ '✓' if check.status == 'succeeded' else '—' if check.status == 'skipped' else '✕' }} {{ check.title }}</li>{% endfor %}</ul>
-{% if card.link %}<a class="button secondary" href="{{ card.link.url }}" target="_blank" rel="noopener noreferrer">서비스 열기</a>{% endif %}
+{% for image in card.images %}<p>{{ image.tier }} · {{ image.version_before }} ({{ image.source_before }}) → {{ image.version_after }} ({{ image.source_after }})</p><small><code>{{ image.before }}</code> → <code>{{ image.after }}</code></small>{% else %}<p>버전·이미지 기록 없음</p>{% endfor %}
+<ul class="compact-checks">{% for row in card.execution %}<li>{{ '✓' if row.status == 'succeeded' else '✕' if row.status in ('failed','check_failed') else '—' }} {{ row.name }}{% if row.build_action %} · {{ row.build_action }}{% endif %} · {{ duration(row.elapsed_s) }}</li>{% endfor %}
+{% for check in card.checks %}<li>{{ '✓' if check.status == 'succeeded' else '✕' if check.status in ('failed','check_failed') else '—' }} {{ check.title }}{% if check.scenarios %} · 사용자 시나리오 {{ check.scenarios.passed }} / {{ check.scenarios.total }}{% endif %}</li>{% endfor %}</ul>
+{% if card.link and card.status == 'DONE' %}<a class="button secondary" href="{{ card.link.url }}" target="_blank" rel="noopener noreferrer">서비스 열기</a>{% endif %}
 </section>{% endfor %}</div>

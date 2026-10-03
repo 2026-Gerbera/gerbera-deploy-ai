@@ -83,7 +83,7 @@ def test_dashboard_approval_progress_result_http_flow(rig, monkeypatch, failure)
         client.portal.call(service.wait, rid)
         result = client.get(f"/runs/{rid}/result")
         assert result.status_code == 200
-        assert f"{PUBLIC}/version" in result.text
+        assert f'href="{PUBLIC}"' in result.text
         if failure:
             assert "FAILED_CLOUD" in result.text and "injected cloud failure" in result.text
             assert "승인 기록과 배포 결과를 저장했습니다." not in result.text

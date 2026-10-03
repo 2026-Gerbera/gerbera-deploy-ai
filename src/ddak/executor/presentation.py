@@ -107,7 +107,11 @@ def display_data(store, root: Path, run_id: str) -> dict:
         "mappings": mappings,
         "original_analysis": original_analysis,
         "previous": {
-            env: {"source_sha": entry.get("source_sha"), "images": entry.get("images", {})}
+            env: {
+                "source_sha": entry.get("source_sha"),
+                "images": entry.get("images", {}),
+                **{key: entry[key] for key in ("ref", "version") if entry.get(key)},
+            }
             for env, entry in previous.items()
         },
         "plan": plan,
