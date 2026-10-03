@@ -45,6 +45,15 @@ _UNKNOWN_ALLOWED = {
 }
 
 
+# 중첩 블록에서 plan 값이 확정돼야 하는 leaf. 나머지 leaf는 provider 계산 값으로 본다
+# (provider 버전마다 bucket_key_enabled·blocked_encryption_types 같은 계산 필드가 늘어난다).
+_NESTED_REQUIRED = {
+    "aws_s3_bucket_server_side_encryption_configuration": {
+        "rule": frozenset({"rule[].apply_server_side_encryption_by_default[].sse_algorithm"}),
+    },
+}
+
+
 def _reserved_bucket(project: str, name: str | None) -> bool:
     return isinstance(name, str) and valid_bucket(project, name)
 
@@ -86,8 +95,12 @@ def _require_known(
     where = "" if field == "after_unknown" else f" ({field})"
     allowed = _UNKNOWN_ALLOWED.get(kind, frozenset()) if field == "after_unknown" else frozenset()
     guarded = _KNOWN_REQUIRED[kind] | set(configured)
+    nested = _NESTED_REQUIRED.get(kind, {}) if field == "after_unknown" else {}
     for path in _flagged_paths(flags):
-        if _path_text(path, pattern=True) in allowed:
+        pattern = _path_text(path, pattern=True)
+        if pattern in allowed:
+            continue
+        if len(path) > 1 and path[0] in nested and pattern not in nested[path[0]]:
             continue
         # 설정하지 않은 provider 계산 속성이 통째로 미확정인 경우만 넘긴다.
         if len(path) == 1 and path[0] not in guarded:
