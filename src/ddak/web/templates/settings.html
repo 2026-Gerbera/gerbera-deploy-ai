@@ -3,6 +3,13 @@
 {% block breadcrumb %}Project settings{% endblock %}
 {% block content %}
 <section class="page-heading"><div><p class="eyebrow">PROJECT SETTINGS</p><h1>실배포 연결 설정</h1><p>소스 저장소, 배포 대상과 공개 도메인을 구성합니다.</p></div><a class="button secondary" href="/">← 대시보드</a></section>
+{% if request.query_params.get('saved') == '1' %}
+<div class="toast toast-success" role="status" aria-live="polite" data-toast>
+  <span class="toast-icon">✓</span>
+  <div><strong>저장 완료</strong><p>변경사항이 안전하게 저장되었습니다.</p></div>
+  <button type="button" aria-label="알림 닫기" data-toast-close>×</button>
+</div>
+{% endif %}
 <form class="settings-layout" method="post" action="/settings">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   <input type="hidden" name="project" value="{{ project }}">

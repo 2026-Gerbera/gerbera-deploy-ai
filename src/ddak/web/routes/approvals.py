@@ -15,6 +15,8 @@ async def approval_page(request: Request, run_id: str):
         view = deployment(request).approval_view(run_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="실행을 찾을 수 없습니다") from exc
+    except DdakToolError:
+        return RedirectResponse(f"/runs/{run_id}/result", status_code=303)
     token = csrf_token(request)
     response = templates.TemplateResponse(
         request=request,
