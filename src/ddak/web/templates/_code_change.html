@@ -1,0 +1,9 @@
+{% macro code_change(card, findings=[]) -%}
+<article class="code-change">
+  <header><strong><code>{{ card.file }} {{ card.line }}–{{ card.end }}행</code></strong> <span class="actor">규칙 판정</span>
+  {% set matches = findings|selectattr('file','equalto',card.file)|list %}
+  {% set count = namespace(value=0) %}{% for finding in matches if finding.line >= card.line and finding.line <= card.end %}{% set count.value = count.value + 1 %}{% endfor %}
+  {% if count.value %}<span> · 하드코딩 {{ count.value }}곳</span>{% endif %}</header>
+  <ol>{% for row in card.rows %}<li class="{{ row.kind }}"><span class="numeric">{{ row.old or row.new }}</span><span aria-hidden="true">{{ '−' if row.kind == 'del' else '+' if row.kind == 'add' else ' ' }}</span><div><code>{{ row.text }}</code>{% for finding in matches if row.old == finding.line %}<small> ← 탐지 · {{ narrative_patterns.get(finding.pattern_id, ('환경 의존 설정',''))[0] }}</small>{% endfor %}</div></li>{% endfor %}</ol>
+</article>
+{%- endmacro %}

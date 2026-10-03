@@ -9,6 +9,7 @@ from dataclasses import replace
 from functools import partial
 from typing import Any
 
+from ddak.core.code_mask import code_changes
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.contracts.patch_review import CodeProposal
 from ddak.core.patch_ledger import PatchLostError
@@ -307,26 +308,21 @@ class PatchReviews:
         if data["busy"] or data["state"] == "patch_lost":
             return data
         proposals = self.proposals(data)
-        data["items"] = [
-            {
-                **item.model_dump(mode="json"),
-                "diff": redact(self.diff(p.source, item, proposals), max_len=None),
+
+        def preview(item, peers):
+            cards = code_changes(self.diff(p.source, item, peers), p.source)
+            return {
+                "changes": cards,
+                "diff": "\n".join(row["text"] for card in cards for row in card["rows"]),
             }
-            for item in proposals
+
+        data["items"] = [
+            {**item.model_dump(mode="json"), **preview(item, proposals)} for item in proposals
         ]
         if data.get("candidate"):
             candidate = CodeProposal.model_validate(data["candidate"]["proposal"])
-            data["candidate"] = {
-                **data["candidate"],
-                "diff": redact(
-                    self.diff(
-                        p.source,
-                        candidate,
-                        [candidate if item.id == candidate.id else item for item in proposals],
-                    ),
-                    max_len=None,
-                ),
-            }
+            peers = [candidate if item.id == candidate.id else item for item in proposals]
+            data["candidate"] = {**data["candidate"], **preview(candidate, peers)}
         return data
 
     async def shutdown(self) -> None:

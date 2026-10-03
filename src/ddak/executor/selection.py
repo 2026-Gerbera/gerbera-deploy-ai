@@ -5,6 +5,13 @@ from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.contracts.plan import Plan, Section
 from ddak.core.snapshots import digest_json
 
+# plan/validate가 바뀐 것이 없는 환경을 통째로 뺄 때 남기는 skip_rule
+_ENV_UNCHANGED = "env_unchanged"
+
+
+def _unchanged(section: Section) -> bool:
+    return not section.steps and any(s.skip_rule == _ENV_UNCHANGED for s in section.skipped)
+
 
 def select_plan(plan: Plan, ctx: RunContext) -> Plan:
     if ctx.targets is None:
@@ -14,7 +21,11 @@ def select_plan(plan: Plan, ctx: RunContext) -> Plan:
         if ctx.targets == "both"
         else ("local" if ctx.targets == "onprem" else "cloud",)
     )
-    if any(not getattr(plan.deploy, target).steps for target in required):
+    sections = [getattr(plan.deploy, target) for target in required]
+    # both에서 빈 섹션은 변경 없는 환경을 뺀 경우만 허용한다. 남는 환경은 하나 이상이어야 한다.
+    if any(
+        not s.steps and not (ctx.targets == "both" and _unchanged(s)) for s in sections
+    ) or not any(s.steps for s in sections):
         raise DdakToolError(ErrorCode.PLAN_INVALID, "선택한 대상의 배포 계획이 없다")
     if ctx.targets == "both":
         return plan

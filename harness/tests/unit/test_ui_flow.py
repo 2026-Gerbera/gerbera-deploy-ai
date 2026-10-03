@@ -245,20 +245,29 @@ def test_polling_refresh_retry_and_teardown_without_post():
     assert result.returncode == 0, result.stderr
 
 
-def test_onboarding_checklist_participates_in_dashboard_refresh(rig):
+@pytest.mark.parametrize("status", ["gray", "red"])
+def test_onboarding_attention_participates_in_dashboard_refresh(rig, status):
     from types import SimpleNamespace
 
     service, source, _ = rig
     prepare(service, source)
-    checklist = [{"label": "연결 검사", "status": "gray", "detail": "아직 미확인"}]
+    checklist = [{"label": "연결 검사", "status": status, "detail": "확인이 필요합니다"}]
+    checklist.append({"label": "빌드 연결", "status": "green", "detail": "연결됨"})
     service.onboarding = SimpleNamespace(view=lambda _: {"checklist": checklist})
     with client_for(service) as client:
         initial = client.get("/?project=flaskr-three").text
-        assert "연결 상태 점검표" in initial and "아직 미확인" in initial
+        assert "연결 확인이 필요합니다" in initial and "연결 상태 점검표" not in initial
+        assert 'href="/settings?project=flaskr-three#connection-checklist"' in initial
+        settings = client.get("/settings?project=flaskr-three").text
+        assert "연결 상태 점검표" in settings and "확인이 필요합니다" in settings
+        assert ("미확인" if status == "gray" else "오류") in settings
         checklist[0].update(status="green", detail="연결됨")
         updated = client.get("/?project=flaskr-three").text
         assert version(initial) != version(updated)
-        assert "연결됨" in updated and 'href="/setup?project=flaskr-three"' in updated
+        assert "연결 확인이 필요합니다" not in updated
+        assert "연결 상태 점검표" not in updated and "연결됨" not in updated
+        settings = client.get("/settings?project=flaskr-three").text
+        assert "연결 확인됨" in settings and "연결됨" in settings
 
 
 def test_setup_operation_result_retains_onboarding_redirect(rig):

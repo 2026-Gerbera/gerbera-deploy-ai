@@ -1,15 +1,20 @@
-"""경계 정책 diff와 적용 버전의 독립 템플릿 렌더 회귀."""
+"""경계 정책 diff와 적용 버전의 템플릿 렌더 회귀(라우트 없이 제품 템플릿 환경만 쓴다)."""
 
-from pathlib import Path
-
-from jinja2 import Environment, FileSystemLoader
-
-TEMPLATES = Path(__file__).resolve().parents[3] / "src" / "ddak" / "web" / "templates"
+from ddak.web.dependencies import templates
+from ddak.web.story import environment_cards, result_story
 
 
 def _render(name: str, **context: object) -> str:
-    environment = Environment(loader=FileSystemLoader(TEMPLATES), autoescape=True)
-    return environment.get_template(name).render(request={"url": {"path": "/fixture"}}, **context)
+    if name == "result.html":
+        # 결과 라우트와 같이 실행 기록에서 서술 데이터를 만든다.
+        run = {**context["run"], "result": context["result"]}
+        story = result_story(run, None, {"events": []})
+        context = {
+            "story": story,
+            "environment_cards": environment_cards(run, story, []),
+            **context,
+        }
+    return templates.env.get_template(name).render(request={"url": {"path": "/fixture"}}, **context)
 
 
 def test_approval_renders_policy_diffs_and_escapes_values() -> None:
@@ -131,4 +136,4 @@ def test_empty_boundary_contract_keeps_legacy_pages_renderable() -> None:
 
     assert "배포 승인" in approval_html
     assert "권한 경계 정책 버전" not in result_html
-    assert "단계별 실행 결과" in result_html
+    assert "단계별 실행 기록" in result_html

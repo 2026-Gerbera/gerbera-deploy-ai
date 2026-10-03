@@ -19,10 +19,10 @@
 {%- endmacro %}
 {% block content %}
 <style>
-  .setup-config { width: 100%; padding: 14px; border: 1px solid var(--line); border-radius: 0; background: var(--paper); color: var(--ink); font: 12px ui-monospace, monospace; resize: vertical; }
+  .setup-config { width: 100%; padding: 14px; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--surface); color: var(--ink); font: 13px ui-monospace, monospace; resize: vertical; }
   .setup-plan { white-space: pre-wrap; overflow-wrap: anywhere; }
   .setup-source { display: block; margin-top: 4px; color: var(--muted); }
-  .setup-feedback { margin-top: 12px; padding: 14px; border: 1px solid #ad4e28; background: #fff7ef; color: var(--ink); overflow-wrap: anywhere; }
+  .setup-feedback { margin-top: 12px; padding: 14px; border: 1px solid var(--failure); background: var(--failure-bg); color: var(--ink); overflow-wrap: anywhere; }
   .setup-feedback[hidden] { display: none; }
 </style>
 <section class="page-heading"><div><p class="eyebrow">PROJECT SETUP</p><h1>초기 연결 설정</h1><p>AI, 온프레미스 환경, 비밀값과 빌드 준비를 설정하고 실제 연결을 확인합니다.</p></div><a class="button secondary" href="/settings?project={{ project|urlencode }}">프로젝트 설정 →</a></section>

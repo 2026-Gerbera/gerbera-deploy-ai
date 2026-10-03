@@ -22,6 +22,7 @@ from ddak.core.project_settings import ProjectSettings
 from ddak.executor.engine import RunStatus
 from ddak.executor.service import DeploymentService
 from ddak.web.form_errors import form_context, form_error_for, form_return_to
+from ddak.web.narrative import ERRORS, PATTERNS, RULES, SOURCES, explain, short_summary, wording
 from ddak.web.story import approval_story
 
 ROOT = Path(__file__).resolve().parent
@@ -39,7 +40,16 @@ templates = Jinja2Templates(
     directory=ROOT / "templates", context_processors=[navigation_context, form_context]
 )
 templates.env.globals.update(
-    form_error_for=form_error_for, form_return_to=form_return_to, approval_story=approval_story
+    form_error_for=form_error_for,
+    form_return_to=form_return_to,
+    approval_story=approval_story,
+    step_wording=wording,
+    narrative_explain=explain,
+    short_summary=short_summary,
+    narrative_errors=ERRORS,
+    narrative_patterns=PATTERNS,
+    narrative_rules=RULES,
+    narrative_sources=SOURCES,
 )
 
 

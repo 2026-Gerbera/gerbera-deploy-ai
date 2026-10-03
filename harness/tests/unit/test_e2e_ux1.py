@@ -37,10 +37,10 @@ def test_approval_actions_precede_details_and_basis_is_summarized(rig):
     assert html.count('value="approved"') == html.count('value="denied"') == 2
     assert before.index('class="approval-bar"') < before.index("준비 경고")
     assert before.index('class="approval-bar"') < before.index('id="decision-basis"')
-    assert 'data-label="포함 단계">2개' in before
-    assert 'data-label="제외 단계">1개' in before
+    assert "필수 단계·허용 입력·DB 변경 순서" in before
+    assert "배포 계획" in before
     assert "총 3개 · 비밀 1개 · 일반 2개" in before
-    assert "Claude CLI · fixture-model" in before
+    assert "fixture-model" not in before and "fixture-model" in technical
 
 
 @pytest.mark.parametrize("page", ["approval", "result", "ops"])
@@ -66,4 +66,4 @@ def test_error_macro_only_renders_real_errors_or_inert_prototype():
     assert not macro().strip()
     error = macro({"code": "CONFIG_INVALID", "message": "설정 확인 필요"})
     assert 'role="alert"' in error and "hidden" not in error.split(">", 1)[0]
-    assert "⚠" in error and "오류" in error and "설정 확인 필요" in error
+    assert "✕" in error and "오류" in error and "설정 확인 필요" in error

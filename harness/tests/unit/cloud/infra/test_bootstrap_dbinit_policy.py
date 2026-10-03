@@ -8,7 +8,6 @@ from unittest.mock import Mock
 
 import pytest
 from hcl2.api import loads
-from jinja2 import Environment, FileSystemLoader
 
 from ddak.cloud.infra import foundation
 from ddak.cloud.infra.plan import _masked, summarize_plan
@@ -16,6 +15,7 @@ from ddak.cloud.infra.policy import PolicyViolation, policy_json, static_gate
 from ddak.cloud.infra.providers.aws import boundary_document
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.executor.approval_meta import encode_meta
+from ddak.web.dependencies import templates as web_templates
 from tests.unit.cloud.infra import test_bluegreen_foundation as b
 from tests.unit.cloud.infra import test_runtime as f
 from tests.unit.cloud.test_aws_credentials import SELECTION, StubSessions
@@ -258,18 +258,13 @@ def test_runtime_approval_contains_dbinit_exception_and_foundation_hash(tmp_path
     describe = next(row for row in row["app_boundary"] if row["Action"] == ACTIONS[1])
     assert describe["Resource"] == MASKED
     assert describe["Condition"]["ArnLike"]["aws:PrincipalArn"].endswith("/ddak-*-dbinit-exec")
-    templates = Path(foundation.__file__).parents[2] / "web" / "templates"
-    html = (
-        Environment(loader=FileSystemLoader(templates), autoescape=True)
-        .get_template("approval.html")
-        .render(
-            approval={
-                "run_id": "run-1",
-                "infra_summary": json.loads(encoded),
-                "subjects": {"infra": summary["plan_sha256"]},
-            },
-            request={"url": {"path": "/runs/run-1/approval"}},
-        )
+    html = web_templates.get_template("approval.html").render(
+        approval={
+            "run_id": "run-1",
+            "infra_summary": json.loads(encoded),
+            "subjects": {"infra": summary["plan_sha256"]},
+        },
+        request={"url": {"path": "/runs/run-1/approval"}},
     )
     assert "rds!db-*" in html and "ap-northeast-2" in html
     assert ADDRESS in html and all(action in html for action in ACTIONS)

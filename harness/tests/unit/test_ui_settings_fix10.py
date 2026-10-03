@@ -55,6 +55,7 @@ class Service(DeploymentService):
         self._preparation_tasks = {}
         self._preparation_requests = {}
         self._preparing_runs = {}
+        self._watch_waiting = {}
         self.planning_flow = None
 
     def list_runs(self, limit: int = 20) -> list[dict[str, Any]]:

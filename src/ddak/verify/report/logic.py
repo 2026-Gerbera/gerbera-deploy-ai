@@ -64,7 +64,7 @@ def post_report(inp: PostReportInput, ctx: RunContext) -> PostReportOutput:
             instruction=Path(__file__).with_name("prompt.md").read_text(),
             data=json.dumps(facts, ensure_ascii=False),
             output_model=ReportNarrative,
-            prompt_version="report-v2",
+            prompt_version="report-v3",
             settings=replace(Settings.from_env(), ai_timeout_s=20, ai_retries=0),
         )
         narrative = ReportNarrative.model_validate(redact_obj(result.value.model_dump()))

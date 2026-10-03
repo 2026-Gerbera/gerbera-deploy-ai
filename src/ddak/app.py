@@ -312,6 +312,15 @@ def _watch_targets(service: DeploymentService) -> list[WatchTarget]:
     return _watch_configuration(service)[0]
 
 
+def _awaiting_source(service: DeploymentService, project: str, sha: str) -> bool:
+    """같은 소스 SHA의 승인 대기 run이 이미 있다(수동 준비 포함)."""
+    return any(
+        row["status"] == "AWAITING_APPROVAL"
+        and (service.get_run(row["run_id"]).get("context") or {}).get("source_sha") == sha
+        for row in service.list_runs(project=service.resolve_project(project))
+    )
+
+
 def _project_fetch_policy(service, base: FetchPolicy, project: str, url: str) -> FetchPolicy:
     if service.onboarding is None:
         return base
@@ -338,14 +347,32 @@ def _attach_watch(app: FastAPI, settings: Settings) -> None:
             async with source_locks.setdefault(identity, asyncio.Lock()):
                 # stop 직전 큐에 있던 callback도 현재 소유권을 다시 확인한다.
                 if t not in _watch_targets(service):
+                    service.clear_watch_waiting(t.project)
                     return
-                if seen.get(identity) == sha or service.store.has_auto_run(t.repo_url, t.ref, sha):
+                if (
+                    seen.get(identity) == sha
+                    or service.store.has_auto_run(t.repo_url, t.ref, sha)
+                    or (
+                        service.watch_waiting(t.project) == sha
+                        and _awaiting_source(service, t.project, sha)
+                    )
+                ):
+                    service.clear_watch_waiting(t.project)
                     return
+                if service.preparation_blocked_by_run(t.project):
+                    # 실행 중 배포와 겹친 커밋: 감시가 저장하지 않고 다음 주기에 다시 부른다.
+                    service.mark_watch_waiting(t.project, sha)
+                    raise DdakToolError(ErrorCode.LOCK_HELD, "다른 배포가 끝나면 이어서 준비")
                 rid = await _prepare_commit(service, settings, t, sha, policy=policy)
                 row = service.get_run(rid)
                 if row["status"] == "FAILED_BEFORE_DEPLOY":
                     code = (row.get("result") or {}).get("code", ErrorCode.INTERNAL.value)
+                    if code == ErrorCode.LOCK_HELD.value:
+                        service.mark_watch_waiting(t.project, sha)
+                    else:
+                        service.clear_watch_waiting(t.project)
                     raise DdakToolError(ErrorCode(code), f"배포 준비 실패: {rid}")
+                service.clear_watch_waiting(t.project)
                 seen[identity] = sha  # 실패·취소된 준비는 새 owner가 같은 SHA로 재시도한다.
         finally:
             callbacks.discard(callback)
@@ -370,6 +397,8 @@ def _attach_watch(app: FastAPI, settings: Settings) -> None:
                     if callbacks:
                         # Watcher.stop은 handler를 취소만 한다. 정리 완료 뒤 새 owner를 띄운다.
                         await asyncio.gather(*tuple(callbacks), return_exceptions=True)
+                    # 대기 커밋은 감시 파일에 저장하지 않았다. 새 감시가 다시 찾아 표시한다.
+                    a.state.deployment.clear_watch_waiting()
 
                 try:
                     while not stopped.is_set():
@@ -694,7 +723,12 @@ async def _prepare_commit_inner(
             context = await asyncio.to_thread(prepare_storage_context, context, service.root)
             subjects, infra_summary = await _infra_approval(service, bundle.plan, context)
         except DdakToolError as exc:
-            if request.target != "both" or not bundle.plan.deploy.local.steps:
+            # 잠금 충돌은 클라우드 준비 실패가 아니다. 준비 전체를 실패시켜 감시가 다시 시도한다.
+            if (
+                exc.code is ErrorCode.LOCK_HELD
+                or request.target != "both"
+                or not bundle.plan.deploy.local.steps
+            ):
                 raise
             context = replace(
                 context,
@@ -1388,8 +1422,11 @@ def _configure_patch_review(service: DeploymentService, settings: Settings) -> N
                     ErrorCode.PRECONDITION_FAILED,
                     "검토 중 배포 기준이 바뀌었습니다. 다시 준비하세요",
                 )
+            facts = redact_obj(bundle.facts.model_dump(mode="json"))
+            for key in facts.get("env_keys", []):
+                key["reason"] = None
             plan = _platform_bootstrap_plan(bundle.plan, context, infra_summary)
-            return service.prepare(
+            child = service.prepare(
                 plan,
                 context,
                 source,
@@ -1401,6 +1438,13 @@ def _configure_patch_review(service: DeploymentService, settings: Settings) -> N
                 expected_settings_version=original.project_settings.get("version", 0),
                 review_parent=(prepared.plan.run_id, draft["revision"]),
             )
+            directory = run_dir(service.root / "runs", run_id)
+            directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+            path = directory / "facts.json"
+            path.touch(mode=0o600, exist_ok=True)
+            path.write_text(json.dumps(facts, ensure_ascii=False, indent=2) + "\n")
+            return child
+
         except (Exception, asyncio.CancelledError) as exc:
             failure = (
                 DdakToolError(

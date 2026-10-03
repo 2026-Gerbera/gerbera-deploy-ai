@@ -5,6 +5,7 @@ from __future__ import annotations
 import socket
 import subprocess
 from dataclasses import replace
+from functools import partial
 from pathlib import Path
 
 import pytest
@@ -203,6 +204,12 @@ def test_wrapper_mixed_reads_keep_required_floor_in_plan(tmp_path, required, req
         source_snapshot_hash="sha256:" + "a" * 64,
         facts_hash="sha256:" + "a" * 64,
     )
+    if not required:
+        # 필수 키가 없으면 두 환경 모두 바뀐 것이 없다: 계획 대신 배포할 변경 없음으로 끝난다.
+        with pytest.raises(DdakToolError) as error:
+            validate_plan(ValidatePlanInput(run_id=ctx.run_id, facts=facts), ctx)
+        assert error.value.code is ErrorCode.PRECONDITION_FAILED
+        return
     plan = validate_plan(ValidatePlanInput(run_id=ctx.run_id, facts=facts), ctx)
     for env in ("local", "cloud"):
         section = getattr(plan.deploy, env)
@@ -265,7 +272,8 @@ def test_flow_context_patch_smoke_previous_and_stage_records(tmp_path, target, p
         cloud_domain="example.test",
         platform={"local_build": {"source": "fixture"}},
     )
-    bundle = flow.plan_deployment(
+    plan_deployment = partial(
+        flow.plan_deployment,
         DeployRequest(
             project="demo", repo_url="https://github.com/o/r", target=target, code_patch=patched
         ),
@@ -279,6 +287,20 @@ def test_flow_context_patch_smoke_previous_and_stage_records(tmp_path, target, p
         patch_preparer=prepare,
         record_stage=lambda *args: events.append(args),
     )
+    if not patched:
+        # 바뀐 것도 패치도 없으면 선택 환경이 모두 빠진다: 재지시 없이 배포할 변경 없음으로 끝낸다.
+        with pytest.raises(DdakToolError) as error:
+            plan_deployment()
+        assert error.value.code is ErrorCode.PRECONDITION_FAILED
+        assert error.value.message == "배포할 변경 없음"
+        assert [(name, status) for name, _, status in events][-2:] == [
+            ("plan", "succeeded"),
+            ("validate", "failed"),
+        ]
+        before = seen[0][1]
+        assert not any(changed for tiers in before.changed.values() for changed in tiers.values())
+        return
+    bundle = plan_deployment()
     source, before, context = seen[0]
     selected = {"local", "cloud"} if target == "both" else {target}
     assert set(before.changed) == set(before.db_initialized) == selected

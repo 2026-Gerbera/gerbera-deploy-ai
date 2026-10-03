@@ -6,6 +6,7 @@ from collections.abc import Collection
 
 from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.enums import By, Layer
+from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.contracts.plan import (
     Invalidated,
     Plan,
@@ -115,7 +116,28 @@ def assemble(
     # R-couple이 다시 포함시킨 step은 강제 제외 기록이 틀리므로 지운다
     invalid = [i for i in invalid if not (i.result == "forced_skip" and chosen[i.id][0])]
 
-    # 3) 조립: 신호 의존은 카탈로그 값을 그대로 사용한다.
+    # 3) env_unchanged: 상태를 바꾸는 step이 없는 환경은 헬스·스모크만 남기지 않고 통째로 뺀다.
+    envs = ["local", "cloud"] if facts.target == "both" else [facts.target]
+    idle = R.unchanged_envs(facts, catalog, {sid: c[0] for sid, c in chosen.items()})
+    if len(idle) == len(envs):
+        # PLAN_INVALID가 아니다: AI 재지시로 고칠 수 있는 계획 오류가 아니다.
+        raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "배포할 변경 없음")
+    if idle:
+        dropped = {s.id for s in catalog if s.section in {f"deploy.{e}" for e in idle}}
+        dropped.add("verify.compare")  # 남은 활성 환경이 하나뿐이다
+        if "cloud" in idle:
+            dropped.add("verify.watch.cloud")
+        moved = {sid for sid in dropped if sid in chosen and chosen[sid][0]}
+        for sid in moved:
+            params = chosen[sid][1]
+            chosen[sid] = (False, params, R.ENV_UNCHANGED_REASON, By.RULE, R.R_ENV_UNCHANGED)
+        invalid = [i for i in invalid if not (i.result == "forced_include" and i.id in moved)]
+        for env in idle:
+            label = {"local": "온프레미스", "cloud": "클라우드"}[env]
+            warns.append(R.warning(R.W_ENV_UNCHANGED, f"{label}: {R.ENV_UNCHANGED_REASON}"))
+        envs = [e for e in envs if e not in idle]
+
+    # 4) 조립: 신호 의존은 카탈로그 값을 그대로 사용한다.
     sections = {k: Section() for k in ("build", "deploy.local", "deploy.cloud", "verify")}
     sections["build"] = Section(signal="images_ready")
     for s in catalog:
@@ -133,7 +155,6 @@ def assemble(
                 )
             )  # fmt: skip
 
-    envs = ["local", "cloud"] if facts.target == "both" else [facts.target]
     R.check_migrations(facts, {e: sections[f"deploy.{e}"].steps for e in envs})
 
     return Plan(

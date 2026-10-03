@@ -1,0 +1,6 @@
+{% macro pipeline(current, infra=false, patch=true) -%}
+<ol class="pipeline-rail" aria-label="배포 흐름" data-pipeline-rail>
+{% for id, title in [('detect','감지'),('analyze','분석'),('patch','코드 수정 제안'),('plan','계획'),('validate','계획 검증'),('infra','클라우드 구성'),('approval','승인'),('build','빌드'),('deploy','배포 · 온프레미스‖클라우드'),('verify','검증'),('compare','비교'),('report','보고')] %}
+{% if (id != 'infra' or infra) and (id != 'patch' or patch) %}<li data-rail-step="{{ id }}"{% if current == id %} aria-current="step"{% endif %}>{{ title }}</li>{% endif %}
+{% endfor %}</ol>
+{%- endmacro %}

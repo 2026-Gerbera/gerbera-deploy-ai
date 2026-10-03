@@ -64,7 +64,7 @@ def test_dashboard_approval_progress_result_http_flow(rig, monkeypatch, failure)
         assert "https://app.example.com/version" in home.text
         approval = client.get(f"/runs/{rid}/approval")
         assert approval.status_code == 200
-        for visible in ("a" * 40, "deploy.was.local", "Docker Hub 로그인 확인 불가", HASH):
+        for visible in ("a" * 40, "deploy.was.local", "준비 경고", HASH):
             assert visible in approval.text
         alias = client.get(f"/ops/runs/{rid}/approval")
         assert alias.status_code == 200 and alias.text == approval.text
@@ -75,7 +75,7 @@ def test_dashboard_approval_progress_result_http_flow(rig, monkeypatch, failure)
         assert progress.status_code == 200
         assert 'data-activity="running"' in progress.text
         assert 'class="activity-dots"' in progress.text
-        assert "각 단계의 작업과 경과 시간" in progress.text
+        assert "현재 작업" in progress.text and "전체 경과" in progress.text
         assert "FAILED_VERIFY" in progress.text and "SUPERSEDED" in progress.text
         assert f'href="/runs/{rid}/progress"' in client.get(f"/?project={PROJECT}").text
         assert client.portal is not None
@@ -137,7 +137,7 @@ def test_failed_preparation_redirects_and_redacts_diagnostics(rig, monkeypatch):
         for word in ("phase", "prepare", "CONFIG_INVALID", "missing_tool", "build_image"):
             assert word in result.text
         assert sentinel not in result.text and "<script>bad()" not in result.text
-        assert "[REDACTED]" in result.text and "&lt;script&gt;" in result.text
+        assert "[REDACTED]" in result.text and "\\u003cscript\\u003e" in result.text
         assert "인프라 변경 후 실행이 실패했습니다" in result.text
         assert (
             "인프라 변경 없음" not in result.text
@@ -247,20 +247,21 @@ def test_progress_js_uses_server_terminal_states_and_ignores_stepless_events():
           terminalStates: JSON.stringify(['SUCCEEDED','FAILED_VERIFY','SUPERSEDED'])}}
         : null,
       querySelectorAll: (selector) => {
-        if (selector === '[data-phase]') activations++;
+        activations++;
         return [];
       },
       createElement: () => ({}),
       getElementById: (id) => id === 'result-link'
-        ? {classList:{remove:()=>{visible=true;}}} : list,
+        ? {classList:{remove:()=>{visible=true;}}} : null,
     };
     vm.runInNewContext(fs.readFileSync(process.argv[1], 'utf8'), {document, EventSource});
+    const cachedQueries=activations;
     listeners['step.started']({data:JSON.stringify({type:'step.started',step:'build.was'})});
-    assert.equal(activations,1);
+    assert.equal(activations,cachedQueries);
     listeners['gate.opened']({data:JSON.stringify({type:'gate.opened'})});
-    assert.equal(activations,1);
+    assert.equal(activations,cachedQueries);
     listeners['run.state']({data:JSON.stringify({type:'run.state',status:'FAILED_VERIFY'})});
-    assert.equal(activations,1);
+    assert.equal(activations,cachedQueries);
     assert.ok(closed && visible);
     """
     # pyright[nodejs]가 이미 공급하는 런타임. PATH의 gitleaks 유무와 무관하다.

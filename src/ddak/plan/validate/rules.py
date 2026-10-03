@@ -6,6 +6,7 @@ from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from ddak.core.contracts.enums import Effect
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.contracts.plan import PlanStep, PlanWarning
 from ddak.core.contracts.plan_draft import StepDecision
@@ -19,9 +20,13 @@ R_COUPLE = "R-couple"
 R_GATE = "R-gate"
 R_FACTS = "R-facts"
 R_MIGRATION = "R-migration"
+# 상태를 바꾸는 step이 하나도 없는 환경은 이번 실행에서 뺀다(skip_rule·경고 코드 공용).
+R_ENV_UNCHANGED = "env_unchanged"
 
 W_ITEM_DROPPED = "ai_draft_item_dropped"
 W_MIGRATION_MODIFIED = "migration_modified"
+W_ENV_UNCHANGED = R_ENV_UNCHANGED
+ENV_UNCHANGED_REASON = "바뀐 것이 없어 이번 실행에서 제외"
 
 
 def clip(text: str, limit: int = 200) -> str:
@@ -182,6 +187,26 @@ def rule_eval(step: StepDef, facts: Facts) -> RuleResult:
     else:
         raise _invalid(f"조건부 step {step.id}의 규칙 {rule}을 모른다")
     return RuleResult(inc, params, why)
+
+
+def unchanged_envs(
+    facts: Facts, catalog: Iterable[StepDef], included: Mapping[str, bool]
+) -> list[str]:
+    """env_unchanged: 포함 step 중 READ가 아닌 step이 하나도 없는 환경.
+
+    READ가 아닌 step = 배포·설정·DB 초기화·마이그레이션·스토리지·인프라·시크릿. 그런 환경에는
+    이전 이미지도 넘어가지 않으므로 헬스·스모크만 남기면 실행이 실패한다.
+    """
+    steps = list(catalog)
+    return [
+        env
+        for env in _envs(facts)
+        if not any(
+            included[s.id] and s.effect is not Effect.READ
+            for s in steps
+            if s.section == f"deploy.{env}"
+        )
+    ]
 
 
 def couple_targets(facts: Facts, tiers: Iterable[str]) -> list[str]:

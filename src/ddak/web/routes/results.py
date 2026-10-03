@@ -14,7 +14,7 @@ from ddak.web.dependencies import (
     templates,
 )
 from ddak.web.form_errors import FormRoute
-from ddak.web.story import result_story
+from ddak.web.story import environment_cards, result_story
 
 router = APIRouter(prefix="/runs", route_class=FormRoute)
 
@@ -46,6 +46,11 @@ async def result_page(request: Request, run_id: str):
                 )
         return RedirectResponse(run_link(run), status_code=303)
     summary = deployment(request).reports.get(run_id)
+    display = {
+        **deployment(request).get_display_data(run_id),
+        "events": deployment(request).events(run_id),
+    }
+    story = result_story(run, deployment(request).get_release(run_id), display)
     return templates.TemplateResponse(
         request=request,
         name="result.html",
@@ -53,10 +58,9 @@ async def result_page(request: Request, run_id: str):
             "run": redact_obj(run),
             "report_summary": summary,
             "summary_version": live_version(summary),
-            "story": result_story(
-                run,
-                deployment(request).get_release(run_id),
-                deployment(request).get_display_data(run_id),
+            "story": story,
+            "environment_cards": environment_cards(
+                run, story, public_links(run.get("context") or {})
             ),
             "project": run["project"],
             "result": redact_obj(run.get("result") or {}),

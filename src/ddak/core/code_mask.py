@@ -1,0 +1,157 @@
+"""값을 제거한 파일에서만 표시용 변경 줄을 만든다."""
+
+from __future__ import annotations
+
+import ast
+import difflib
+import io
+import re
+import tokenize
+from pathlib import Path
+
+KEY = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
+MASK = "[REDACTED]"
+
+
+def masked_code(code: str) -> str:
+    """파일 전체를 파싱한다. 불완전한 코드는 줄 수를 유지하며 닫는다."""
+    lines = code.splitlines(keepends=True)
+    try:
+        tree = ast.parse(code)
+        allowed = set()
+        for node in ast.walk(tree):
+            keys = []
+            if isinstance(node, ast.Subscript):
+                keys = [node.slice]
+            elif isinstance(node, ast.Dict):
+                keys = node.keys
+            elif isinstance(node, ast.Call) and ast.unparse(node.func) in {
+                "os.getenv",
+                "getenv",
+                "os.environ.get",
+                "environ.get",
+            }:
+                keys = node.args[:1]
+            for key in keys:
+                if (
+                    isinstance(key, ast.Constant)
+                    and isinstance(key.value, str)
+                    and KEY.fullmatch(key.value)
+                ):
+                    # AST 열은 UTF-8 바이트, tokenizer 열은 문자 기준이다.
+                    column = len(lines[key.lineno - 1].encode()[: key.col_offset].decode())
+                    allowed.add((key.lineno, column))
+        offsets = [0]
+        for line in lines:
+            offsets.append(offsets[-1] + len(line))
+        spans = []
+        for token in tokenize.generate_tokens(io.StringIO(code).readline):
+            if token.type in {
+                getattr(tokenize, name, -1)
+                for name in ("FSTRING_START", "FSTRING_MIDDLE", "FSTRING_END")
+            }:
+                raise ValueError("형식 문자열은 전체 줄을 가린다")
+            replacement = None
+            if token.type == tokenize.STRING:
+                if token.end[0] != token.start[0]:
+                    # 문자열 내부 줄을 부분 노출하지 않는다.
+                    replacement = '"' + MASK + '"' + "\n" * (token.end[0] - token.start[0])
+                elif token.start not in allowed:
+                    replacement = '"' + MASK + '"'
+            elif token.type == tokenize.NUMBER:
+                replacement = '"' + MASK + '"'
+            elif token.type == tokenize.COMMENT:
+                replacement = "# " + MASK
+            if replacement is not None:
+                spans.append(
+                    (
+                        offsets[token.start[0] - 1] + token.start[1],
+                        offsets[token.end[0] - 1] + token.end[1],
+                        replacement,
+                    )
+                )
+        for start, end, replacement in reversed(spans):
+            code = code[:start] + replacement + code[end:]
+        return code
+    except (SyntaxError, ValueError, tokenize.TokenError, IndentationError):
+        return "\n".join("[REDACTED · code line]" for _ in lines)
+
+
+def code_changes(patch: str | None, source: Path | None = None) -> list[dict]:
+    """원본 파일과 패치 파일을 먼저 가린 뒤 hunk 단위로 비교한다."""
+    files = []
+    current = None
+    hunk = None
+    for line in (patch or "").splitlines():
+        if line.startswith("--- a/"):
+            current = {"file": line[6:], "hunks": []}
+            files.append(current)
+        elif line.startswith("@@") and current is not None:
+            found = re.match(r"@@ -(\d+)(?:,\d+)? \+(\d+)", line)
+            if found:
+                hunk = {"old": int(found[1]), "new": int(found[2]), "before": [], "after": []}
+                current["hunks"].append(hunk)
+        elif hunk is not None and not line.startswith(("+++", "\\")) and line:
+            if line[0] in " -":
+                hunk["before"].append(line[1:])
+            if line[0] in " +":
+                hunk["after"].append(line[1:])
+    cards = []
+    for file in files:
+        full_before = full_after = None
+        if source is not None:
+            path = source / file["file"]
+            try:
+                if path.resolve().is_relative_to(source.resolve()) and not path.is_symlink():
+                    raw = path.read_text().splitlines()
+                    changed = list(raw)
+                    for item in reversed(file["hunks"]):
+                        start = max(0, item["old"] - 1)
+                        if raw[start : start + len(item["before"])] != item["before"]:
+                            raise ValueError("표시용 원본 불일치")
+                        changed[start : start + len(item["before"])] = item["after"]
+                    full_before = masked_code("\n".join(raw)).splitlines()
+                    full_after = masked_code("\n".join(changed)).splitlines()
+            except (OSError, UnicodeError, ValueError):
+                pass
+        for item in file["hunks"]:
+            before = (
+                full_before[max(0, item["old"] - 1) : item["old"] - 1 + len(item["before"])]
+                if full_before is not None
+                else masked_code("\n".join(item["before"])).splitlines()
+            )
+            after = (
+                full_after[max(0, item["new"] - 1) : item["new"] - 1 + len(item["after"])]
+                if full_after is not None
+                else masked_code("\n".join(item["after"])).splitlines()
+            )
+            rows = []
+            for kind, a, b, c, d in difflib.SequenceMatcher(
+                a=before, b=after, autojunk=False
+            ).get_opcodes():
+                if kind in {"equal", "delete", "replace"}:
+                    rows.extend(
+                        {
+                            "kind": "ctx" if kind == "equal" else "del",
+                            "old": item["old"] + n,
+                            "new": item["new"] + c + n - a if kind == "equal" else None,
+                            "text": before[n],
+                        }
+                        for n in range(a, b)
+                    )
+                if kind in {"insert", "replace"}:
+                    rows.extend(
+                        {"kind": "add", "old": None, "new": item["new"] + n, "text": after[n]}
+                        for n in range(c, d)
+                    )
+            cards.append(
+                {
+                    "file": file["file"],
+                    "line": item["old"],
+                    "end": item["old"] + max(0, len(item["before"]) - 1),
+                    "before": "\n".join(before),
+                    "after": "\n".join(after),
+                    "rows": rows,
+                }
+            )
+    return cards

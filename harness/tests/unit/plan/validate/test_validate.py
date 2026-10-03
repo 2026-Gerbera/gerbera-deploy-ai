@@ -275,3 +275,94 @@ def test_check_draft_relaxed_drops_unknown() -> None:
 def test_registered_and_not_ai() -> None:
     assert "validate_plan" in load_tools().registered()
     assert spec_for("validate_plan").uses_ai is False
+
+
+# ---- env_unchanged: 상태를 바꾸는 step이 없는 환경은 이번 실행에서 뺀다 -----------------------
+
+_QUIET = dict(new_migrations=(), env_keys=(), infra_inputs_changed=False)
+
+
+def _skipped(p: Plan) -> dict[str, str | None]:
+    secs = (p.build, p.deploy.local, p.deploy.cloud, p.verify)
+    return {s.id: s.skip_rule for sec in secs for s in sec.skipped}
+
+
+def test_env_unchanged_local_only_is_excluded() -> None:
+    f = facts(
+        changed={"local": {"was": False, "web": False}, "cloud": {"was": True, "web": False}},
+        **_QUIET,
+    )
+    # AI가 뺀 필수 step의 강제 포함 기록은 환경을 빼면 틀리므로 정리된다.
+    p = run(f, draft(("verify.health.local", False)))
+    assert not p.deploy.local.steps
+    rules = _skipped(p)
+    for sid in ("verify.health.local", "verify.smoke.local", "verify.compare"):
+        assert rules[sid] == "env_unchanged"
+    assert rules["deploy.was.local"] == "digest_deployed"  # 원래 규칙은 그대로 둔다
+    reasons = {s.id: s.reason for s in p.deploy.local.skipped}
+    assert reasons["verify.health.local"] == "바뀐 것이 없어 이번 실행에서 제외"
+    assert not [i for i in p.invalidated if i.id == "verify.health.local"]
+    assert [w.code for w in p.warnings if w.code == "env_unchanged"] == ["env_unchanged"]
+    assert "온프레미스" in next(w.message for w in p.warnings if w.code == "env_unchanged")
+    assert {"build.was", "deploy.was.cloud", "verify.smoke.cloud", "verify.report"} <= ids(p)
+    assert "verify.compare" not in ids(p)
+
+
+def test_env_unchanged_cloud_only_is_excluded_with_watch() -> None:
+    f = facts(
+        changed={"local": {"was": True, "web": False}, "cloud": {"was": False, "web": False}},
+        **_QUIET,
+    )
+    p = validate_plan(
+        ValidatePlanInput(run_id="run-1", facts=f, draft=draft(("verify.watch.cloud", True))),
+        RunContext("run-1"),
+        registered_tools={"watch_post_deploy"},
+    )
+    assert not p.deploy.cloud.steps
+    rules = _skipped(p)
+    for sid in (
+        "deploy.tls.cloud", "verify.health.cloud", "verify.tls.cloud", "verify.smoke.cloud",
+        "verify.compare", "verify.watch.cloud",
+    ):  # fmt: skip
+        assert rules[sid] == "env_unchanged", sid
+    assert {"deploy.was.local", "verify.smoke.local", "verify.report"} <= ids(p)
+    assert [s.id for s in p.verify.steps] == ["verify.report"]
+
+
+@pytest.mark.parametrize("strict", [False, True])
+def test_env_unchanged_both_is_precondition_failed(strict: bool) -> None:
+    f = facts(
+        changed={"local": {"was": False, "web": False}, "cloud": {"was": False, "web": False}},
+        **_QUIET,
+    )
+    with pytest.raises(DdakToolError) as e:
+        run(f, strict_ai_check=strict)
+    # PLAN_INVALID면 AI 재지시가 돈다. 계획 오류가 아니라 배포할 변경이 없는 것이다.
+    assert e.value.code is ErrorCode.PRECONDITION_FAILED
+    assert e.value.message == "배포할 변경 없음"
+    with pytest.raises(DdakToolError) as single:
+        run(facts(target="local", changed={"local": {"was": False, "web": False}}, **_QUIET))
+    assert single.value.code is ErrorCode.PRECONDITION_FAILED
+
+
+@pytest.mark.parametrize(
+    "extra,kept",
+    [
+        ({"new_migrations": ("0002",)}, "deploy.migrate.local"),
+        (
+            {"env_keys": (EnvKey(name="SESSION_COOKIE_SECURE", kind="plain", tier="was"),)},
+            "deploy.config.local",
+        ),
+        ({"db_initialized": {"local": False, "cloud": True}}, "deploy.dbinit.local"),
+    ],
+)
+def test_env_unchanged_keeps_env_with_new_key_or_migration(extra: dict, kept: str) -> None:
+    f = facts(
+        changed={"local": {"was": False, "web": False}, "cloud": {"was": True, "web": False}},
+        **{**_QUIET, **extra},
+    )
+    p = run(f)
+    local = [s.id for s in p.deploy.local.steps]
+    assert kept in local and "verify.smoke.local" in local
+    assert "env_unchanged" not in _skipped(p).values()
+    assert "verify.compare" in ids(p)
