@@ -25,8 +25,20 @@ import tempfile
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
+
+from ddak.core import demo_cycle as shared
+from ddak.core.demo_cycle import (
+    ACTIONS,
+    Action,
+    DemoError,
+    DemoPr,
+    Snapshot,
+    pr_body,
+    short,
+    tree_label,
+)
 
 DEFAULT_REPO = "2026-Gerbera/gerbera-application"
 BASE_BRANCH = "prod"
@@ -36,57 +48,6 @@ _SECRET_PATTERNS = (
     (re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/\s@]+@"), r"\1***@"),
     (re.compile(r"\b(gh[pousr]_|github_pat_)[A-Za-z0-9_]{8,}"), r"\1***"),
 )
-
-
-@dataclass(frozen=True)
-class Action:
-    tag: str
-    branch_prefix: str
-    title: str
-    purpose: str
-
-
-ACTIONS = {
-    "reset-v1": Action(
-        tag="v1",
-        branch_prefix="demo/reset-v1-",
-        title="demo: prod를 v1 상태로 되돌림(시연 반복 준비)",
-        purpose="시연 반복을 위해 prod 내용을 v1으로 되돌린다. merge하면 제품이 v1을 배포한다.",
-    ),
-    "prepare-v2": Action(
-        tag="v2",
-        branch_prefix="demo/v2-",
-        title="v2: 목록 페이지 이미지·박스 추가",
-        purpose="시연용 v2 변경이다. merge하면 제품이 변경을 감지해 WAS만 다시 빌드·배포한다.",
-    ),
-}
-
-
-class DemoError(Exception):
-    """사용자에게 보여 줄 실패. 메시지는 이미 가려진 문자열이다."""
-
-
-@dataclass(frozen=True)
-class Snapshot:
-    prod_sha: str
-    prod_tree: str
-    tag_commits: dict[str, str]
-    tag_trees: dict[str, str]
-
-
-@dataclass(frozen=True)
-class DemoPr:
-    number: int
-    url: str
-    branch: str
-    tree: str | None
-    parent_tree: str | None
-
-    def kind(self) -> str | None:
-        for name, action in ACTIONS.items():
-            if self.branch.startswith(action.branch_prefix):
-                return name
-        return None
 
 
 def scrub(text: str) -> str:
@@ -111,10 +72,6 @@ def gh(*args: str) -> str:
     return run(["gh", *args])
 
 
-def short(sha: str | None) -> str:
-    return sha[:12] if sha else "-"
-
-
 @contextmanager
 def cloned(remote: str) -> Iterator[Path]:
     with tempfile.TemporaryDirectory(prefix="ddak-demo-cycle-") as tmp:
@@ -126,31 +83,12 @@ def cloned(remote: str) -> Iterator[Path]:
         yield clone
 
 
-def resolve(clone: Path, spec: str, what: str) -> str:
-    value = git(clone, "rev-parse", "--verify", "--quiet", spec, check=False)
-    if not value:
-        raise DemoError(f"{what}을(를) 찾을 수 없다: {spec}")
-    return value
+def resolve(clone: Path, spec: str, what: str):
+    return shared.resolve(partial(git, clone), spec, what)
 
 
-def snapshot(clone: Path) -> Snapshot:
-    prod = f"refs/remotes/origin/{BASE_BRANCH}"
-    tags = sorted({action.tag for action in ACTIONS.values()})
-    return Snapshot(
-        prod_sha=resolve(clone, f"{prod}^{{commit}}", f"{BASE_BRANCH} 브랜치"),
-        prod_tree=resolve(clone, f"{prod}^{{tree}}", f"{BASE_BRANCH} 트리"),
-        tag_commits={t: resolve(clone, f"refs/tags/{t}^{{commit}}", f"태그 {t}") for t in tags},
-        tag_trees={t: resolve(clone, f"refs/tags/{t}^{{tree}}", f"태그 {t} 트리") for t in tags},
-    )
-
-
-def tree_label(snap: Snapshot, tree: str | None) -> str:
-    if tree is None:
-        return "확인 불가"
-    for tag, tag_tree in snap.tag_trees.items():
-        if tree == tag_tree:
-            return tag
-    return "v1·v2 아님"
+def snapshot(clone: Path):
+    return shared.snapshot(partial(git, clone))
 
 
 def optional(clone: Path, spec: str) -> str | None:
@@ -224,56 +162,12 @@ def print_status(repo: str, snap: Snapshot, prs: list[DemoPr]) -> None:
         print(pr_line(snap, pr))
 
 
-def build_commit(clone: Path, snap: Snapshot, name: str, action: Action) -> str:
-    tag = action.tag
-    body = (
-        f"태그 {tag}({short(snap.tag_commits[tag])})의 트리를 그대로 쓴다. "
-        f"부모는 현재 {BASE_BRANCH}({short(snap.prod_sha)})다. 이력은 보존한다."
-    )
-    commit = git(
-        clone,
-        "commit-tree",
-        snap.tag_trees[tag],
-        "-p",
-        snap.prod_sha,
-        "-m",
-        action.title,
-        "-m",
-        body,
-        "-m",
-        f"harness/scripts/demo_cycle.py {name}",
-    )
-    if resolve(clone, f"{commit}^{{tree}}", "새 커밋 트리") != snap.tag_trees[tag]:
-        raise DemoError("새 커밋 트리가 태그 트리와 다르다")
-    if resolve(clone, f"{commit}^1", "새 커밋 부모") != snap.prod_sha:
-        raise DemoError(f"새 커밋 부모가 {BASE_BRANCH}가 아니다")
-    return commit
+def build_commit(clone: Path, snap: Snapshot, name: str, action: Action):
+    return shared.build_commit(partial(git, clone), snap, name, action)
 
 
-def push_branch(clone: Path, commit: str, branch: str) -> None:
-    if not branch.startswith(DEMO_PREFIX) or branch == BASE_BRANCH:
-        raise DemoError(f"demo/ 브랜치만 push한다: {branch}")
-    if git(clone, "ls-remote", "--heads", "origin", f"refs/heads/{branch}"):
-        raise DemoError(f"원격에 같은 브랜치가 이미 있다: {branch}")
-    # 강제 표시(+)·--force 없이 새 브랜치 하나만 만든다. 태그는 보내지 않는다.
-    git(clone, "push", "--quiet", "--no-follow-tags", "origin", f"{commit}:refs/heads/{branch}")
-
-
-def pr_body(snap: Snapshot, name: str, action: Action) -> str:
-    tag = action.tag
-    return "\n".join(
-        [
-            "## 변경 내용",
-            f"- {action.purpose}",
-            f"- 태그 `{tag}`({short(snap.tag_commits[tag])})의 트리를 그대로 쓰는 커밋 1개다. "
-            f"부모는 현재 `{BASE_BRANCH}`({short(snap.prod_sha)})이고 이력을 보존한다.",
-            f"- `harness/scripts/demo_cycle.py {name}`로 만들었다. merge는 사람이 한다.",
-            "",
-            "## 확인한 것",
-            f"- 커밋 트리 = 태그 `{tag}` 트리, 부모 = `{BASE_BRANCH}` HEAD",
-            "- 관리 페이지에 승인 대기 run이 없을 때 merge한다.",
-        ]
-    )
+def push_branch(clone: Path, commit: str, branch: str):
+    return shared.push_branch(partial(git, clone), commit, branch)
 
 
 def prepare(repo: str, remote: str, name: str, dry_run: bool) -> int:

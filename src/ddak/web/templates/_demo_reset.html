@@ -1,0 +1,20 @@
+{% from "_form_errors.html" import form_fields, form_error with context %}
+<section class="section" id="demo-reset">
+  <h2>시연 초기화</h2>
+  <p>v1 복원 PR을 만들고 GitHub에서 merge하세요. 자동 감시가 배포를 준비합니다.
+    승인하면 {% if settings.default_targets == 'both' %}온프렘·클라우드가{% elif settings.default_targets == 'cloud' %}클라우드가{% else %}온프렘이{% endif %} v1로 돌아갑니다.</p>
+  <p class="note">PR merge만으로 초기화가 끝나지 않습니다. 아래에서 선택한 모든 환경의 ‘v1 배포 완료’를 확인하세요. 승인 대기 중에는 다음 PR을 merge하지 마세요.</p>
+  <div class="ops-forms">
+    <div><form method="post" action="/ops/demo/reset-v1">{{ form_fields('demo-reset-v1') }}
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="project" value="{{ project }}">
+      <button type="submit" class="button secondary">v1으로 되돌리기</button>
+    </form>{{ form_error('demo-reset-v1') }}</div>
+    <div><form method="post" action="/ops/demo/prepare-v2">{{ form_fields('demo-prepare-v2') }}
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="project" value="{{ project }}">
+      <button type="submit" class="button secondary">v2 시연 PR 준비</button>
+    </form>{{ form_error('demo-prepare-v2') }}</div>
+  </div>
+  <div id="demo-state" data-url="/ops/demo/status?project={{ project|urlencode }}" aria-live="polite"><p>서비스 버전·시연 PR 상태 확인 중…</p></div>
+  <noscript><a href="/ops/demo/status?project={{ project|urlencode }}">서비스 버전·시연 상태 확인</a></noscript>
+  <script src="/static/demo_reset.js" defer></script>
+</section>
