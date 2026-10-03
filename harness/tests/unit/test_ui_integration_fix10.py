@@ -84,9 +84,12 @@ def test_dashboard_approval_progress_result_http_flow(rig, monkeypatch, failure)
         assert f"{PUBLIC}/version" in result.text
         if failure:
             assert "FAILED_CLOUD" in result.text and "injected cloud failure" in result.text
-            assert "실행 기록 봉인 완료" not in result.text
+            assert "승인 기록과 배포 결과를 저장했습니다." not in result.text
         else:
-            assert "SUCCEEDED" in result.text and "실행 기록 봉인 완료" in result.text
+            assert (
+                "SUCCEEDED" in result.text
+                and "승인 기록과 배포 결과를 저장했습니다." in result.text
+            )
         assert f'href="/runs/{rid}/result"' in client.get("/").text
         assert (
             'data-status="' + service.get_run(rid)["status"]
@@ -133,7 +136,10 @@ def test_failed_preparation_redirects_and_redacts_diagnostics(rig, monkeypatch):
         assert sentinel not in result.text and "<script>bad()" not in result.text
         assert "[REDACTED]" in result.text and "&lt;script&gt;" in result.text
         assert "인프라 변경 후 실행이 실패했습니다" in result.text
-        assert "인프라 변경 없음" not in result.text and "봉인 완료" not in result.text
+        assert (
+            "인프라 변경 없음" not in result.text
+            and "승인 기록과 배포 결과를 저장했습니다." not in result.text
+        )
 
 
 def test_superseded_is_terminal_and_approval_refused(rig, monkeypatch):
@@ -154,7 +160,10 @@ def test_superseded_is_terminal_and_approval_refused(rig, monkeypatch):
         assert response.status_code == 409 and "SUPERSEDED" in response.text
         events = client.get("/runs/run-super-1/events")
         assert events.status_code == 200 and '"status":"SUPERSEDED"' in events.text
-        assert "봉인 완료" not in client.get("/runs/run-super-1/result").text
+        assert (
+            "승인 기록과 배포 결과를 저장했습니다."
+            not in client.get("/runs/run-super-1/result").text
+        )
 
 
 def test_watch_project_settings_ops_alias_and_unlock_http(rig, monkeypatch):
@@ -226,9 +235,14 @@ def test_progress_js_uses_server_terminal_states_and_ignores_stepless_events():
       close() { closed = true; }
     }
     const document = {
-      querySelector: () => ({ dataset: {runId:'fixture', status:'RUNNING',
-        terminalStates: JSON.stringify(['SUCCEEDED','FAILED_VERIFY','SUPERSEDED'])}}),
-      querySelectorAll: () => { activations++; return []; },
+      querySelector: (selector) => selector === '[data-run-id]'
+        ? { dataset: {runId:'fixture', status:'RUNNING',
+          terminalStates: JSON.stringify(['SUCCEEDED','FAILED_VERIFY','SUPERSEDED'])}}
+        : null,
+      querySelectorAll: (selector) => {
+        if (selector === '[data-phase]') activations++;
+        return [];
+      },
       createElement: () => ({}),
       getElementById: (id) => id === 'result-link'
         ? {classList:{remove:()=>{visible=true;}}} : list,
@@ -274,5 +288,5 @@ def test_explicit_project_survives_settings_back_link(rig, monkeypatch):
     monkeypatch.setenv("DDAK_WATCH_PROJECT", PROJECT)
     with client_for(service) as client:
         response = client.get("/settings?project=other")
-        assert 'href="/?project=other">← 대시보드' in response.text
+        assert 'href="/?project=other">대시보드' in response.text
         assert "<h1>other</h1>" in client.get("/?project=other").text
