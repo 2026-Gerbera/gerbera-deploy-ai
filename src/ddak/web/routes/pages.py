@@ -1,3 +1,6 @@
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 from fastapi import APIRouter, Request
 
 from ddak.web.dependencies import (
@@ -22,8 +25,22 @@ async def dashboard(request: Request, project: str | None = None):
     links = {}
     for run in runs:
         run["url"] = run_link(run)
-        for link in public_links(service.get_run(run["run_id"]).get("context") or {}):
+        context = service.get_run(run["run_id"]).get("context") or {}
+        run.update(
+            sha=(context.get("source_sha") or "")[:7] or "기록 없음",
+            ref=context.get("ref") or "기록 없음",
+            targets=context.get("targets") or "기록 없음",
+            trigger={"auto": "자동", "manual": "수동"}.get(context.get("trigger"), "기록 없음"),
+            started=datetime.fromtimestamp(run["created"], ZoneInfo("Asia/Seoul")).strftime(
+                "%m-%d %H:%M"
+            ),
+            duration=(run["finished"] - run["created"]) if run.get("finished") else None,
+        )
+        for link in public_links(context):
             links.setdefault(link["label"], link)
+    preparations = list(reversed(service.list_preparations(project)))
+    for item in preparations:
+        item["url"] = run_link(item) if item.get("run_id") else None
     token = csrf_token(request)
     response = templates.TemplateResponse(
         request=request,
@@ -33,7 +50,7 @@ async def dashboard(request: Request, project: str | None = None):
             "runs": runs,
             "settings": project_settings(request, project),
             "state": service.project_state(project),
-            "preparations": service.list_preparations(project),
+            "preparations": preparations,
             "public_links": list(links.values()),
             "watch_warnings": watch_warnings(request),
             "csrf_token": token,

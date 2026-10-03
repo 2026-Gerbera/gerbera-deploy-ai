@@ -35,6 +35,7 @@ async def progress_page(request: Request, run_id: str):
             "run_id": run_id,
             "project": run["project"],
             "status": run["status"],
+            "targets": (run.get("context") or {}).get("targets"),
             "terminal_states": sorted(_FINAL),
         },
     )
