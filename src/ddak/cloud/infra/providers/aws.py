@@ -20,6 +20,7 @@ RESOURCE_TYPES = frozenset(
         "aws_vpc_security_group_egress_rule",
         "aws_lb",
         "aws_lb_listener",
+        "aws_lb_listener_rule",
         "aws_lb_target_group",
         "aws_ecs_cluster",
         "aws_ecs_service",
@@ -47,6 +48,29 @@ CHECKS = tuple(
 )
 BOUNDARY_PATH = "/ddak/boundary/"
 BOUNDARY_NAME = "ddak-app-boundary"
+ECS_INFRA_ROLE_NAME = "ddak-ecs-infra-elb"
+ECS_INFRA_ROLE_PATH = "/ddak/infra/"
+ECS_INFRA_POLICY_ARN = "arn:aws:iam::aws:policy/AmazonECSInfrastructureRolePolicyForLoadBalancers"
+
+
+def ecs_infrastructure_role(account_id: str) -> dict:
+    """SDK가 확보하는 고정 역할. 생성 HCL에는 이 ARN 참조만 허용한다."""
+    return {
+        "name": ECS_INFRA_ROLE_NAME,
+        "path": ECS_INFRA_ROLE_PATH,
+        "arn": f"arn:aws:iam::{account_id}:role{ECS_INFRA_ROLE_PATH}{ECS_INFRA_ROLE_NAME}",
+        "trust_policy": {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Action": "sts:AssumeRole",
+                    "Principal": {"Service": "ecs.amazonaws.com"},
+                }
+            ],
+        },
+        "managed_policy_arn": ECS_INFRA_POLICY_ARN,
+    }
 
 
 def build_boundary_document(account_id: str) -> dict:
@@ -71,6 +95,17 @@ def build_boundary_document(account_id: str) -> dict:
     }
 
 
+def bootstrap_dbinit_exception(account_id: str) -> dict:
+    """신규 RDS의 ARN 확정 전, 승인에 포함할 유일한 dbinit 예외."""
+    return {
+        "layer": "platform",
+        "mode": "bootstrap",
+        "role_address": "aws_iam_role.dbinit_execution",
+        "actions": ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"],
+        "resource": f"arn:aws:secretsmanager:{REGION}:{account_id}:secret:rds!db-*",
+    }
+
+
 def boundary_document(account_id: str) -> dict:
     """research/IAM §13-3의 앱 경계. 권한 자체를 주는 정책은 아니다."""
     prefix = f"arn:aws:secretsmanager:{REGION}:{account_id}:secret:"
@@ -85,12 +120,24 @@ def boundary_document(account_id: str) -> dict:
             {
                 "Effect": "Allow",
                 "Action": ["logs:CreateLogStream", "logs:PutLogEvents"],
-                "Resource": f"arn:aws:logs:{REGION}:{account_id}:log-group:/ecs/ddak-*:*",
+                "Resource": f"arn:aws:logs:{REGION}:{account_id}:log-group:/aws/ecs/ddak-*:*",
             },
             {
                 "Effect": "Allow",
                 "Action": "secretsmanager:GetSecretValue",
                 "Resource": [prefix + "ddak/*", prefix + "rds!*"],
+            },
+            {
+                "Effect": "Allow",
+                "Action": "secretsmanager:DescribeSecret",
+                "Resource": bootstrap_dbinit_exception(account_id)["resource"],
+                "Condition": {
+                    "ArnLike": {
+                        "aws:PrincipalArn": (
+                            f"arn:aws:iam::{account_id}:role/ddak/app/ddak-*-dbinit-exec"
+                        )
+                    }
+                },
             },
             {
                 "Effect": "Deny",

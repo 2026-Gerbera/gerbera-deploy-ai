@@ -1,8 +1,8 @@
 # AGENTS.md — AI 코딩 에이전트와 사람의 공통 작업 규칙
 
-> 기준: 앱 1개 구조(✅ 9/30 최신 개발자 문서 기준) · 10/2 갱신: [10/2 팀 현황과 결정](docs/decisions/2026-10-02-team-status-and-decisions.md) · 이전: [10/1 팀 현황과 결정](docs/decisions/2026-10-01-team-status-and-decisions.md)
+> 기준: 앱 1개 구조(✅ 9/30 최신 개발자 문서 기준) · 10/3 갱신: [10/3 결정 따라잡기](docs/decisions/2026-10-03-decisions-catch-up.md) · 이전: [10/2 팀 현황과 결정](docs/decisions/2026-10-02-team-status-and-decisions.md)
 >
-> 역할 코드: O1 정준우 · O2 김준석 · O3 장민영 · C2 안승환 · C3 양서윤 · C1 = 유상준 하차(10/1), C1은 정준우·김준석 분담(분담 ✅, 세부 🟡 김준석 확인) · TL = 하네스·계약 승인자(미지정, 결정 필요).
+> 역할 코드: O1 정준우 · O2 김준석 · O3 장민영 · C2 안승환 · C3 양서윤 · C1 = 유상준 하차(10/1), C1 몫은 정준우(부트스트랩·`validate_infra`·`plan_infra`·`apply_infra`)이고 `generate_infra` 실제 구현은 양서윤(PR #17, 10/3 정정) · TL = 하네스·계약 승인자(미지정, 결정 필요).
 
 이 파일은 하네스 소유자(@TL, 지정 대기) 소유다. 공유 변경이므로 영향을 받는 담당자에게 변경 내용을 알린다.
 
@@ -17,9 +17,9 @@ O2 전체(`plan/intake/detect/analyze/planner/validate/flow`, `core/ai`, `onprem
 ## 1. 적용 범위와 우선순위
 
 - 모든 사람과 AI 코딩 도구(Claude Code, Codex 등)에 적용한다.
-- 최신 사용자 결정(지금은 [2026-10-02 팀 현황과 결정](docs/decisions/2026-10-02-team-status-and-decisions.md)과 같은 날의 야간 개발·후속 3·4·후속 5·G E2E·온프렘 3티어 기록. 그 이전 기준은 [2026-10-01 팀 현황과 결정](docs/decisions/2026-10-01-team-status-and-decisions.md))과 [O1 착수 기준](docs/decisions/2026-09-30-o1-start-contracts.md)이 이전 장부의 상충 문구보다 우선한다. 두 기록이 다르면 날짜가 늦은 쪽을 따른다. 이번 하네스·공유 계약 갱신은 사용자가 명시적으로 승인했다. 팀 계약 승인자 지정은 별개다.
+- 최신 사용자 결정(지금은 [2026-10-03 결정 따라잡기](docs/decisions/2026-10-03-decisions-catch-up.md)와 같은 날의 수정 8·O1↔O2 연결·UI 통합 기록. 그 이전 기준은 [2026-10-02 팀 현황과 결정](docs/decisions/2026-10-02-team-status-and-decisions.md)과 같은 날의 기록들)과 [O1 착수 기준](docs/decisions/2026-09-30-o1-start-contracts.md)이 이전 장부의 상충 문구보다 우선한다. 두 기록이 다르면 날짜가 늦은 쪽을 따른다. 이번 하네스·공유 계약 갱신은 사용자가 명시적으로 승인했다. 팀 계약 승인자 지정은 별개다.
 - 우선순위. 문서끼리 다르면 날짜가 늦은 쪽을 따른다:
-  1. `docs/decisions/` 최신 기록(지금은 [2026-10-02 팀 현황과 결정](docs/decisions/2026-10-02-team-status-and-decisions.md)과 같은 날의 2026-10-02-* 기록들. [2026-10-01](docs/decisions/2026-10-01-team-status-and-decisions.md) 기록은 그 이전 기준)
+  1. `docs/decisions/` 최신 기록(지금은 [2026-10-03 결정 따라잡기](docs/decisions/2026-10-03-decisions-catch-up.md)와 같은 날의 2026-10-03-* 기록들. [2026-10-02](docs/decisions/2026-10-02-team-status-and-decisions.md) 기록은 그 이전 기준)
   2. [single-app/dev-docs/](../single-app/dev-docs/README.md): 00 결정표 → 01 공통 계약 → 02 디렉토리 소유 → roles/
   3. [docs/contracts/README.md](docs/contracts/README.md)
   4. `docs/guides/<역할>.md`
@@ -38,13 +38,13 @@ O2 전체(`plan/intake/detect/analyze/planner/validate/flow`, `core/ai`, `onprem
 | 구조 (✅) | MCP 서버 없이 파이썬 앱 1개(`src/ddak`, 한 프로세스). 디렉토리는 아래 "디렉토리와 담당" 트리(9/30 정리): `plan/*` · `cloud/*` · `onprem/*` · `cd` · `verify/*` + 공용 `core`(+ `ops`, `executor`, `web`, `integrations`). CD는 공통 인터페이스(`cd/interface.py`, `cd/dispatch.py`) + 환경별 provider(구조 ✅ 9/30 장부 29, AWS 배치 ✅ 10/1): AWS는 `cloud/deploy/providers/aws.py`의 AwsProvider(위임만, 구현은 각자 모듈), 온프렘은 `onprem/deploy`의 OnPremProvider. GCP·Azure는 골격만(선택 시 명시적 미지원 오류, 대회 중 구현 안 함). `providers/`는 PR #1 merge 뒤 main에 들어온다. 툴은 코드 안 레지스트리(`@tool`, pydantic). 툴 40개(옛 33개 + 인프라 툴 5개로 `ensure_infra` 대체 + `generate_dockerfile`·`validate_dockerfile`·`push_image`, 💭 이름). |
 | 파이프라인 | ① 플랜 → ② 계획 검증 → ③ 빌드 → ④ 배포 → ⑤ 검증 및 보고. 단위·통합 테스트 단계 없음. 로컬·클라우드 트랙은 동시에 시작해 서로 기다리지 않고 독립적으로 진행한다(온프렘↔클라우드 대기 지점 없음, ✅ 10/1 밤 분리). 교차 검증은 둘 다 성공했을 때만 돈다. |
 | AI 경계 | AI는 제안만 만든다: JSON(채팅 의도, 분석 분류, step 선택, 실패 원인 설명, 보고 요약), Terraform HCL·IAM 정책 초안(`generate_infra`), Dockerfile 초안(`generate_dockerfile`, Dockerfile이 없을 때만). 실행은 검증과 사람 승인을 거친 뒤 코드가 한다(IAM 생성은 사람 승인 필수). 빌드·배포·검증 실행·롤백·잠금에는 AI가 없다. LLM은 툴을 직접 호출하지 않는다. AI는 비밀값을 보지 않는다. 코드·diff·로그는 신뢰하지 않는 입력이다. |
-| 계획 | 단계 순서 고정. 단계 안 step은 AI가 넣고 뺀다. step 층(내장/필수/조건부/선택)은 계획 검증(코드)이 강제한다. 불합격 → 재지시 1회 → 규칙 계획. |
-| LLM | Claude, 창구는 `call_ai` 하나. backend `cli`(개발, 본인 로컬만) / `api`(데모) / `replay`(테스트·비상). Jev는 step 선택·환경 키 분류(규칙이 바닥). |
+| 계획 | 단계 순서 고정. step 층(내장/필수/조건부/선택)은 계획 검증(코드)이 강제한다. AI는 선택 step의 포함 여부만 제안하고, 미등록 선택 step은 코드가 뺀다(10/3). 불합격 → 재지시 1회 → 규칙 계획. AI Plan·Jev 설계는 재검토 중이다(Claude로 충분한지 포함, 10/3). tier 배포 순서는 WAS 먼저로 한다(10/3 결정, 필요성 재검토·구현 중. 지금은 deploy.yaml `tiers` 순서). |
+| LLM | 창구는 `core/ai` 하나(생성 역할 `call_ai`, 판단 역할 `ask_jev`). 생성 backend `cli`(본인 로컬만, 기본 Claude Sonnet 5.5·추론 low, `DDAK_LLM_EFFORT` low/medium) / `api`(지금은 Groq 연결) / `replay`(테스트·비상). 판단(Jev 자리) backend는 `DDAK_JEV_BACKEND=groq\|claude-cli`(기본 groq). Groq 변수는 `DDAK_GROQ_*`, `DDAK_JEV_*`는 TypeSafe 전용 예약이다. Groq 경로는 그대로 둔다. 웹에서 Claude 구독 로그인을 받지 않는다. 관리자 페이지 AI 연결 패널은 진행 중(수정 11). 다른 provider(Codex 등)는 추후이며 Claude 전용으로 굳히지 않는다. 판단은 step 선택·환경 키 분류(규칙이 바닥)이고 설계는 재검토 중(10/3). |
 | 인프라 | Terraform도 AI가 짠다(플랫폼까지 전부, 공유 RDS 안에 앱 DB·계정). IAM은 AI 설계 → 사람 승인 → 생성, 앱 역할·DB 계정은 최소 권한. 테스트 때 권한은 넓게. 흐름(💭): `generate_infra` → `validate_infra` → `plan_infra` → 사람 승인 → `apply_infra`, 자동 apply 없음. 초기 배포 결과는 환경 정보로 기록하고 개선 배포는 코드가 읽어 주입한다. Terraform state는 `terraform output -json`으로만 읽고 LLM에 넣지 않는다. |
-| 이미지 | CodeBuild 빌드 → 기본 저장소 Docker Hub(ECR은 옵션 어댑터). amd64·arm64 공통 index로 배포하며 index와 실제 플랫폼 digest를 구분한다. 배포는 digest 고정. Dockerfile이 없으면 AI 초안 → 정적 검사 + 빌드 확인 → 사람 승인 → 저장·재사용(✅ 9/30). |
+| 이미지 | 빌드 백엔드는 설정 `DDAK_BUILD_BACKEND=codebuild`(기본)\|`local`. 온프렘은 `local`(CodeBuild와 같은 buildspec을 실행 PC에서 실행, ✅ 10/3). 기본 저장소 Docker Hub 팀 저장소 `2026gerbera/flaskr`(`ns/repo`, 토큰 값은 문서에 쓰지 않음, ECR은 옵션 어댑터). amd64·arm64 공통 index로 배포하며 index와 실제 플랫폼 digest를 구분한다. 배포는 digest 고정. Dockerfile이 없으면 AI 초안 → 정적 검사 + 빌드 확인 → 사람 승인 → 저장·재사용(✅ 9/30). |
 | TLS | 클라우드 HTTPS 필수(`ensure_tls`·`verify_tls`는 cloud만). 온프렘 외부 공개는 Cloudflare Tunnel ✅(10/1 밤 (2), EC2 frp 기각. 도메인 구매 전 quick tunnel, 구매 후 이름 있는 터널. 파이프라인은 `public_url`만 읽음)이고, 온프렘 쿠키 Secure·ProxyFix는 `public_url` 스킴을 따른다(https면 켬, http면 끔, 외부 접속은 https라 켬, ✅ 10/1, hop 수 💭). 로컬 컨테이너 직접 HTTPS는 ⏸ 보류(`http://localhost:8080`은 로컬 컨테이너 모드 포트). 도메인 `gerbera.cloud`는 구매 예정(DNS Cloudflare, 클라우드 레코드는 DNS만 → ALB)이고, 사람이 관리 페이지에 입력하는 설정값이며 AI는 바꾸지 못한다. |
 | DB·샘플 앱 | MySQL(두 환경). flaskr 기반(v1 익명 게시판 → 💭 v2 미정, 로그인은 후보). 10/2는 1차 Flask 기본 + 이미지·박스 파이프라인 E2E, 2차 실제 로직 LLM 분석·패치·인프라 생성 검증. 디렉토리 `apps/sample-app`은 가칭. |
-| 코드 수정 토글 | AI 설정 패치 P0. 일반 실행 기본 OFF 유지, 골든 데모 ON. 지원 패턴은 2~3종만. 승인한 패치를 prod 원본에 적용한 승인 트리를 실행기가 ai-prod merge 커밋으로 고정해 일반 push하고, 그 커밋 SHA로 빌드한다. 패치 OFF면 prod 그대로라 이전 AI 패치가 빠진다(정준우 확인 대기). |
+| 코드 수정 토글 | AI 설정 패치 P0. 일반 실행 기본 OFF 유지, 골든 데모 ON. 지원 패턴은 2~3종만. 승인한 패치를 prod 원본에 적용한 승인 트리를 실행기가 ai-prod merge 커밋으로 고정해 일반 push하고, 그 커밋 SHA로 빌드한다. 토글 의미(✅ 10/3): OFF = 새 AI 제안 없음, 이전 승인 패치를 유지할 수 없으면(패치 손실) 승인 전에 멈춘다. "OFF면 이전 AI 패치가 빠진다"는 폐기. 개발값 잔존 설계와 구현(수정 11 진행 중)은 [10/3 기록](docs/decisions/2026-10-03-decisions-catch-up.md) 결정 12. |
 
 ## 디렉토리와 담당 (2026-09-30 정리, 10/1 갱신)
 
@@ -66,7 +66,7 @@ src/ddak/
 ├─ executor/             정준우
 ├─ cd/                   ★ 공통 계약: interface.py, dispatch.py, fake.py, tools/(환경 무관 툴)
 ├─ cloud/
-│   ├─ infra/            tools/generate_infra 김준석 / 검증·plan·apply·초기 고정 틀 정준우 (분담 ✅, 세부 🟡): AI Terraform, 탐지 ⏸ (tools/generate_infra만 AI 허용, 옛 ddak/infra)
+│   ├─ infra/            tools/generate_infra 양서윤(실제 구현, PR #17, 10/3 정정) / 검증·plan·apply·초기 고정 틀 정준우: AI Terraform, 탐지 ⏸ (tools/generate_infra만 AI 허용, 옛 ddak/infra)
 │   ├─ build/            안승환: CodeBuild, registries/(dockerhub 기본, ecr 옵션) (옛 ddak/ci)
 │   ├─ deploy/           안승환: providers/{aws,gcp,azure,_unsupported}(aws.py=AwsProvider 위임만, PR #1 merge 뒤), ecs.py, secrets.py, database.py, provider.py(merge 뒤 호환 shim)
 │   ├─ tls/              정준우: HTTPS 연결 (ensure_tls)
@@ -91,11 +91,13 @@ src/ddak/
 
 ## 최신 실행 전제
 
-- 제품은 `validate_infra` → `plan_infra` → 한 화면의 infra 승인 → foundation(state bucket + app/build 권한 경계) → platform apply 순서로 실행합니다. bucket이 없으면 local backend plan을 승인한 뒤 코드가 SDK로 bucket을 만들고 platform local apply 후 remote backend로 state를 이전합니다. 사람이 미리 foundation/platform을 apply하는 전제는 폐기합니다. 사람의 사전 준비는 AWS 자격증명과 도메인 구매입니다. AI 개발 에이전트는 Terraform을 직접 실행하지 않으며, 승인 뒤 제품 코드가 실행하는 경로와 구분합니다. 실제 생성기의 O2 연결은 아직 미완이고 AWS 전체 완료를 의미하지 않습니다.
+- **10/3 14:35 배포 결정:** 대회(10/4)는 클라우드·온프렘 모두 rolling이다. 블루그린 추가 작업은 대회 뒤로 미루고, 기존 검사·역할 코드는 휴면 분기로 보존한다. 오전·14:20 결정은 [배포 방식 변경 이력](docs/decisions/2026-10-03-cloud-bluegreen.md)에서 확인한다.
+
+- 제품은 `validate_infra` → `plan_infra` → 한 화면의 infra 승인 → foundation(state bucket + app/build 권한 경계) → platform apply 순서로 실행합니다. bucket이 없으면 local backend plan을 승인한 뒤 코드가 SDK로 bucket을 만들고 platform local apply 후 remote backend로 state를 이전합니다. 사람이 미리 foundation/platform을 apply하는 전제는 폐기합니다. 사람의 사전 준비는 AWS 자격증명과 도메인 구매입니다. AI 개발 에이전트는 Terraform을 직접 실행하지 않으며, 승인 뒤 제품 코드가 실행하는 경로와 구분합니다. `generate_infra` 실제 구현(양서윤)은 PR #17로 main에 들어왔지만 실제 AWS 실행 검증은 없고 AWS 전체 완료를 의미하지 않습니다. 클라우드 진행 방식은 10/3 14:35 결정에 따라 대회에서 rolling을 사용합니다.
 
 - 승인 UI는 한 화면·한 번 클릭이며 patch/deploy/infra 등 대상별 해시·기록을 분리한다. 패치 승인은 prod 커밋 SHA·diff 해시·후보 트리 해시에 묶는다. 이전 패치는 merge만으로 유지되지 않는다. 재사용 여부와 새 prod 적합성은 민영님 패치 단계가 판단하고, 맞지 않으면 승인 전에 다시 제안한다.
-- 배포 기준은 PR merge로 앱 저장소 prod 브랜치에 반영된 커밋이다(수동 배포는 감시 브랜치와 v* 태그만). 변경 탐지는 새 prod 커밋을 환경별 마지막 성공 배포(source_sha·원본 파일 manifest)와 비교한다. 빌드 소스는 승인 트리를 고정한 ai-prod 커밋 SHA(CodeBuild sourceVersion)이고, S3 업로드는 대체 경로다.
-- 데모는 관리 페이지·프로젝트·연결 설정·v1 배포가 준비된 상태에서 시작한다.
+- 배포 기준은 PR merge로 앱 저장소 prod 브랜치에 반영된 커밋이다(수동 배포는 감시 브랜치와 v* 태그만). 변경 탐지는 새 prod 커밋을 환경별 마지막 성공 배포(source_sha·원본 파일 manifest)와 비교한다. 빌드 소스는 승인 트리를 고정한 ai-prod 커밋 SHA(CodeBuild sourceVersion, `local` 백엔드는 같은 SHA의 승인 사본)이고, S3 업로드는 대체 경로다. 승인 대기 중 같은 ref에 새 커밋이 오면 이전 자동 run은 `SUPERSEDED`가 된다. 잠금은 `/ops` 해제 버튼·`make -C harness unlock`·만료로 푼다(실행 중 run은 거부).
+- 데모는 관리 페이지·프로젝트·연결 설정·v1 배포가 준비된 상태에서 시작한다. 10/3 최우선은 시연이 배포 완료까지 끝나는 것이다. 온프렘 풀체인은 데스크톱 WSL 실환경에서 v1 첫 배포와 v2 PR merge 자동 감지(WAS만 재빌드)까지 성공했다. 시연 반복 대본은 스크립트로 준비하고(진행 중), 사용자·개발자의 터미널 조작은 관리자 페이지·자동 설정·config 파일로 바꾼다(진행 중, 수정 11).
 
 ## 3. 금지
 

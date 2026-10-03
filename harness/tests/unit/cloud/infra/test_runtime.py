@@ -160,6 +160,27 @@ def planned(runtime):
     return summary
 
 
+def test_apply_error_detail_is_redacted_and_partial_evidence_preserved(runtime):
+    planned(runtime)
+    instance, fake, _approvals, _guard = runtime
+    original = fake.run
+    private_value = "fixture-private-" + "value"
+
+    def fail_apply(argv, **kwargs):
+        if argv[1] == "apply":
+            raise DdakToolError(ErrorCode.ADAPTER_FAILED, "password=" + private_value)
+        return original(argv, **kwargs)
+
+    fake.run = fail_apply
+    with pytest.raises(DdakToolError) as failure:
+        instance.apply(session=SESSION)
+    assert private_value not in str(failure.value)
+    assert (instance.work / "apply-started").exists()
+    assert (instance.work / "approved.tfplan").exists()
+    with pytest.raises(DdakToolError, match="PRECONDITION_FAILED"):
+        instance.apply(session=SESSION)
+
+
 def test_approved_v2_summary_and_apply(runtime):
     summary = planned(runtime)
     instance, fake, _approvals, guard = runtime
@@ -174,9 +195,68 @@ def test_approved_v2_summary_and_apply(runtime):
         instance.apply(session=SESSION)
     assert sum(cmd[1] == "apply" for cmd, _ in fake.calls) == 1
     assert guard.call_count == 3
-    # fmt/init(validate)/validate/Checkov는 자격증명 없이 실행한다.
-    for _command, session in fake.calls[:4]:
+    # init(validate)/validate/Checkov는 자격증명 없이 실행한다.
+    for _command, session in fake.calls[:3]:
         assert session is None
+
+
+def test_plan_resolves_new_policy_role_from_configuration_reference():
+    raw = plan_json()
+    policy_change = raw["resource_changes"][2]["change"]
+    policy_change["after"]["role"] = None
+    policy_change["after_unknown"]["role"] = True
+    raw["configuration"] = {
+        "root_module": {
+            "resources": [
+                {
+                    "address": "aws_iam_role_policy.read",
+                    "mode": "managed",
+                    "type": "aws_iam_role_policy",
+                    "name": "read",
+                    "expressions": {
+                        "role": {"references": ["aws_iam_role.exec.id"]},
+                    },
+                }
+            ]
+        }
+    }
+
+    summary = summarize_plan(
+        raw,
+        layer="app",
+        project="flaskr",
+        plan_sha256=digest(b"unknown-role-id"),
+        exit_code=2,
+        account_id=ACCOUNT,
+        boundary_arn=SETTINGS.boundary_arn,
+        update=True,
+        analyzer=Mock(validate_policy=Mock(return_value={"findings": []})),
+        checkov={"passed": True, "failed": []},
+    )
+
+    assert summary["counts"]["update"] == 1
+    assert summary["iam_diff"][0]["address"] == "aws_iam_role_policy.read"
+
+
+def test_plan_rejects_unknown_policy_role_without_direct_reference():
+    raw = plan_json()
+    policy_change = raw["resource_changes"][2]["change"]
+    policy_change["after"]["role"] = None
+    policy_change["after_unknown"]["role"] = True
+
+    with pytest.raises(PolicyViolation, match="IAM_ROLE_UNKNOWN"):
+        summarize_plan(
+            raw,
+            layer="app",
+            project="flaskr",
+            plan_sha256=digest(b"unknown-role-id"),
+            exit_code=2,
+            account_id=ACCOUNT,
+            boundary_arn=SETTINGS.boundary_arn,
+            update=True,
+            analyzer=Mock(validate_policy=Mock(return_value={"findings": []})),
+            checkov={"passed": True, "failed": []},
+        )
 
 
 @pytest.mark.parametrize(
@@ -352,6 +432,17 @@ def test_foundation_without_approval_has_no_aws_calls(tmp_path):
 def test_foundation_reuses_only_matching_owned_resources(tmp_path):
     s3, iam = Mock(), Mock()
     template = foundation_template(SETTINGS)
+    role = template["ecs_infrastructure_role"]
+    iam.get_role.return_value = {
+        "Role": {
+            "RoleName": role["name"],
+            "Path": role["path"],
+            "Arn": role["arn"],
+            "AssumeRolePolicyDocument": role["trust_policy"],
+        }
+    }
+    iam.list_attached_role_policies.return_value = {"AttachedPolicies": [], "IsTruncated": False}
+    iam.list_role_policies.return_value = {"PolicyNames": [], "IsTruncated": False}
     s3.get_bucket_tagging.return_value = {
         "TagSet": [{"Key": k, "Value": v} for k, v in template["tags"].items()]
     }
@@ -380,15 +471,15 @@ def test_foundation_reuses_only_matching_owned_resources(tmp_path):
 
 def test_review_fixes_static_codebuild_and_cidr():
     codebuild = """resource "aws_codebuild_project" "build" {
-  name = "ddak-codebuild"
+  name = "ddak-demo-build"
   environment { compute_type="BUILD_GENERAL1_SMALL"
     image="aws/codebuild/standard:7.0"
     type="LINUX_CONTAINER"
   }
 }"""
     codebuild = codebuild.replace(
-        '  name = "ddak-codebuild"',
-        '  name = "ddak-codebuild"\n  source { type="GITHUB"\n buildspec='
+        '  name = "ddak-demo-build"',
+        '  name = "ddak-demo-build"\n  source { type="GITHUB"\n buildspec='
         + json.dumps(OVERRIDE_REQUIRED_BUILDSPEC)
         + "\n }",
     )
@@ -403,12 +494,56 @@ def test_review_fixes_static_codebuild_and_cidr():
         layer="platform",
     ).passed
     sg = """resource "aws_vpc_security_group_ingress_rule" "db" {
-    cidr_ipv4 = var.open_cidr
+    cidr_ipv4 = "not-a-cidr"
     from_port = 3306
     to_port = 3306
     ip_protocol = "tcp"
     }"""
     assert static_gate({"main.tf": sg}, layer="platform").detail == "CIDR_MUST_BE_LITERAL"
+
+
+def test_certificate_validation_is_the_only_allowed_for_each():
+    certificate_record = """resource "aws_route53_record" "certificate_validation" {
+  for_each = {
+    for d in aws_acm_certificate.main.domain_validation_options : d.domain_name => {
+      name = d.resource_record_name
+      type = d.resource_record_type
+      record = d.resource_record_value
+    }
+  }
+  zone_id = "Z123456"
+  name = each.value.name
+  type = each.value.type
+  records = [each.value.record]
+  ttl = 60
+}"""
+    assert static_gate({"main.tf": certificate_record}, layer="platform").passed
+    assert not static_gate(
+        {
+            "main.tf": certificate_record.replace(
+                'aws_route53_record" "certificate_validation', 'aws_route53_record" "app'
+            )
+        },
+        layer="platform",
+    ).passed
+    assert not static_gate(
+        {
+            "main.tf": certificate_record.replace(
+                "aws_acm_certificate.main.domain_validation_options", "var.records"
+            )
+        },
+        layer="platform",
+    ).passed
+
+
+def test_generated_bundle_rejects_variables_not_supplied_by_code():
+    allowed = 'resource "aws_s3_bucket" "source" { bucket = "${var.project}-source" }'
+    unsupported = allowed.replace("var.project", "var.region")
+
+    assert static_gate({"main.tf": allowed}, layer="platform").passed
+    result = static_gate({"main.tf": unsupported}, layer="platform")
+    assert not result.passed
+    assert result.detail == "VARIABLE_NOT_ALLOWED"
 
 
 def test_build_and_app_boundaries_are_distinct():
@@ -456,7 +591,13 @@ def test_expired_guard_does_not_mark_apply_started(runtime):
 
 
 @pytest.mark.parametrize(
-    "resource_address,passed", [("aws_security_group.alb", True), ("aws_security_group.db", False)]
+    "resource_address,passed",
+    [
+        ("aws_security_group.alb", True),
+        ("aws_vpc_security_group_ingress_rule.alb_http", True),
+        ("aws_security_group.db", False),
+        ("aws_vpc_security_group_ingress_rule.db_http", False),
+    ],
 )
 def test_checkov_exception_is_resource_and_check_specific(tmp_path, resource_address, passed):
     from dataclasses import replace
@@ -465,7 +606,13 @@ def test_checkov_exception_is_resource_and_check_specific(tmp_path, resource_add
     fake.check_result["results"]["failed_checks"] = [
         {"check_id": "CKV_AWS_260", "resource": resource_address}
     ]
-    settings = replace(SETTINGS, alb_security_group_addresses=("aws_security_group.alb",))
+    settings = replace(
+        SETTINGS,
+        alb_security_group_addresses=(
+            "aws_security_group.alb",
+            "aws_vpc_security_group_ingress_rule.alb_http",
+        ),
+    )
     runtime = InfraRuntime(
         root=tmp_path,
         run_id="run-1",

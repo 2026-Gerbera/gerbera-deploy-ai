@@ -38,9 +38,9 @@ def test_foundation_has_state_protection_and_two_boundaries_without_deployer():
 def test_outputs_separate_platform_and_app_and_reject_secret_values():
     arn = "arn:aws:secretsmanager:ap-northeast-2:123456789012:secret:ddak/demo/KEY-ABC123"
     assert checked_outputs({"app_secret_arn_KEY": arn}, "app")
+    assert checked_outputs({"app_secret_arn_DATABASE_URL": arn}, "platform")
     for values, layer in [
         ({"app_secret_arn_KEY": "value"}, "app"),
-        ({"app_secret_arn_KEY": arn}, "platform"),
         ({"alb_arn": arn}, "app"),
         ({"secret_value": "value"}, "app"),
     ]:

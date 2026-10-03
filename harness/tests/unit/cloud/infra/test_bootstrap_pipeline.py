@@ -32,6 +32,7 @@ def bootstrap(tmp_path):
     sdk["s3"].head_object.side_effect = missing("404")
     sdk["s3"].put_object.return_value = {"ETag": "fixture-etag"}
     sdk["iam"].get_policy.side_effect = missing("NoSuchEntity")
+    sdk["iam"].get_role.side_effect = missing("NoSuchEntity")
     records = []
     runner = f.FakeRunner()
     runner.raw = {
@@ -130,6 +131,20 @@ def test_registered_bootstrap_with_existing_bucket_uses_remote_backend(tmp_path)
     sdk = {name: Mock() for name in ("s3", "iam", "sts")}
     sdk["sts"].get_caller_identity.return_value = {"Account": settings.account_id}
     template = foundation_template(settings)
+    role = template["ecs_infrastructure_role"]
+    sdk["iam"].get_role.return_value = {
+        "Role": {
+            "RoleName": role["name"],
+            "Path": role["path"],
+            "Arn": role["arn"],
+            "AssumeRolePolicyDocument": role["trust_policy"],
+        }
+    }
+    sdk["iam"].list_attached_role_policies.return_value = {
+        "AttachedPolicies": [],
+        "IsTruncated": False,
+    }
+    sdk["iam"].list_role_policies.return_value = {"PolicyNames": [], "IsTruncated": False}
     sdk["s3"].get_bucket_tagging.return_value = {
         "TagSet": [{"Key": k, "Value": v} for k, v in template["tags"].items()]
     }

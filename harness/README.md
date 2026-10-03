@@ -6,7 +6,9 @@
 
 SoftBank Hackathon 2026 Term1 팀 저장소입니다. 저장소 이름은 `gerbera-on-premise`, 파이썬 패키지 이름은 `ddak`입니다.
 
-> **현재 실행 위치는 저장소의 `harness/`입니다.** 구형 MCP 하네스는 삭제했습니다. 개발 기준은 [최신 개발자 문서](../single-app/dev-docs/README.md)와 [하네스 안내](docs/harness/README.md)입니다.
+> **현재 실행 위치는 저장소의 `harness/`입니다.** 구형 MCP 하네스는 삭제했습니다. 개발 기준은 [최신 개발자 문서](../single-app/dev-docs/README.md)와 [하네스 안내](docs/harness/README.md)입니다. 최신 결정은 [10/3 결정 따라잡기](docs/decisions/2026-10-03-decisions-catch-up.md)입니다.
+
+> **대회 배포 방식(10/3 14:35): 클라우드·온프렘 모두 rolling입니다.** 블루그린은 대회 뒤로 미루며 기존 코드는 휴면 상태로 보존합니다. [오전·14:20·14:35 결정 변경 이력](docs/decisions/2026-10-03-cloud-bluegreen.md)을 따릅니다.
 
 ## 어떻게 동작하나
 
@@ -15,7 +17,7 @@ SoftBank Hackathon 2026 Term1 팀 저장소입니다. 저장소 이름은 `gerbe
  ├── web       관리 화면·채팅·계획 카드·승인 화면·2열 진행(SSE)·설정(도메인)·LLM 연결 카드
  ├── plan      ① 플랜(AI: 분석 분류·step 선택·Dockerfile 초안) + ② 계획 검증·Dockerfile 검사(코드)
  ├── executor  plan.json 순서대로 레지스트리 함수를 직접 호출(AI 없음)
- │             빌드 ∥ 로컬 트랙 ∥ 클라우드 트랙 → local_verified 대기 지점 → 교차 검증
+ │             빌드 ∥ 로컬 트랙 ∥ 클라우드 트랙(환경 간 대기 없음) → 둘 다 성공 시 교차 검증
  ├── cd        ④ 배포 공통: interface.py(공통 인터페이스) + dispatch.py(provider 선택) + fake.py (AI 없음)
  ├── cloud     infra(AI Terraform: 생성만 AI, 검사·plan·사람 승인 뒤 apply는 코드) · build(③ 빌드·푸시, dockerhub 기본·ecr 옵션) · deploy(AWS provider) · tls · health
  ├── onprem    VM 기반: deploy(was VM 원격 Docker) · provision · inventory (AI 없음)
@@ -24,10 +26,11 @@ SoftBank Hackathon 2026 Term1 팀 저장소입니다. 저장소 이름은 `gerbe
  └── core      계약(pydantic) · 툴 레지스트리(@tool) · call_ai(cli/api/replay) · redact
                               │
    온프렘(VM 기반 web·was·db, 파이프라인은 was VM만 조작, 컨테이너 모드는 로컬 검증용, Docker Hub 읽기 전용 pull)
+   · 온프렘 빌드는 실행 PC의 로컬 빌드 백엔드(CodeBuild와 같은 buildspec) → Docker Hub(10/3)
    · AWS 서울(CodeBuild → Docker Hub, ECS Fargate, 공유 RDS MySQL)
 ```
 
-- 파이프라인: ① 플랜 → ② 계획 검증 → ③ 빌드 → ④ 배포 → ⑤ 검증 및 보고. "동시에" = 두 환경을 동시에 시작해 병렬로 진행하고, 로컬 검증이 필요한 지점에서만 기다립니다.
+- 파이프라인: ① 플랜 → ② 계획 검증 → ③ 빌드 → ④ 배포 → ⑤ 검증 및 보고. "동시에" = 두 환경을 동시에 시작해 병렬로 진행합니다. 온프렘과 클라우드 사이에 대기 지점은 없고(10/1 밤), 한 환경이 실패해도 다른 환경은 계속합니다. 교차 검증은 둘 다 성공했을 때만 돕니다.
 - AI는 제안만 만듭니다: JSON(채팅 의도, 분석 분류, step 선택, 실패 원인 설명, 보고 요약)과 Terraform HCL·IAM 정책 초안, (Dockerfile이 없을 때) Dockerfile 초안. 제안은 검증과 사람 승인을 거친 뒤 코드가 실행합니다(IAM 생성은 사람 승인 필수). 빌드·배포·검증 실행·롤백·잠금은 코드입니다. LLM은 툴을 직접 호출하지 않습니다. AI는 비밀값을 보지 않습니다.
 - 이 경계는 CI가 검사합니다(import-linter 계약 7개 + `call_ai` 런타임 가드, [docs/harness/02](docs/harness/02_툴-작성-규약.md) C-6). 인프라 쪽 게이트(정적 게이트·정책 검사·Access Analyzer·사람 승인·권한 경계)는 [infra/terraform/README.md](infra/terraform/README.md).
 
@@ -68,7 +71,7 @@ O1의 승인·SQLite 잠금/상태·패치 스냅샷·실행기·온프렘 provi
 | `src/ddak/cd` | ④ 배포 공통: `interface.py`(deploy·rollback·health_check·migrate_db·inject_config·ensure_tls) + `dispatch.py`(`select_provider`) + `fake.py` |
 | `src/ddak/verify` | ⑤ 검증 및 보고 |
 | `src/ddak/ops` | 운영 툴(계획 밖) |
-| `src/ddak/executor` | 실행기: 트랙 병렬, wait_for/signal 대기 지점, 트랙별 롤백, 진행 이벤트 |
+| `src/ddak/executor` | 실행기: 트랙 병렬(환경 간 대기 없음, 트랙 안 wait_for/signal), 트랙별 롤백, 진행 이벤트 |
 | `src/ddak/web` | 관리 웹(FastAPI, 💭 Jinja2 + HTMX, SSE) |
 | `src/ddak/app.py` | 조립 진입점(툴 모듈 자동 등록, `python -m ddak`) |
 | `apps/sample-app` | 샘플 앱(배포 대상, flaskr 기반, MySQL) |
@@ -83,7 +86,7 @@ O1의 승인·SQLite 잠금/상태·패치 스냅샷·실행기·온프렘 provi
 
 이 저장소는 개발 과정에서 AI 코딩 도구(Claude Code, Codex 등)를 사용했습니다.
 
-- 사용 기록은 사람별로 [docs/ai-usage/](docs/ai-usage/README.md)에 남깁니다. PR마다 "AI 사용" 칸에 도구, 범위, 사람이 검증한 부분을 적습니다.
+- 사용 기록은 사람별로 [docs/ai-usage/](docs/ai-usage/README.md)에 남깁니다(도구, 범위, 사람이 검증한 부분). PR 본문은 `.github/pull_request_template.md` 형식(변경 내용·확인한 것)을 따르고, 템플릿에 "AI 사용" 칸이 없으므로 "변경 내용"에 AI 사용 기록 위치를 한 줄 적습니다.
 - git 메타데이터(커밋 작성자, Co-authored-by 트레일러)에는 AI를 넣지 않습니다. 이것은 GitHub 컨트리뷰터 목록의 문제이며, AI 사용 사실을 숨기려는 것이 아닙니다.
 - 모든 커밋은 팀원 본인의 git 계정으로 만듭니다. main에는 직접 push하지 않고 브랜치 + PR로 올리며, merge는 사람이 합니다. 필수 리뷰 승인 수는 정하지 않았습니다.
 - 제품이 실행 중에 쓰는 AI(채팅 의도, 분석 분류, step 선택, 실패 원인 설명, 보고 요약)의 호출 비용은 이와 별개로 결과 화면에 표시합니다.

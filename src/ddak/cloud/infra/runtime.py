@@ -29,6 +29,7 @@ from botocore.exceptions import ClientError
 from ddak.core.contracts.approval import ApprovalRecord
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.contracts.infra_outputs import IMAGE_REPOSITORY_PATTERN, checked_outputs, output_kind
+from ddak.core.redact import redact
 
 from .plan import filter_outputs, summarize_plan
 from .policy import GateResult, PolicyViolation, static_gate
@@ -55,16 +56,18 @@ def private_write(path: Path, content: bytes) -> None:
 class SessionKeys:
     access_key: str
     secret_key: str
-    token: str
+    token: str | None = None
 
     def environment(self) -> dict[str, str]:
-        if not all((self.access_key, self.secret_key, self.token)):
-            raise DdakToolError(ErrorCode.CONFIG_INVALID, "AWS 단기 세션 세 값이 필요하다")
-        return {
+        if not all((self.access_key, self.secret_key)):
+            raise DdakToolError(ErrorCode.CONFIG_INVALID, "AWS 자격증명 두 값이 필요하다")
+        environment = {
             "AWS_ACCESS_KEY_ID": self.access_key,
             "AWS_SECRET_ACCESS_KEY": self.secret_key,
-            "AWS_SESSION_TOKEN": self.token,
         }
+        if self.token:
+            environment["AWS_SESSION_TOKEN"] = self.token
+        return environment
 
 
 @dataclass(frozen=True, repr=False)
@@ -191,7 +194,11 @@ class AwsSettings:
                 ErrorCode.CONFIG_INVALID, "RDS 마스터 시크릿은 정확한 ARN이 필요하다"
             )
         if not all(
-            re.fullmatch(r"aws_security_group\.[A-Za-z][A-Za-z0-9_]*", a)
+            re.fullmatch(
+                r"(?:aws_security_group|aws_vpc_security_group_ingress_rule)\."
+                r"[A-Za-z][A-Za-z0-9_]*",
+                a,
+            )
             for a in self.alb_security_group_addresses
         ):
             raise DdakToolError(ErrorCode.CONFIG_INVALID, "ALB 검사 예외 주소 형식 오류")
@@ -358,7 +365,7 @@ class InfraRuntime:
         sdk = boto3.Session(
             aws_access_key_id=session.access_key,
             aws_secret_access_key=session.secret_key,
-            aws_session_token=session.token,
+            aws_session_token=session.token or None,
             region_name=REGION,
         )
         config = Config(connect_timeout=5, read_timeout=10, retries={"max_attempts": 2})
@@ -575,9 +582,8 @@ class InfraRuntime:
         )
         for name, content in self._files.items():
             private_write(self.work / name, content)
-        # fmt 검사도 원본을 수정하지 않는다. 고정된 bundle hash를 유지한다.
-        if self._run("fmt", "-check", "-no-color").code != 0:
-            return GateResult(False, "TERRAFORM_FMT")
+        # 서식은 실행 안전성과 무관하다. AI 생성 번들의 내용을 자동 변경하지 않고
+        # init/validate/Checkov로 구문·공급자 계약·보안 정책을 검사한다.
         if (
             self._run(
                 "init", "-input=false", "-lockfile=readonly", "-backend=false", "-no-color"
@@ -654,6 +660,7 @@ class InfraRuntime:
                 rds_master_secret_arn=self.settings.rds_master_secret_arn,
                 state_bucket=self.settings.state_bucket,
                 update=update,
+                bootstrap_prepared=self._foundation is not None,
                 analyzer=analyzer,
                 checkov=checked,
             )
@@ -679,11 +686,14 @@ class InfraRuntime:
             json_plan.unlink(missing_ok=True)
         self._planned = self._approval_hash(plan_hash)
         if self._foundation is not None:
-            from .plan import _policy_view
+            from .plan import _masked, _policy_view
 
             foundation = json.loads(self._foundation)
             summary["plan_sha256"] = self._planned
-            summary["headline"] += " · 기반 버킷·권한 경계 2개 확보 및 원격 state 연결"
+            summary["headline"] += (
+                " · 기반 버킷·권한 경계 2개·ECS 인프라 역할 확보 및 원격 state 연결"
+                " · bootstrap dbinit RDS 읽기 예외"
+            )
             summary["iam_diff"].append(
                 {
                     "address": "ddak.foundation",
@@ -694,7 +704,20 @@ class InfraRuntime:
                     ),
                     "app_boundary": _policy_view(foundation["boundary"]),
                     "build_boundary": _policy_view(foundation["build_boundary"]),
+                    "ecs_infrastructure_role": {
+                        "arn": _masked(foundation["ecs_infrastructure_role"]["arn"]),
+                        "trust_policy": _policy_view(
+                            foundation["ecs_infrastructure_role"]["trust_policy"]
+                        ),
+                        "managed_policy_arn": foundation["ecs_infrastructure_role"][
+                            "managed_policy_arn"
+                        ],
+                    },
                     "state_migration": self._local_backend,
+                    "bootstrap_dbinit_exception": {
+                        **foundation["bootstrap_dbinit_exception"],
+                        "resource": _masked(foundation["bootstrap_dbinit_exception"]["resource"]),
+                    },
                 }
             )
             if len(canonical(summary)) > 8192:
@@ -807,9 +830,12 @@ class InfraRuntime:
             # Terraform은 일부 리소스만 변경하고 실패할 수 있다. 앱 컨테이너
             # 롤백으로 복구됐다고 판단하지 않고 잠금과 증거를 보존한다.
             code = exc.code if isinstance(exc, DdakToolError) else ErrorCode.ADAPTER_FAILED
+            cause = redact(str(exc)) if isinstance(exc, DdakToolError) else type(exc).__name__
             raise DdakToolError(
                 code,
-                "인프라 적용 또는 출력 확인 실패; 대상 상태를 사람이 확인해야 한다"
+                "인프라 적용 또는 출력 확인 실패; "
+                + cause
+                + "; 대상 상태를 사람이 확인해야 한다"
                 + (
                     f"; 복구 기록: {self._bootstrap_attempt}"
                     if self._bootstrap_attempt.exists()
