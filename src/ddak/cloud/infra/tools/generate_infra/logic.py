@@ -19,7 +19,7 @@ from ddak.core.contracts.tools.generate_infra import GenerateInfraInput, Generat
 from ddak.core.redact import MAX_LEN, redact
 from ddak.core.snapshots import digest_bytes
 
-PROMPT_VERSION = "infra-aws-v2"
+PROMPT_VERSION = "infra-aws-v3-rolling"
 _PROMPT = (Path(__file__).parent / "prompt.md").read_text(encoding="utf-8")
 _REPAIR_PROMPT = (Path(__file__).parent / "repair_prompt.md").read_text(encoding="utf-8")
 _REPAIR_INSTRUCTION = (
@@ -168,7 +168,7 @@ def _repair_source(ctx: RunContext, directory: Path) -> tuple[str, dict[str, str
 
 
 def _baseline_source(ctx: RunContext, directory: Path) -> dict[str, str] | None:
-    root = directory.parent.parent / "infra-baselines" / ctx.project
+    root = directory.parent.parent / "infra-baselines" / ctx.project / PROMPT_VERSION
     if not root.exists():
         return None
     if not root.is_dir() or root.is_symlink():

@@ -18,8 +18,30 @@
 {% if infra.iam_diff %}<ul>{% for item in infra.iam_diff %}
 {% set action = item.get('action') %}
 <li><code>{{ item.get('address') or '대상 기록 없음' }}</code> · {{ {'create':'생성','update':'수정','delete':'삭제','replace':'교체','ensure':'준비'}.get(action, action) if action is string else '작업 기록 없음' }}{% if item.boundary_attached is sameas true %} · 권한 상한 적용됨{% endif %}{% if item.trust_changed is sameas true %} · 신뢰 정책 바뀜{% endif %}
+{% set boundary_changes = item.get('boundary_changes', []) %}
+{% if item.get('address') == 'ddak.foundation' and boundary_changes %}
+<div class="table-wrap"><table><thead><tr><th scope="col">경계 정책 · ARN</th><th scope="col">동작</th><th scope="col">기존 버전</th><th scope="col">기존 문서 SHA-256</th><th scope="col">목표 템플릿 SHA-256</th><th scope="col">Statement 변경</th><th scope="col">Resource 변경</th></tr></thead><tbody>
+{% for boundary in boundary_changes %}<tr>
+<td data-label="경계 정책 · ARN"><strong>{{ boundary.get('policy_name') or (boundary.get('policy_arn', '').split('/')[-1] if boundary.get('policy_arn') else '정책 이름 기록 없음') }}</strong>{% if boundary.get('policy_arn') %}<br><code>{{ boundary.policy_arn }}</code>{% endif %}</td>
+<td data-label="동작">{{ {'create':'생성','update':'수정','unchanged':'변경 없음'}.get(boundary.get('action'), boundary.get('action') or '기록 없음') }}</td>
+<td data-label="기존 버전"><code>{{ boundary.get('previous_version_id') or '없음' }}</code></td>
+<td data-label="기존 문서 SHA-256"><code>{{ boundary.get('previous_document_sha256') or '없음' }}</code></td>
+<td data-label="목표 템플릿 SHA-256"><code>{{ boundary.get('template_sha256') or '기록 없음' }}</code></td>
+<td data-label="Statement 변경">
+{% for heading, statements in (('추가', boundary.get('added_statements', [])), ('삭제', boundary.get('removed_statements', []))) %}
+<strong>{{ heading }} ({{ statements|length }})</strong>
+{% if statements %}<ul>{% for statement in statements %}<li>
+{% for key, value in statement.items() %}<span>{{ key }}: <code>{{ value|tojson }}</code></span>{% if not loop.last %} · {% endif %}{% endfor %}
+</li>{% endfor %}</ul>{% else %}<p>없음</p>{% endif %}
+{% endfor %}</td>
+<td data-label="Resource 변경">{% for heading, resources in (('추가', boundary.get('added_resources', [])), ('삭제', boundary.get('removed_resources', []))) %}<strong>{{ heading }} ({{ resources|length }})</strong>{% if resources %}<ul>{% for resource in resources %}<li><code>{{ resource }}</code></li>{% endfor %}</ul>{% else %}<p>없음</p>{% endif %}{% endfor %}</td>
+</tr>{% endfor %}</tbody></table></div>
+{% endif %}
 {% set grants = item.get('proposed_allow', item.get('added')) %}
-{% if grants is sequence and grants is not string and grants is not mapping and grants %}
+{% if item.get('address') == 'ddak.foundation' and boundary_changes %}
+{% if item.get('ecs_infrastructure_role') %}<p>ECS 인프라 역할: <code>{{ item.ecs_infrastructure_role.arn }}</code><br>연결 정책: <code>{{ item.ecs_infrastructure_role.managed_policy_arn }}</code></p>{% endif %}
+{% if item.get('bootstrap_dbinit_exception') %}<p>RDS bootstrap 읽기 예외: <code>{{ item.bootstrap_dbinit_exception.resource }}</code> · 역할 <code>{{ item.bootstrap_dbinit_exception.role_address }}</code> · <code>{{ item.bootstrap_dbinit_exception.actions|join(', ') }}</code></p>{% endif %}
+{% elif grants is sequence and grants is not string and grants is not mapping and grants %}
 <p>{{ '제안 정책의 전체 허용 목록' if 'proposed_allow' in item else '추가 허용 목록' }}</p>
 {% for grant in grants %}{% if grant is mapping %}
 <p>허용 작업: <code>{{ grant.actions|join(', ') if grant.actions is sequence and grant.actions is not string and grant.actions is not mapping else grant.get('actions', '기록 없음') }}</code></p>

@@ -133,4 +133,97 @@ gitleaks git --redact --no-banner --log-opts='HEAD -- . :(exclude)**/.env :(excl
 
 ## 남은 확인
 
-실제 rolling 리허설·배포 완료·3분 성능은 이번 로컬 검사로 검증하지 않았다. 프롬프트의 헬스 수치 보완과 실제 클라우드 리허설은 후속이다. 블루그린 작업은 대회 뒤까지 중단한다.
+실제 rolling 리허설·배포 완료·3분 성능은 이번 로컬 검사로 검증하지 않았다. 프롬프트 헬스 수치는 아래 후속 변경에서 보완한다. 실제 클라우드 리허설은 후속이며 블루그린 작업은 대회 뒤까지 중단한다.
+
+
+## 10/3 재개 — 승인 뒤 경계 정책 버전 갱신 + rolling 프롬프트
+
+이 절은 위 로그 범위 수정 당시의 “기존 경계 불일치 시 자동 교체하지 않음”과 “프롬프트·공유 계약 변경 없음” 기록을 대체하는 현행 상태다. 시작 시 HEAD는 `a16bbb4`, 브랜치는 `o1/cloud-staged-gate`였고 `git status`·일반/인덱스 diff에는 `.venv` 링크 외 선행 변경이 없었다. 로그 범위 수정 위에 아래 파일 변경을 남겼다. 커밋·PR 생성은 정준우가 진행한다.
+
+### 경계 변경 계약과 실패 처리
+
+- foundation 준비 단계에서 두 정확 ARN의 기본 VersionId·정규화 문서 SHA-256을 읽고 승인 해시에 결합한다. 승인 화면은 해시와 Statement/Resource 추가·삭제를 보여 준다. foundation·infra 승인을 받지 않고 IAM 쓰기를 시작할 수 없다.
+- foundation 전체 사전 검사와 각 정책 쓰기 직전에 다시 읽는다. 승인 이후 변경, 다른 ARN, 불완전한 버전 목록은 중단한다. 다른 정책의 사전 검사 실패로 부분 변경을 시작하지 않게 두 정책 전체를 먼저 검사한다.
+- 동일 정책은 재사용, 미존재는 CreatePolicy, 다른 정책은 버전 5개 미만에서 CreatePolicyVersion(SetAsDefault=true)이다. 5개이면 중단하고 자동 삭제하지 않는다. IAM 클라이언트의 total_max_attempts=1로 SDK 내부 재시도도 차단한다. default 버전 조회 실패를 정책 미존재로 간주하지 않는다.
+- `apply_infra` 출력에 선택 필드 `boundary_versions`를 추가했다(기본값 빈 목록). 각 행은 마스킹한 정확 ARN·이전/새 VersionId·created/updated/unchanged/unknown 상태다. `DdakToolError`는 동일한 증거를 전달하며 실행기가 `infra_changes`에 성공/부분 변경을 기록한다. 툴 입력·step 카탈로그·이벤트·설정 키 변경은 없다.
+- 각 시도 직전 unknown 영수증, 응답 직후 실제 버전 영수증을 기존 run 시도 표식 옆 `*-foundation-boundary-<n>.json`에 0600으로 쓴다. 프로세스 중단 복구 근거이며, 같은 run을 자동 재시도하지 않는다. 영속화 직후 core/runtime의 내부 contextvar 콜백을 통해 워커 반환 전에도 실행기로 전달한다. 취소·타임아웃에서 이미 수신한 영수증은 영속 run 결과 및 결과 화면에 반영하고 NEEDS_HUMAN으로 종료한다. 프로세스 자체가 죽거나 run 최종화 뒤 워커가 늦게 확정한 내용의 화면 동기화는 보장하지 않으므로 영수증으로 상태를 확인해야 한다.
+- 한 정책 성공 후 다음 정책/플랫폼/출력 확인 실패도 이전 성공 기록을 보존한다. 응답 유실의 unknown은 미변경을 뜻하지 않는다. 결과 화면은 이전·새 버전과 확인 필요 상태를 구분한다.
+- foundation을 같은 제품 프로세스 안에서 직렬화한다. AWS에는 expected VersionId를 받는 조건부 쓰기가 없으므로 외부 프로세스와의 조회→쓰기 경쟁을 완전히 방지할 수 없다. 계정 공용 경계에 프로젝트별 로그 Resource가 들어가는 기존 구조도 유지한다.
+
+### 프롬프트 출처와 범위
+
+**프롬프트 변경은 정준우 구현(서윤 cloud 브랜치 c4af865 출처).** `origin/main=38d718c31e6f82bdd7d4bdc8c02334590e5a5d78`, `origin/cloud=c4af8656c2a6b574311f37fe3f12d0272c99e66d`를 읽기 비교했다. 원격 fetch나 브랜치 변경은 하지 않았다. 비교 대상 repair_prompt.md에는 차이가 없었다.
+
+| 항목 | 출처 / 이 작업 |
+|---|---|
+| ALB·앱·DB 최소 egress | c4af865 prompt.md에서 이식 |
+| TG deregistration_delay=30 | c4af865 prompt.md에서 이식 |
+| HTTPS TLS13-1-2-2021-06 | c4af865 prompt.md에서 이식 |
+| 빈 app_database_url 시크릿 | c4af865 prompt.md에서 이식; logic.py의 DATABASE_URL ARN 출력 참조 해소 |
+| health interval=5, timeout=3, healthy=2, unhealthy=2, /health/ready, 200 | 정준우 구현. c4af865는 interval·healthy를 명시하지 않았음 |
+| /aws/ecs/프로젝트 로그 그룹 | 기존 프롬프트 유지, a16bbb4의 로그 권한 경계와 일치 |
+
+서윤은 PR #25 헬스만 맡는다. rolling / TG 1개 대표 fixture의 정적 HCL·plan 검사 및 출력 참조를 고정하고, drain 300 또는 interval 30을 거부한다. 블루그린 휴면 검사와 역할은 보존한다. fixture 통과를 실제 생성 AI 호출·Terraform 공급자 검증·AWS 리허설 통과로 표현하지 않는다.
+
+
+- 프롬프트 버전: `infra-aws-v3-rolling`. 기준본은 `infra-baselines/<project>/<PROMPT_VERSION>`에서만 읽는다. 버전만 바꾸고 무버전 캐시를 계속 쓰면 AI 호출을 건너뛰어 예전 HCL이 재사용되므로 디렉터리도 분리했다. 무버전/v2 기준본은 자동 재사용·복사하지 않는다. source=cache 및 source=fixture 구분을 테스트하며, 기존 기준본이 있던 환경은 새 버전 생성 경로로 들어간다는 동작 차이가 있다.
+- 대표 fixture와 foundation을 함께 요약하면 전체 정책과 diff의 중복으로 8KiB를 넘었다. 생성/갱신 정책의 중복 전체 뷰만 제거하고 Statement/Resource diff를 유지했다. 변경 없는 정책의 뷰와 기존 8KiB 상한은 유지한다. 결합 요약을 실제 encode_meta로 검증하는 회귀도 추가했다. 임의로 큰 외부 정책 diff는 여전히 승인 전에 명확히 거부한다.
+
+### 재개 작업의 최종 검증 — 이번 실행 결과
+
+모든 make 명령에 `UV_NO_SYNC=1 PYTHONPATH=<cloud-staged>/src PYTHONDONTWRITEBYTECODE=1`을 지정했다. 공유 .venv 링크·의존성을 변경하지 않았다.
+
+| 검사 | 결과 |
+|---|---|
+| `make -C harness test ARGS='tests/unit/cloud/infra tests/unit/test_boundary_execution.py tests/unit/test_boundary_views.py tests/unit/test_web.py tests/unit/test_ui_redesign.py tests/unit/test_ui_integration_fix10.py tests/unit/test_ui_settings_fix10.py tests/unit/test_executor.py tests/unit/test_executor_safety.py tests/unit/test_executor_diagnose.py tests/unit/test_deployment_service.py tests/unit/test_approval_meta.py tests/unit/test_approval_contracts.py --tb=short -q'` | **1096 passed, 0 failed, 10.57초** |
+| `make -C harness lint type boundary contracts` | PASS. pyright 0 errors/warnings, import 경계 7 kept, 추가 계약 테스트 **48 passed**, 스키마 일치 |
+| 경계 Stubber 집중 검사 | **58 passed**. 같음/없음/새 기본 버전/5개/승인 뒤 drift/다른 ARN, URL 인코딩 및 SDK dict, 전체 페이지·불완전 응답·부분 실패 포함 |
+| 대표 rolling 생성·출력·속도·기준본 검사 | **13 passed**. HCL/plan drain 300·interval 30 거부 및 DATABASE_URL 출력 참조 포함 |
+| `gitleaks git` (읽기 금지 경로 제외) | exit 0, **188 commits / 7.17 MB**, 발견 없음 |
+| 변경·신규 파일 스캔 | `gitleaks dir --redact --no-banner <29개 파일 사본>` exit 0, 발견 없음 (`gitleaks-files.log`) |
+| 최종 Git 확인 | `git diff --check` PASS, staged 변경 없음, HEAD a16bbb4 유지, .venv → ../../.venv 유지 |
+| 전체 CI | **이번에는 미실행. 정준우가 샌드박스 밖에서 실행**. 위 과거 2599 passed·소켓 오류 기록은 이번 변경의 검증 결과가 아님 |
+
+- 관련 검사에서 소켓 제한 실패는 없었다. 최종 통과 전에 발견한 정책 JSON percent 중복 디코딩·SDK dict 테스트 가정·승인 메타 중복 크기 문제는 수정하고 재검사했다. 초기 실패를 소켓 문제로 분류하지 않았다.
+- 경계 갱신 독립 사후 검토의 두 지적(SDK 재시도, 취소/타임아웃 receipt 누락)을 수정했다. 설정 검사와 취소·타임아웃의 실제 서비스 run 영속화 회귀를 추가한 뒤 재검토 PASS를 받았다. 검토자는 읽기만 수행했고 테스트 수는 부모 직접 실행 결과다.
+- 로그: `harness/var/validation/cloud-boundary-prompt-20261003/related-tests.log`, `static-checks.log`, `gitleaks-git.log`. 검증 산출물은 추적하지 않는다.
+- 실제 AWS·Terraform·VM·Docker·claude 호출, git 쓰기·설정 변경, 금지 경로 읽기, 다른 worktree 수정은 하지 않았다. 이번 결과는 수정 코드와 로컬 모의 검사 완료이며 실배포·전체 CI·3분 리허설 완료가 아니다.
+
+
+### 프롬프트 검토 범위
+
+독립 검토는 요청한 프롬프트 항목·버전별 기준본 분리를 확인했다. 함께 지적한 egress 전체 강제와 정확한 health/TLS 값의 게이트 강제는 이번에 추가한 보안 판정이 아니다. 정준우 요청대로 기존 drain ≤30 / interval ≤10 / healthy ≤3 범위를 유지하며, 15초/10초 같은 허용 범위 값을 거부하도록 바꾸지 않는다. egress·TLS·health의 정확한 권장 값은 프롬프트 및 대표 fixture의 정합성 검사이고, 모든 AI 생성물에 해당 값을 강제하는 새 게이트를 구현했다는 뜻이 아니다. 기존 정적 정책 검사와 실제 제품 Checkov 경로도 대체하지 않는다.
+
+### 이번 변경 파일 (첫 변경 줄)
+
+| 파일:줄 | 상태 |
+|---|---|
+| `harness/contracts/schemas/apply_infra.output.json:3` | 수정 |
+| `harness/docs/ai-usage/O1.md:704` | 수정 |
+| `harness/docs/decisions/2026-10-03-cloud-bluegreen.md:48` | 수정 |
+| `harness/docs/guides/O1-cloud-staged-gate-handoff-2026-10-03.md:136` | 수정 |
+| `harness/fixtures/infra/rolling_v3/application.tf:1` | 신규 |
+| `harness/fixtures/infra/rolling_v3/metadata.json:1` | 신규 |
+| `harness/fixtures/infra/rolling_v3/network.tf:1` | 신규 |
+| `harness/fixtures/infra/rolling_v3/pipeline.tf:1` | 신규 |
+| `harness/fixtures/infra/rolling_v3/plan.json:1` | 신규 |
+| `harness/tests/unit/cloud/infra/test_bluegreen_foundation.py:92` | 수정 |
+| `harness/tests/unit/cloud/infra/test_bootstrap_pipeline.py:11` | 수정 |
+| `harness/tests/unit/cloud/infra/test_boundary_versions.py:1` | 신규 |
+| `harness/tests/unit/cloud/infra/test_generate_infra_rolling.py:1` | 신규 |
+| `harness/tests/unit/cloud/infra/test_runtime.py:15` | 수정 |
+| `harness/tests/unit/test_boundary_execution.py:1` | 신규 |
+| `harness/tests/unit/test_boundary_views.py:1` | 신규 |
+| `src/ddak/cloud/infra/boundary_versions.py:1` | 신규 |
+| `src/ddak/cloud/infra/fixture.py:53` | 수정 |
+| `src/ddak/cloud/infra/foundation.py:1` | 수정 |
+| `src/ddak/cloud/infra/runtime.py:16` | 수정 |
+| `src/ddak/cloud/infra/tools/generate_infra/logic.py:22` | 수정 |
+| `src/ddak/cloud/infra/tools/generate_infra/prompt.md:45` | 수정 |
+| `src/ddak/core/contracts/errors.py:14` | 수정 |
+| `src/ddak/core/contracts/infra_evidence.py:1` | 신규 |
+| `src/ddak/core/contracts/tools/apply_infra.py:7` | 수정 |
+| `src/ddak/core/runtime.py:10` | 수정 |
+| `src/ddak/executor/engine.py:29` | 수정 |
+| `src/ddak/web/templates/approval.html:21` | 수정 |
+| `src/ddak/web/templates/result.html:9` | 수정 |

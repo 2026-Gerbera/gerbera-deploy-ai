@@ -50,6 +50,15 @@ class _FixtureSDK:
                 raise ClientError({"Error": {"Code": code}}, name)
             if name == "get_caller_identity":
                 return {"Account": _ACCOUNT}
+            if name == "create_policy":
+                return {
+                    "Policy": {
+                        "Arn": (
+                            f"arn:aws:iam::{_ACCOUNT}:policy{kwargs['Path']}{kwargs['PolicyName']}"
+                        ),
+                        "DefaultVersionId": "v1",
+                    }
+                }
             return {"ETag": "fixture-etag"}
 
         return call

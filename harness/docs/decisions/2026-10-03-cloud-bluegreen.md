@@ -45,7 +45,7 @@
 - ECS 인프라 역할은 foundation 코드가 멱등하게 생성한다. IAM path는 `/ddak/infra/`, 이름은 `ddak-ecs-infra-elb`, 신뢰 주체는 `ecs.amazonaws.com`이며 AWS 관리형 `AmazonECSInfrastructureRolePolicyForLoadBalancers`를 연결한다. 이 역할과 설정을 foundation 승인 해시 및 승인 화면에 포함한다. AI HCL은 `var.account_id` 기반 고정 역할 ARN만 참조한다. AI 게이트의 역할 신뢰 주체·경로·관리형 정책 금지 조건은 바꾸지 않는다.
 - 플랫폼 층도 `app_secret_arn_<KEY>` 형식의 시크릿 ARN 출력을 허용한다. 기존 `IMAGE_REPOSITORY_PATTERN` 검사와 `checked_cloud_outputs`의 재검증 경로는 유지한다.
 - **로그 범위 정정(10/3):** ECS 앱 권한 경계는 프로젝트 설정에서 만든 `/aws/ecs/<project>:*`와 기존 `/aws/ecs/ddak-*:*`를 함께 허용한다. SDK와 참조 Terraform의 범위를 동일하게 유지한다. HCL 게이트는 `${var.project}`, plan 게이트는 실제 프로젝트 이름을 기준으로 검사하며, 변경 없는 `no-op` 로그 정책도 검사한다. 프로젝트 접두사 뒤의 `:*` 또는 `*`만 허용하고, `/aws/ecs/*` 전체·다른 프로젝트·다른 계정/리전은 거부한다. CodeBuild의 기존 `/aws/codebuild/ddak-*` 범위는 보존한다. 게이트가 `<project>*`를 허용해도 앱 권한 경계는 `<project>:*`로 제한한다. `ddak-*`는 기존 공용 예외다.
-- 로그 범위가 바뀐 foundation 템플릿은 새 승인 해시에 반영된다. 이미 생성된 경계가 새 템플릿과 다르면 기존대로 중단하며 자동 교체하지 않는다. 경계 이름이 계정 안에서 고정되어 있으므로 같은 계정의 다른 프로젝트와도 충돌할 수 있다. 기존 경계 전환과 실제 AWS 적용은 별도 확인 대상이다.
+- 로그 범위가 바뀐 foundation 템플릿과 승인 준비 시 관측한 기본 VersionId·문서 SHA-256을 승인 해시에 묶는다. 기존의 “foundation 경계 자동 교체는 받지 않음” 결정은 아래 10/3 후속 결정으로 대체한다. **승인 뒤 정책 버전 추가 방식으로 허용(아래 조건 1~6).**
 - `generate_infra` 툴 제한 시간은 600초, `prepare_db`는 300초다. AI 전체 호출 제한은 20초로 유지하며, `generate_infra`에만 툴 내부 확장 설정을 둔다. 타임아웃 변경은 툴 실행 상한이며 시연 시간 보장이 아니다.
 - Anthropic SDK 의존성은 추가하지 않는다. 수정 11의 표준 라이브러리 provider 경로로 통일한다.
 
@@ -57,6 +57,7 @@
 | caller | 필요한 권한 | 리소스·조건 |
 |---|---|---|
 | foundation | iam:CreateRole, iam:GetRole, iam:AttachRolePolicy, iam:ListAttachedRolePolicies, iam:ListRolePolicies | /ddak/infra/ddak-ecs-infra-elb 역할. 연결할 관리형 정책은 AmazonECSInfrastructureRolePolicyForLoadBalancers로 제한 |
+| foundation (경계) | iam:GetPolicy, iam:ListPolicyVersions, iam:GetPolicyVersion, iam:CreatePolicyVersion, iam:CreatePolicy | 정확한 /ddak/boundary/ddak-app-boundary 및 /ddak/boundary/ddak-build-boundary ARN. 승인 후에만 생성·버전 추가, 버전 삭제 권한 불필요 |
 | apply | iam:PassRole | 같은 고정 역할, iam:PassedToService=ecs.amazonaws.com |
 | deploy | ecs:ListServiceDeployments, ecs:DescribeServiceDeployments, ecs:StopServiceDeployment | 대상 ECS 서비스·배포 리소스 범위는 자동 공급 구현 시 확정 |
 | ddak-readonly | ecs:DescribeServices, elasticloadbalancing:DescribeRules, elasticloadbalancing:DescribeTargetHealth | 대상 서비스·리스너 규칙·target group의 조회 |
@@ -67,7 +68,7 @@
 
 - bootstrap 준비가 완료된 platform plan(update=False)에서만 `aws_iam_role.dbinit_execution` 주소와 `ddak-<project>-dbinit-exec` 이름의 앱 역할에 `arn:aws:secretsmanager:<region>:<account_id>:secret:rds!db-*` 읽기를 허용한다. 현재 지원 리전은 ap-northeast-2다.
 - 허용 액션은 secretsmanager:GetSecretValue·secretsmanager:DescribeSecret이며, 다른 역할·접두사·계정·리전·액션과 app/update 경로는 거부한다. 역할 ID가 미확정이면 Terraform의 단일 직접 참조로 역할 주소를 확인한다. 변경 없는 와일드카드 읽기 정책도 검사한다. 기존 정확 ARN의 허용 경로는 유지한다.
-- 앱 권한 경계의 기존 GetSecretValue 범위는 보존하고, DescribeSecret만 위 접두사와 dbinit 역할 PrincipalArn 조건의 별도 문장으로 추가한다. 이 경계는 권한 자체를 부여하지 않으며, 실제 역할의 정책은 위 게이트를 통과해야 한다. 기존 경계가 템플릿과 다르면 자동 교체하지 않고 중단한다.
+- 앱 권한 경계의 기존 GetSecretValue 범위는 보존하고, DescribeSecret만 위 접두사와 dbinit 역할 PrincipalArn 조건의 별도 문장으로 추가한다. 이 경계는 권한 자체를 부여하지 않으며, 실제 역할의 정책은 위 게이트를 통과해야 한다. 기존 경계가 템플릿과 다르면 아래 승인·관측 상태 검사·버전 수 제한을 거쳐 새 기본 버전을 추가한다.
 - 예외의 역할 주소·실행 모드·액션·리소스와 경계 조건을 foundation 템플릿에 넣어 foundation 해시와 결합 infra 승인 해시에 포함한다. 화면에는 `RDS bootstrap 범위 rds!db-* (ap-northeast-2, 계정 ************)`로 표시한다. 개별 실제 RDS 시크릿 ARN은 기존 해시 표시를 유지한다.
 - **대회 뒤 정확한 ARN으로 좁힘.** bootstrap 제한은 정책의 승인·생성 경로 제한이며, 생성된 정책이 시간이 지나면 자동 만료된다는 뜻이 아니다. 생성 후 실제 ARN으로 축소하는 제품 경로는 후속 작업이다.
 - error.json 직접 redact와 큰 교정 입력 처리는 main 스레드로 이관한다. 공유 .venv 연결은 추가 변경하지 않고 모든 검사는 UV_NO_SYNC=1과 cloud-int의 PYTHONPATH를 사용한다.
@@ -87,3 +88,27 @@
 오전 정정 이력 **(10/3 14:35 결정으로 대체)**:
 
 2026-10-02 팀 현황과 결정 표의 결정 4에 있는 “온프렘·클라우드 모두 롤링 교체” 및 “클라우드는 ECS Fargate 롤링” 문구는 이 결정으로 대체한다. 블루그린을 1차 이후 검토 후보로 둔다는 관련 반대 의견과 되돌리는 조건도 더 이상 현재 배포 방식을 설명하지 않는다.
+
+
+## 10/3 후속 결정 — 승인 뒤 경계 정책 버전 추가
+
+정준우 결정: 콘솔 수동 교체를 요구하지 않는다. 사람이 승인한 정책 변경만 foundation 코드가 처리한다.
+
+1. 실행은 한 화면 infra 승인 뒤 foundation 단계에서만 수행하며 platform apply보다 먼저다. 승인 전에는 읽기만 한다.
+2. 화면에 두 정책의 생성·갱신·변경 없음, 기존 VersionId·문서 SHA-256, 목표 템플릿 SHA-256, 추가·삭제 Statement와 Resource를 표시한다. Statement의 조건·Deny도 생략하지 않는다. 결합 infra 승인 해시는 saved plan·foundation 템플릿·관측 스냅샷·backend를 묶고, 단독 foundation 승인도 템플릿과 스냅샷을 묶는다. 계정 번호는 표시·결과에서 가린다.
+3. 실행 전 두 정책을 모두 재조회하고 각 쓰기 직전 다시 검사한다. 관측한 기본 VersionId 또는 문서가 바뀌었으면 목표 템플릿과 같아졌더라도 쓰지 않는다. 정책 부재와 기본 버전 조회 실패는 구분한다.
+4. 대상은 설정 계정의 정확한 `arn:aws:iam::<account_id>:policy/ddak/boundary/ddak-app-boundary`와 `arn:aws:iam::<account_id>:policy/ddak/boundary/ddak-build-boundary`다. 다른 ARN·경로·이름은 거부한다.
+5. 같으면 재사용하고 없으면 생성한다. 다르면 버전 목록 전체 페이지를 확인해 5개 미만에서만 `CreatePolicyVersion(SetAsDefault=true)`로 새 기본 버전을 만든다. 5개이면 이유를 표시하고 멈춘다. IAM 클라이언트는 total_max_attempts=1로 SDK 내부 재시도도 끈다. 버전 자동 삭제·자동 재시도·기본 버전 강제 되돌림은 하지 않는다.
+6. 시도 전 결과 미확정 기록과 응답 직후 이전·새 VersionId를 별도 영속 영수증에 남기며 run 결과와 결과 화면에도 표시한다. 다음 경계·platform 적용·출력 확인이 실패해도 먼저 성공한 기록을 보존한다. 응답 유실은 `unknown`으로 표시하며 사람이 실제 상태를 확인해야 한다. 영속화한 영수증은 툴 반환 전에도 실행기에 전달해 취소·타임아웃의 결과에 포함하고 NEEDS_HUMAN으로 종료한다. 프로세스 사망 또는 run 최종화 뒤 늦게 확정된 버전은 화면에 즉시 반영되지 않을 수 있으므로 영수증이 복구 근거다.
+
+제품 프로세스 안에서는 foundation 전체를 직렬화한다. IAM API는 관측 VersionId를 조건으로 쓰는 원자적 CAS를 지원하지 않으므로 재조회와 쓰기 사이의 외부 프로세스 변경까지 차단한다고 보장하지 않는다. 계정 공용 경계가 프로젝트별 로그 Resource를 포함하므로 다른 프로젝트 실행과의 간섭도 운영 확인 대상이다. 실제 AWS 적용 및 관리자 자격증명의 권한 확인은 이번 작업에서 수행하지 않았다. [CreatePolicyVersion API](https://docs.aws.amazon.com/IAM/latest/APIReference/API_CreatePolicyVersion.html), [GetPolicyVersion API](https://docs.aws.amazon.com/IAM/latest/APIReference/API_GetPolicyVersion.html).
+
+## 10/3 후속 결정 — rolling 생성 프롬프트 담당 이관
+
+**프롬프트 변경은 정준우 구현(서윤 cloud 브랜치 c4af865 출처).** 비교 기준 전체 SHA는 `c4af8656c2a6b574311f37fe3f12d0272c99e66d`다. 서윤은 PR #25 헬스를 맡는다.
+
+- 최소 egress(ALB → 앱 TCP 8080, 앱 → DB TCP 3306 및 AWS API·이미지·로그용 TCP 443 / DNS TCP·UDP 53, DB egress 없음), TG 해제 지연 30초, HTTPS `ELBSecurityPolicy-TLS13-1-2-2021-06`, 빈 `aws_secretsmanager_secret.app_database_url` 생성을 옮긴다. 값 생성·저장은 이 프롬프트의 일이 아니다.
+- 정준우 쪽에서 TG health를 interval 5 / timeout 3 / healthy 2 / unhealthy 2 / path `/health/ready` / matcher `200`으로 보완한다. 로그 그룹은 `/aws/ecs/${var.project}`를 유지한다.
+- 블루그린 문구·새 배포 코드는 추가하지 않는다. 대표 rolling HCL·plan fixture로 게이트와 출력 참조를 검사하며, AI의 모든 생성 결과나 실제 AWS 배포 성공을 보증하는 검사는 아니다.
+
+프롬프트 버전은 `infra-aws-v3-rolling`이다. 코드 기준본은 `infra-baselines/<project>/<PROMPT_VERSION>`에서만 재사용해 이전 무버전/v2 캐시가 새 요구를 우회하지 않게 한다. 기준본 source는 cache, 대표 fixture source는 fixture이며 기존 캐시를 자동 이관하지 않는다.
