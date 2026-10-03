@@ -14,6 +14,7 @@ from enum import StrEnum
 from functools import cache
 from ipaddress import ip_address
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Literal, cast
 
 import yaml
@@ -31,6 +32,17 @@ def _warn_reserved_jev_key() -> None:
     )
 
 
+# 선택 제한은 AI 패키지를 import하지 않는다(웹 -> config의 AI 경계 유지).
+# trusted registry 등록 시 CLI 종류도 여기에 반영한다.
+_PROVIDER_KINDS: dict[str, str] = {
+    "claude-cli": "cli",
+    "claude-api": "api",
+    "groq": "api",
+    "replay": "api",
+    "jev": "api",
+}
+
+
 class AdapterMode(StrEnum):
     FAKE = "fake"  # 결정적 가짜 어댑터(테스트, 드라이런, UI 개발)
     REAL = "real"  # 실제 Docker / AWS
@@ -45,6 +57,11 @@ class Settings:
     admin_port: int = 8765
     # ---- AI(call_ai, ✅ 장부 7) ----
     llm_backend: LLMBackend = LLMBackend.REPLAY  # 기본값은 호출이 일어나지 않는 replay
+    llm_provider: str | None = None
+    judgment_provider: str | None = None
+    judgment_model: str | None = None
+    anthropic_api_key: str | None = field(default=None, repr=False)
+    provider_keys: Mapping[str, str] = field(default_factory=dict, repr=False, hash=False)
     llm_model: str | None = None  # 💭 실측으로 선택. 모델 ID와 prompt 버전은 고정한다
     llm_effort: Literal["low", "medium"] = "low"
     claude_bin: str = "claude"
@@ -64,9 +81,13 @@ class Settings:
     image_repository: str | None = None
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "provider_keys", MappingProxyType(dict(self.provider_keys)))
         if self.llm_effort not in ("low", "medium"):
             raise ValueError("DDAK_LLM_EFFORT는 low/medium만 허용한다")
-        if self.llm_backend is LLMBackend.CLI and self.llm_model is None:
+        if (
+            self.llm_provider == "claude-cli"
+            or (self.llm_provider is None and self.llm_backend is LLMBackend.CLI)
+        ) and self.llm_model is None:
             object.__setattr__(self, "llm_model", "claude-sonnet-5-5")
         if self.jev_backend not in ("groq", "claude-cli"):
             raise ValueError("DDAK_JEV_BACKEND는 groq/claude-cli만 허용한다")
@@ -81,12 +102,28 @@ class Settings:
         for name in ("deploy_config", "run_dir", "ai_replay_dir"):
             object.__setattr__(self, name, getattr(self, name).expanduser().resolve())
 
+    def selected_provider(self, role: Literal["generation", "judgment"]) -> str:
+        if role == "judgment":
+            return self.judgment_provider or self.jev_backend
+        return (
+            self.llm_provider
+            or {LLMBackend.CLI: "claude-cli", LLMBackend.API: "groq", LLMBackend.REPLAY: "replay"}[
+                self.llm_backend
+            ]
+        )
+
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> Settings:
         env = os.environ if environ is None else environ
         judgment = env.get("DDAK_JEV_BACKEND") or "groq"
-        groq_key = env.get("DDAK_GROQ_API_KEY") if judgment == "groq" else None
-        if judgment == "groq" and not groq_key and "DDAK_JEV_API_KEY" in env:
+        selected_judgment = env.get("DDAK_JUDGMENT_PROVIDER") or judgment
+        selected_generation = env.get("DDAK_LLM_PROVIDER")
+        groq_key = (
+            env.get("DDAK_GROQ_API_KEY")
+            if (selected_judgment == "groq" or selected_generation == "groq")
+            else None
+        )
+        if selected_judgment == "groq" and not groq_key and "DDAK_JEV_API_KEY" in env:
             _warn_reserved_jev_key()
         return cls(
             adapter_mode=AdapterMode(env.get("DDAK_ADAPTER_MODE", AdapterMode.FAKE.value)),
@@ -95,6 +132,10 @@ class Settings:
             log_level=env.get("DDAK_LOG_LEVEL", "INFO"),
             admin_port=int(env.get("DDAK_ADMIN_PORT", "8765")),
             llm_backend=LLMBackend(env.get("DDAK_LLM_BACKEND") or LLMBackend.REPLAY.value),
+            llm_provider=env.get("DDAK_LLM_PROVIDER") or None,
+            judgment_provider=env.get("DDAK_JUDGMENT_PROVIDER") or None,
+            judgment_model=env.get("DDAK_JUDGMENT_MODEL") or None,
+            anthropic_api_key=env.get("DDAK_ANTHROPIC_API_KEY") or None,
             llm_model=env.get("DDAK_LLM_MODEL") or None,
             llm_effort=cast(Literal["low", "medium"], env.get("DDAK_LLM_EFFORT") or "low"),
             claude_bin=env.get("DDAK_CLAUDE_BIN") or "claude",
@@ -120,7 +161,12 @@ def require_local_cli(
     settings: Settings, *, host: str | None, environ: Mapping[str, str] | None = None
 ) -> None:
     """CLI는 호스트의 로컬 진입점에서만. 표식 없는 원격 서버를 판별하는 기능은 아니다."""
-    if settings.llm_backend is not LLMBackend.CLI and settings.jev_backend != "claude-cli":
+    kinds = [
+        _PROVIDER_KINDS.get(settings.selected_provider(role)) for role in ("generation", "judgment")
+    ]
+    if None in kinds:
+        raise DdakToolError(ErrorCode.CONFIG_INVALID, "등록되지 않은 AI provider 설정")
+    if "cli" not in kinds:
         return
     env = os.environ if environ is None else environ
     try:

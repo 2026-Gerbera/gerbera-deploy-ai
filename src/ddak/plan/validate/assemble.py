@@ -18,6 +18,7 @@ from ddak.core.contracts.plan import (
 from ddak.core.contracts.step_catalog import StepDef, catalog_steps
 from ddak.core.contracts.tools.validate_plan import ValidatePlanInput
 from ddak.core.registry import REGISTRY
+from ddak.core.smoke import SMOKE_GROUPS
 from ddak.plan.validate import rules as R
 
 TOGGLE = "strict_ai_check"  # 없으면 False = 기본 검사
@@ -39,6 +40,12 @@ def assemble(
         warns += w
         ai = {i: d.include for i, d in decided.items()}
     warns += R.check_modified_migrations(facts, strict=strict)
+    groups = ["base"]
+    for group in facts.smoke_groups:
+        if group not in SMOKE_GROUPS:
+            warns.append(R.warning("unknown_smoke_group", "허용되지 않은 스모크 그룹을 버렸다"))
+        elif group not in groups:
+            groups.append(group)
 
     # 1) 결정
     chosen: dict[
@@ -48,6 +55,8 @@ def assemble(
     for s in catalog:
         ruled = R.rule_eval(s, facts) if s.layer is Layer.CONDITIONAL else None
         params = {**s.default_params, **(ruled.params if ruled else {})}
+        if s.tool == "smoke_test":
+            params["scenarios"] = groups.copy()
         want = ai.get(s.id)
         if s.layer is Layer.MANDATORY:
             inc, why, by, rid = True, "필수 step", By.RULE, None
@@ -70,7 +79,7 @@ def assemble(
                 )
         else:  # OPTIONAL: AI 결정, 없으면 기본 제외
             inc = bool(want)
-            why = "AI 결정" if want is not None else "기본 제외"
+            why = (decided[s.id].reason or "AI 결정") if want is not None else "기본 제외"
             by, rid = (By.AI if want is not None else By.RULE), "optional"
             if s.tool not in registered:
                 inc, by, why = False, By.RULE, f"미등록 선택 툴: {s.tool} ({s.id})"
@@ -147,7 +156,7 @@ def assemble(
 def _step(s: StepDef, params: dict, why: str, by: By) -> PlanStep:
     return PlanStep(
         id=s.id, tool=s.tool, target=s.target, tier=s.tier, params=params,
-        layer=s.layer, effect=s.effect, by=by, reason=R.clip(why),
+        layer=s.layer, effect=s.effect, by=by, reason=R.clip(why), evidence=R.evidence(s),
         wait_for=list(s.wait_for),
         signal=s.signal, run=s.run,
     )  # fmt: skip

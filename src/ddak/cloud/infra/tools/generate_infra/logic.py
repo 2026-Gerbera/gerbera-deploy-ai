@@ -203,7 +203,7 @@ def _repair_data(base: str, feedback: str, files: dict[str, str]) -> str:
 
 def _bounded_ai_data(data: str) -> str:
     # gateway와 같은 정제를 하되, 길이 초과를 자르기 전에 확인한다.
-    safe = redact(data, max_len=max(len(data), MAX_LEN))
+    safe = redact(data, max_len=None)
     if len(safe) > MAX_LEN:
         raise DdakToolError(
             ErrorCode.CONFIG_INVALID,
@@ -211,7 +211,7 @@ def _bounded_ai_data(data: str) -> str:
             "한도를 초과한다. 입력을 자르지 않고 거부하며, 전체 교정 문맥 전달 방안이 필요하다",
             needs_human=True,
         )
-    return data
+    return safe
 
 
 def _draft_files(result: TerraformDraft) -> dict[str, str]:

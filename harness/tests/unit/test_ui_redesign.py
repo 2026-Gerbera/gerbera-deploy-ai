@@ -122,7 +122,7 @@ def test_parallel_progress_events_and_confirmation():
     script = r"""
     const fs=require('node:fs'), vm=require('node:vm'), assert=require('node:assert/strict');
     const source=fs.readFileSync(process.argv[1],'utf8');
-    let queries=0, closed=false, opened=0;
+    let queries=0, closed=false, opened=0, connection;
     const listeners={};
     const classList=()=>({values:new Set(['hidden']),
        toggle(k,v){v?this.values.add(k):this.values.delete(k)},
@@ -134,11 +134,11 @@ def test_parallel_progress_events_and_confirmation():
       'cloud-events','common-events'].map(id=>[id,
       {items:[],querySelector:()=>null,appendChild(item){this.items.push(item)}}]));
     const others=Object.fromEntries(['result-link',
-      'progress-title','connection-state','current-activity'].map(id=>[id,
+      'progress-title','connection-state','current-activity','activity-title'].map(id=>[id,
       {classList:classList(),textContent:''}]));
     const progress={dataset:{runId:'fixture',status:'RUNNING',targets:'both',
       terminalStates:'["SUCCEEDED","FAILED_CLOUD"]'}};
-    class EventSource {constructor(){opened++} addEventListener(k,
+    class EventSource {constructor(){opened++;connection=this} addEventListener(k,
       v){listeners[k]=v}close(){closed=true}}
     const document={querySelector:s=>s==='[data-run-id]'?progress:null,
       querySelectorAll:s=>{if(s==='[data-phase]'){queries++;return nodes}return []},
@@ -153,8 +153,15 @@ def test_parallel_progress_events_and_confirmation():
     send('step.started',{seq:2,step:'deploy.infra.cloud',target:'cloud'});
     assert.equal(cell('local','verify').textContent,'진행 중');
     assert.equal(cell('cloud','infra').textContent,'진행 중');
+    assert.ok(others['current-activity'].textContent.includes('온프렘'));
+    assert.ok(others['current-activity'].textContent.includes('클라우드'));
+    connection.onerror();
+    assert.equal(progress.dataset.stream,'reconnecting');
+    assert.ok(others['activity-title'].textContent.includes('확인 대기'));
+    connection.onopen();
+    assert.equal(progress.dataset.stream,'live');
     send('step.started',{seq:3,step:'deploy.was.local',target:'local'});
-    assert.ok(cell('local','verify').classList.values.has('active')); // no backwards jump
+    assert.ok(cell('local','verify').classList.values.has('active')); // both remain active
     send('step.finished',{seq:4,step:'deploy.infra.cloud',
       target:'cloud',status:'failed',detail:'<img onerror=bad()>',
       elapsed_s:30});
@@ -167,7 +174,19 @@ def test_parallel_progress_events_and_confirmation():
     send('gate.opened'); assert.equal(queries,before);
     send('step.started',{seq:5,step:'mystery.id'}); assert.equal(queries,before+1);
     assert.equal(cell('local','plan').textContent,'확인 중');
+    send('step.finished',{seq:6,step:'verify.health.local',target:'local',status:'succeeded'});
+    assert.ok(!cell('local','verify').classList.values.has('active'));
+    assert.equal(cell('local','verify').textContent,'수신 작업 성공');
+    assert.ok(!cell('local','verify').classList.values.has('complete'));
+    assert.ok(cell('local','deploy').classList.values.has('active'));
+    assert.ok(!others['current-activity'].textContent.includes('verify.health.local'));
     send('run.state',{status:'FAILED_CLOUD'});
+    assert.equal(progress.dataset.activity,'ended');
+    assert.ok(!cell('local','deploy').classList.values.has('active'));
+    assert.equal(cell('local','deploy').textContent,'결과 확인');
+    assert.equal(others['activity-title'].textContent,'클라우드 배포 실패');
+    connection.onerror();
+    assert.equal(others['activity-title'].textContent,'클라우드 배포 실패');
     assert.ok(closed); assert.ok(!others['result-link'].classList.values.has('hidden'));
     assert.equal(others['progress-title'].textContent,'클라우드 배포 실패');
     progress.dataset.status='SUCCEEDED';

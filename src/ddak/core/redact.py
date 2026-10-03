@@ -100,6 +100,8 @@ _RULES: tuple[tuple[re.Pattern[str], _Replacement], ...] = (
     # Anthropic / OpenAI 형식 키
     (re.compile(r"\bsk-ant-[A-Za-z0-9_-]{10,}"), REDACTED),
     (re.compile(r"\bsk-[A-Za-z0-9_-]{16,}"), REDACTED),
+    # Groq 키(생성·판단 두 경로에서 같은 공통 가림 적용)
+    (re.compile(r"\bgsk_[A-Za-z0-9_-]{16,}"), REDACTED),
     # GitHub 토큰
     (re.compile(r"\bgh[pousr]_[A-Za-z0-9]{30,}\b"), REDACTED),
     # Docker Hub 개인·조직 액세스 토큰(✅ 9/30: 이미지 저장소 기본 Docker Hub)
@@ -111,12 +113,12 @@ _RULES: tuple[tuple[re.Pattern[str], _Replacement], ...] = (
 )
 
 
-def redact(text: str, *, max_len: int = MAX_LEN) -> str:
-    """문자열 안의 비밀값 모양을 가리고 max_len 글자로 자른다."""
+def redact(text: str, *, max_len: int | None = MAX_LEN) -> str:
+    """비밀값 모양을 가린다. max_len이 None이면 길이를 제한하지 않는다."""
     out = text
     for pattern, replacement in _RULES:
         out = pattern.sub(replacement, out)
-    if len(out) > max_len:
+    if max_len is not None and len(out) > max_len:
         cut = len(out) - max_len
         out = f"{out[:max_len]}...[truncated {cut} chars]"
     return out

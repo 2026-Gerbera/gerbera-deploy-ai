@@ -1,4 +1,4 @@
-# plan/validate (담당: 김준석)
+# plan/validate (담당: 정준우/O1, 2026-10-03 O2 승계)
 - `validate_plan(ValidatePlanInput, RunContext) -> Plan`: 조립기이자 검사기. 순수 함수, AI·생성기 import 금지(계약 5).
 - 규칙은 `rules.py`(R-ids, R-params, R-mandatory, R-couple, R-gate, R-facts + 카탈로그 skip_rule), 조립은 `assemble.py`, 등록은 `tool.py`.
 - `draft=None` = 규칙 계획(폴백). 필수 step을 뺀 AI 결정은 `Plan.invalidated`에 기록하고 강제 포함한다.

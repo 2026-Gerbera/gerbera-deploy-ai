@@ -73,6 +73,22 @@
           "default": null,
           "title": "Reason"
         },
+        "required": {
+          "default": true,
+          "title": "Required",
+          "type": "boolean"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Source"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "tier": {
           "anyOf": [
             {
@@ -186,9 +202,25 @@
           "title": "New Migrations",
           "type": "array"
         },
+        "patch_targets": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PatchTarget"
+          },
+          "title": "Patch Targets",
+          "type": "array"
+        },
         "project": {
           "title": "Project",
           "type": "string"
+        },
+        "smoke_groups": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Smoke Groups",
+          "type": "array"
         },
         "source_snapshot_hash": {
           "pattern": "^sha256:[0-9a-f]{64}$",
@@ -226,6 +258,58 @@
       "title": "Facts",
       "type": "object"
     },
+    "PatchTarget": {
+      "additionalProperties": false,
+      "description": "정적 탐지 위치와 키 이름만 전달한다. 원문·값은 계약에 포함하지 않는다.",
+      "properties": {
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "is_new": {
+          "title": "Is New",
+          "type": "boolean"
+        },
+        "key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Key"
+        },
+        "line": {
+          "minimum": 1,
+          "title": "Line",
+          "type": "integer"
+        },
+        "pattern_id": {
+          "title": "Pattern Id",
+          "type": "string"
+        },
+        "severity": {
+          "enum": [
+            "patch",
+            "warning"
+          ],
+          "title": "Severity",
+          "type": "string"
+        }
+      },
+      "required": [
+        "file",
+        "line",
+        "pattern_id",
+        "is_new",
+        "severity"
+      ],
+      "title": "PatchTarget",
+      "type": "object"
+    },
     "RunMode": {
       "description": "run 종류. 초기 배포도 같은 파이프라인으로 한다(✅ 장부 14).",
       "enum": [
@@ -233,6 +317,17 @@
         "bootstrap"
       ],
       "title": "RunMode",
+      "type": "string"
+    },
+    "Source": {
+      "description": "AI 결과의 출처. live가 아니면 관리 페이지가 라벨을 표시한다(목업은 목업이라고 밝힘).",
+      "enum": [
+        "live",
+        "cache",
+        "fixture",
+        "replay"
+      ],
+      "title": "Source",
       "type": "string"
     }
   },

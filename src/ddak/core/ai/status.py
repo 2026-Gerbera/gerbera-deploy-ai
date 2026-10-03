@@ -1,34 +1,30 @@
-"""관리 페이지 "LLM 연결" 카드(✅ 장부 7). 관리 페이지를 열 때 backend와 로그인·키 상태를 보여준다.
-
-AI를 호출하지 않는다(상태 조회만). ddak.app이 이 함수를 관리 웹에 주입한다(웹은 ddak.core.ai를
-import하지 않는다). 키 값·이메일은 절대 돌려주지 않는다.
-"""
+"""기존 LLM 상태 callback 호환. 웹은 app이 주입한 callback만 쓴다."""
 
 from __future__ import annotations
 
 from typing import Any
 
+from ddak.core.ai.providers import provider_model, provider_status, selected_provider_id
 from ddak.core.config import Settings
-from ddak.core.contracts.enums import LLMBackend
 
 
 def llm_status(settings: Settings | None = None) -> dict[str, Any]:
     cfg = settings or Settings.from_env()
-    if cfg.llm_backend is LLMBackend.CLI:
-        from ddak.core.ai.providers.cli import cli_status
-
-        status = cli_status(cfg.claude_bin)
-    elif cfg.llm_backend is LLMBackend.API:
-        # TODO(O2): 가벼운 ping 호출로 키 유효성 확인
-        status = {
-            "backend": "api",
-            "ok": bool(cfg.llm_api_key and cfg.llm_model),
-            "detail": "키 있음(값은 표시하지 않음)" if cfg.llm_api_key else "DDAK_LLM_API_KEY 없음",
-        }
-    else:
-        status = {"backend": "replay", "ok": True, "detail": "저장된 응답 모드(결과에 라벨 표시)"}
-    status["model"] = cfg.llm_model
-    status["groq_key"] = bool(cfg.groq_api_key)
-    status["jev_key"] = bool(cfg.jev_api_key) or cfg.jev_key_configured
-    status["jev_backend"] = cfg.jev_backend
-    return status
+    try:
+        id = selected_provider_id(cfg)
+        status = provider_status(id, cfg)
+        model = provider_model(cfg)
+    except Exception:
+        id = "unknown"
+        model = None
+        status = {"status": "red", "detail": "AI provider 설정 오류"}
+    return {
+        **status,
+        "provider": id,
+        "backend": cfg.llm_backend.value,
+        "ok": status["status"] == "green",
+        "model": model,
+        "groq_key": bool(cfg.groq_api_key),
+        "jev_key": bool(cfg.jev_api_key) or cfg.jev_key_configured,
+        "jev_backend": cfg.selected_provider("judgment"),
+    }

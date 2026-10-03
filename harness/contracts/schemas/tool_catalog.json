@@ -27,7 +27,7 @@
     "module": "plan",
     "name": "analyze_project",
     "owners": {
-      "logic": "O2"
+      "logic": "O1"
     },
     "read_only": true,
     "requires_approval": false,
@@ -93,7 +93,7 @@
     "module": "core",
     "name": "call_ai",
     "owners": {
-      "logic": "O2"
+      "logic": "O1"
     },
     "read_only": false,
     "requires_approval": false,
@@ -203,7 +203,7 @@
     "module": "plan",
     "name": "detect_changed_tiers",
     "owners": {
-      "logic": "O2"
+      "logic": "O1"
     },
     "read_only": true,
     "requires_approval": false,
@@ -324,7 +324,7 @@
     "module": "plan",
     "name": "generate_plan",
     "owners": {
-      "logic": "O2"
+      "logic": "O1"
     },
     "read_only": true,
     "requires_approval": false,
@@ -603,7 +603,7 @@
     "module": "plan",
     "name": "receive_deploy_request",
     "owners": {
-      "logic": "O2",
+      "logic": "O1",
       "ui": "C3"
     },
     "read_only": false,
@@ -817,7 +817,7 @@
     "module": "plan",
     "name": "validate_plan",
     "owners": {
-      "logic": "O2"
+      "logic": "O1"
     },
     "read_only": true,
     "requires_approval": false,

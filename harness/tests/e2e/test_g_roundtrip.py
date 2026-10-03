@@ -109,7 +109,11 @@ async def test_watch_manual_approval_git_roundtrip(
 
     for spec in registry.specs:
         if spec.kind is ToolKind.TOOL_FN:
-            registry.tool(spec.name)(fake_tool(spec.name))
+            registry.tool(spec.name)(
+                real_registry.get(spec.name).fn
+                if spec.name == "patch_config"
+                else fake_tool(spec.name)
+            )
 
     bare = tmp_path / "remote.git"
     git(tmp_path, "init", "--bare", str(bare))
@@ -209,6 +213,7 @@ async def test_watch_manual_approval_git_roundtrip(
             "watch_branch": "prod",
             "default_targets": "onprem" if local_backend else "both",
             "auto_detect": True,
+            "code_patch": False,  # 이 왕복은 코드 패치 없는 배포 경로를 검증한다.
         },
         updated_by="operator",
         expected_version=0,
@@ -297,7 +302,7 @@ async def test_watch_manual_approval_git_roundtrip(
         assert app._watch_targets(service) == [target]
         real_watcher = app.Watcher
 
-        def watcher(targets, handler, *, policy):
+        def watcher(targets, handler, *, policy, **kwargs):
             return real_watcher(
                 targets,
                 handler,

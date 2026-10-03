@@ -100,7 +100,7 @@ def test_replay_hit_and_miss(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     ("backend", "name"),
-    [(LLMBackend.CLI, "cli"), (LLMBackend.API, "api"), (LLMBackend.REPLAY, "replay")],
+    [(LLMBackend.CLI, "cli"), (LLMBackend.API, "groq"), (LLMBackend.REPLAY, "replay")],
 )
 def test_backend_is_chosen_by_settings(backend: LLMBackend, name: str) -> None:
     assert get_provider(Settings(llm_backend=backend)).name == name

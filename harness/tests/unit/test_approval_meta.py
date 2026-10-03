@@ -12,7 +12,7 @@ from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.executor.approval_meta import encode_meta
 from ddak.executor.engine import RunStatus
-from tests.unit.test_deployment_service import PATCH, plan
+from tests.unit.test_deployment_service import PATCH, patch_metadata, plan
 from tests.unit.test_deployment_service import rig as rig
 
 HASH = "sha256:" + "a" * 64
@@ -85,7 +85,7 @@ async def test_default_fields_and_old_execution_still_work(rig: Any) -> None:
 async def test_metadata_roundtrip_one_approval_and_input_isolation(rig: Any) -> None:
     service, _, _ = rig
     infra = summary()
-    meta = {"reason": "개발 URL을 환경 설정에서 읽음", "reuse": True, "source": "cache"}
+    meta = patch_metadata(reason="개발 URL을 환경 설정에서 읽음", reuse=True, source="cache")
     expected = copy.deepcopy({"patch_meta": meta, "infra_summary": infra})
     rid = prepare(rig, subjects={"infra": HASH}, infra_summary=infra, patch_meta=meta)
     infra["counts"]["delete"] = 10
@@ -154,7 +154,12 @@ def test_invalid_metadata_rejected_before_persistence(rig: Any, change: dict) ->
         prepare(rig, subjects={"infra": HASH}, infra_summary={**summary(), **change})
     assert exc.value.code is ErrorCode.CONFIG_INVALID
     assert "do-not-log-this-value" not in str(exc.value)
-    assert not (service.root / "runs" / "run-2").exists()
+    directory = service.root / "runs" / "run-2"
+    assert {p.name for p in directory.iterdir()} == {"events.jsonl"}
+    assert service.store.prepared("run-2") is None
+    event = service.events("run-2")[-1]
+    assert event["type"] == "stage.finished" and event["status"] == "failed"
+    assert "do-not-log-this-value" not in (directory / "events.jsonl").read_text()
 
 
 @pytest.mark.parametrize(
@@ -167,7 +172,7 @@ def test_invalid_metadata_rejected_before_persistence(rig: Any, change: dict) ->
 )
 def test_patch_metadata_shape(rig: Any, meta: dict) -> None:
     with pytest.raises(DdakToolError, match="CONFIG_INVALID"):
-        prepare(rig, patch_meta=meta)
+        prepare(rig, patch_meta=patch_metadata(**meta))
 
 
 def test_summary_requires_corresponding_subject(rig: Any) -> None:
@@ -213,7 +218,7 @@ def test_saved_boolean_changed_to_number_is_not_equal(rig: Any, field: str) -> N
         rig,
         subjects={"infra": HASH},
         infra_summary=summary(),
-        patch_meta={"reason": "환경 설정 교체", "reuse": False, "source": "live"},
+        patch_meta=patch_metadata(reason="환경 설정 교체", reuse=False, source="live"),
     )
     service.approve(rid, approver="operator")
     path = service.root / "runs" / rid / "approval-meta.json"

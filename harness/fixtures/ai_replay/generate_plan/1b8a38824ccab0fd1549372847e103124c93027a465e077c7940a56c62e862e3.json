@@ -1,0 +1,12 @@
+{
+  "output": {
+    "answers": [
+      {
+        "id": "step.deploy_storage_local",
+        "probability": 0.2
+      }
+    ]
+  },
+  "prompt_version": "judgment-cli-v1",
+  "purpose": "generate_plan"
+}

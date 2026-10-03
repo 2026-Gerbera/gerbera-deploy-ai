@@ -156,7 +156,7 @@ def test_normal_path_and_stage_timing(
         if line.startswith("{") and '"stage"' in line
     ]
     done = [s["stage"] for s in stages if s["msg"] == "플랜 단계 완료"]
-    assert done == ["receive", "detect", "analyze", "plan", "validate"]
+    assert done == ["intake", "detect", "analyze", "plan", "validate"]
     assert all(isinstance(s["ms"], int) for s in stages)
 
 
@@ -358,7 +358,9 @@ def test_watch_new_commit_runs_plan_and_stops_cleanly(
         )
 
     class FakeWatcher:
-        def __init__(self, targets: list[Any], handler: Any, *, policy: FetchPolicy) -> None:
+        def __init__(
+            self, targets: list[Any], handler: Any, *, policy: FetchPolicy, **kwargs
+        ) -> None:
             self.targets, self.handler, self.ev = targets, handler, asyncio.Event()
 
         async def run(self) -> None:
@@ -372,7 +374,7 @@ def test_watch_new_commit_runs_plan_and_stops_cleanly(
     monkeypatch.setattr(app_mod, "plan_deployment", fake_plan)
     monkeypatch.setattr(app_mod, "Watcher", FakeWatcher)
     # 이 시험은 watcher→계획 연결만 격리한다. checkout은 로컬 bare E2E에서 검증한다.
-    monkeypatch.setattr(app_mod, "_repository_factory", lambda root: None)
+    monkeypatch.setattr(app_mod, "_repository_factory", lambda root, **kwargs: None)
     app = app_mod.create()
 
     async def life() -> asyncio.Task[Any]:

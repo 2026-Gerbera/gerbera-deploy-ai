@@ -1,0 +1,11 @@
+--- a/flaskr/__init__.py
++++ b/flaskr/__init__.py
+@@ -13,6 +13,8 @@
+ def create_app():
+     app = Flask(__name__)
+     app.config.update(app_config())
++    app.config["SECRET_KEY"] = "dev"
++    app.config["APP_BASE_URL"] = "http://localhost:5000"
+     app.extensions["database"] = make_engine(database_url())
+     app.wsgi_app = ProxyFix(
+         app.wsgi_app,

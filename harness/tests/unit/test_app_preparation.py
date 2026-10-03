@@ -171,7 +171,7 @@ async def test_watcher_retries_recorded_failure(rig, monkeypatch):
     real_watcher = app.Watcher
 
     class OneCommitWatcher:
-        def __init__(self, targets, handler, *, policy):
+        def __init__(self, targets, handler, *, policy, **kwargs):
             self.delegate = real_watcher(targets, handler, policy=policy, interval_s=0.001)
             self.target = targets[0]
 

@@ -73,7 +73,7 @@ async def test_approval_page_shows_exact_patch(monkeypatch: pytest.MonkeyPatch) 
 
     await approvals.approval_page(request, "run-1")
 
-    assert captured["approval"]["patch"] == patch
+    assert captured["approval"]["patch"] is None
 
 
 async def test_failed_preparation_redirects_to_result(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -146,6 +146,7 @@ async def test_settings_save_real_deploy_fields(monkeypatch: pytest.MonkeyPatch)
         "repo_url": "https://github.com/org/app.git",
         "watch_branch": "prod",
         "auto_detect": True,
+        "code_patch": False,
         "default_targets": "cloud",
         "cloud_domain": "app.example.com",
         "dns_mode": "external",

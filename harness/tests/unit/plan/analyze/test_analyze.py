@@ -70,6 +70,27 @@ def _by_name(out):
     return {k.name: k for k in out.env_keys}
 
 
+@pytest.mark.parametrize("code_patch", [False, True])
+def test_wildcard_import_does_not_abort_optional_patch_analysis(tmp_path, code_patch):
+    _write(tmp_path / "src1", {"app.py": "from os import *\n"})
+    ctx = RunContext(
+        "run-1",
+        deploy_config={"tiers": {"was": {"paths": ["."]}}},
+        toggles={"code_patch": code_patch},
+    )
+    inp = AnalyzeProjectInput(
+        run_id=ctx.run_id,
+        request=DeployRequest(project="demo", repo_url="https://github.com/o/r", target="local"),
+        source_dir="src1",
+        changed={"local": {"was": True}},
+    )
+    jev = FakeJev()
+    with tool_context("analyze_project", ctx.run_id):
+        output = analyze_project(inp, ctx, root=tmp_path, jev_client=jev)
+    assert output.patch_targets == () and output.env_keys == () and jev.calls == []
+    assert (tmp_path / "src1" / "app.py").read_text() == "from os import *\n"
+
+
 GOLDEN = {
     "web/Dockerfile": "FROM x",
     ".env.example": f"SECRET_KEY={FAKE_VALUE}\nSESSION_COOKIE_SECURE=1\n# C=1\n",
@@ -252,3 +273,41 @@ def test_claude_response_source_reaches_analyze(tmp_path: Path, source: Source) 
     assert (key.provider, key.model) == ("claude-cli", "fixture-model")
     assert key.by is By.AI and key.kind == "plain"
     assert out.source is source and client.source is source
+
+
+def test_environment_literal_wrapper_and_keywords_without_values(tmp_path):
+    files = {
+        "was/app.py": (
+            "import os\n"
+            "from os import getenv as env\n"
+            "def required(name, default=None):\n    return os.environ[name]\n"
+            "def optional(default, name):\n    return env(name, default)\n"
+            "def keyword(*, key):\n    return os.environ.get(key)\n"
+            "def unrelated(name):\n    return name\n"
+            'A = required("DATABASE_URL", "never-copy-default")\n'
+            'B = optional("never-copy-default", name="LOG_LEVEL")\n'
+            'C = keyword(key="CUSTOM_SETTING")\n'
+            'D = unrelated("FAKE_SETTING")\n'
+            "E = required(dynamic_name)\n"
+        )
+    }
+    jev = FakeJev(0.2)
+    out = _run(tmp_path, files, jev=jev)
+    keys = _by_name(out)
+    assert set(keys) == {"DATABASE_URL", "LOG_LEVEL", "CUSTOM_SETTING"}
+    assert keys["LOG_LEVEL"].kind == "plain"
+    assert keys["CUSTOM_SETTING"].kind == "plain" and keys["CUSTOM_SETTING"].by is By.AI
+    assert "never-copy-default" not in str(jev.calls)
+    assert all(k.tier == "was" for k in out.env_keys)
+
+
+def test_nested_wrapper_body_is_not_assumed_to_read_outer_parameter(tmp_path):
+    files = {
+        "was/app.py": (
+            "import os\n"
+            "def unrelated(name):\n    def nested():\n"
+            "        return os.getenv(name)\n    return name\n"
+            'unrelated("NOT_READ_ENV")\n'
+        )
+    }
+    assert _run(tmp_path, files).env_keys == ()

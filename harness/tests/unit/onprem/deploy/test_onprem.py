@@ -9,7 +9,6 @@ import os
 import re
 import stat
 import subprocess
-import sys
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -188,25 +187,30 @@ def runtime(tmp_path: Path):
     return fake, provider, ctx
 
 
-def test_real_runner_uses_list_timeout_and_kills_descendants() -> None:
-    result = subprocess_runner(
-        [sys.executable, "-c", "import sys; sys.stdout.write('ok')"], timeout=2
-    )
+def test_runner_uses_list_timeout_and_group_cleanup_without_process(monkeypatch) -> None:
+    import signal
+    from unittest.mock import MagicMock, Mock
+
+    process = MagicMock(pid=424242, returncode=0)
+    process.__enter__.return_value = process
+    process.communicate.return_value = ("ok", "")
+    popen = Mock(return_value=process)
+    cleanup = Mock()
+    monkeypatch.setattr("ddak.onprem.deploy.containers.subprocess.Popen", popen)
+    monkeypatch.setattr("ddak.onprem.deploy.containers.os.killpg", cleanup)
+    argv = ["fixture-python", "-c", "fixture"]
+    result = subprocess_runner(argv, timeout=2)
     assert result.returncode == 0 and result.stdout == "ok"
-    started = time.monotonic()
-    # 자식이 같은 stdout pipe를 상속한다. 부모만 죽이면 communicate()가 계속 대기한다.
+    assert popen.call_args.args == (argv,)
+    assert popen.call_args.kwargs["start_new_session"] is True
+    assert not cleanup.called
+    process.communicate.reset_mock()
+    process.communicate.side_effect = [subprocess.TimeoutExpired(argv, 0.1), ("", "")]
     with pytest.raises(subprocess.TimeoutExpired):
-        subprocess_runner(
-            [
-                sys.executable,
-                "-c",
-                "import subprocess,sys,time; "
-                "subprocess.Popen([sys.executable,'-c','import time; time.sleep(10)']); "
-                "time.sleep(10)",
-            ],
-            timeout=0.1,
-        )
-    assert time.monotonic() - started < 2
+        subprocess_runner(argv, timeout=0.1)
+    cleanup.assert_called_once_with(process.pid, signal.SIGKILL)
+    assert process.communicate.call_args_list[0].kwargs == {"timeout": 0.1}
+    assert process.communicate.call_args_list[1].kwargs == {}
 
 
 def test_replace_rollback_and_repeated_rollback(runtime) -> None:

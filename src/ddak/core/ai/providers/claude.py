@@ -133,9 +133,10 @@ class ClaudeJevClient:
         timeout_s: float = 20.0,
         effort: Literal["low", "medium"] = "low",
         provider: LLMProvider | None = None,
+        default_model: str | None = "claude-sonnet-5-5",
     ) -> None:
         # CLI가 만든 claude-cli-default 표식은 실제 모델 ID가 아니다.
-        self.model = model or "claude-sonnet-5-5"
+        self.model = model or default_model
         self.source: Source | None = None
         self._timeout_s = timeout_s
         self._provider = (
@@ -177,8 +178,8 @@ class ClaudeJevClient:
             response = self._provider.complete(req)
         except DdakToolError:
             raise
-        except Exception as exc:
-            raise DdakToolError(ErrorCode.AI_UNAVAILABLE, "Claude CLI 판단 호출 실패") from exc
-        answers = _parse(response.text, questions)
+        except Exception:
+            raise DdakToolError(ErrorCode.AI_UNAVAILABLE, "Claude CLI 판단 호출 실패") from None
+        answers = _parse(response.text, safe_questions)
         self.source = response.source
         return answers
