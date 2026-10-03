@@ -12,6 +12,7 @@ from ddak.core.redact import redact
 from .policy import (
     PlanReference,
     PolicyViolation,
+    bluegreen_listener_addresses,
     inspect_bootstrap_dbinit,
     inspect_ecs,
     inspect_policy,
@@ -267,6 +268,18 @@ def summarize_plan(
             require(item["address"] not in configured, "PLAN_ADDRESS")
             configured[item["address"]] = item
     counts = dict.fromkeys(("create", "update", "delete", "replace"), 0)
+    ecs_bodies = {
+        address: _resolved_ecs_after(resource, configured, resources_by_address)
+        for address, resource in resources_by_address.items()
+        if resource.get("type") in {"aws_ecs_service", "aws_lb_listener_rule"}
+        and resource["change"].get("after") is not None
+    }
+    bluegreen_rules = bluegreen_listener_addresses(
+        [
+            (resources_by_address[address]["type"], address, body)
+            for address, body in ecs_bodies.items()
+        ]
+    )
     destructive: list[str] = []
     iam_diff: list[dict[str, Any]] = []
     errors = warnings = 0
@@ -328,8 +341,11 @@ def summarize_plan(
         ):
             inspect_ecs(
                 kind,
-                _resolved_ecs_after(resource, configured, resources_by_address),
+                ecs_bodies[address]
+                if address in ecs_bodies
+                else _resolved_ecs_after(resource, configured, resources_by_address),
                 account=account_id,
+                bluegreen_listener=address in bluegreen_rules,
             )
         actions = change.get("actions")
         require(

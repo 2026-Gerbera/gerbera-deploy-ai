@@ -214,6 +214,7 @@ def static_gate(
             "BUNDLE_SIZE",
         )
         addresses: set[str] = set()
+        resources: list[tuple[str, str, dict[str, Any]]] = []
         for name, source in files.items():
             require(bool(re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*\.tf", name)), "BUNDLE_FILENAME")
             require(len(source.encode()) <= 256 * 1024, "BUNDLE_SIZE")
@@ -242,8 +243,17 @@ def static_gate(
                         require(address not in addresses, "DUPLICATE_RESOURCE")
                         addresses.add(address)
                         protect_platform_resource(kind, body, state_bucket, hcl=True)
-                        _resource(kind, label, body, layer)
+                        resources.append((kind, address, body))
         require(bool(addresses), "BUNDLE_REQUIRED")
+        bluegreen_rules = bluegreen_listener_addresses(resources)
+        for kind, address, body in resources:
+            _resource(
+                kind,
+                address.split(".", 1)[1],
+                body,
+                layer,
+                bluegreen_listener=address in bluegreen_rules,
+            )
         return GateResult(True)
     except PolicyViolation as exc:
         return GateResult(False, str(exc))
@@ -296,8 +306,58 @@ def _elb_reference(value: Any, kind: str, *, hcl: bool) -> bool:
     )
 
 
+def _ecs_deployment(body: dict[str, Any]) -> dict[str, Any]:
+    deployment = body.get("deployment_configuration")
+    if deployment in (None, []):
+        return {}
+    deployment = _blocks(deployment, "ECS_DEPLOYMENT_STRATEGY", count=1)[0]
+    require(
+        deployment.get("strategy", "ROLLING") in ("ROLLING", "BLUE_GREEN"),
+        "ECS_DEPLOYMENT_STRATEGY",
+    )
+    return deployment
+
+
+def bluegreen_listener_addresses(
+    resources: list[tuple[str, str, dict[str, Any]]],
+) -> set[str]:
+    """서비스의 운영 규칙만 묶는다. 소유 관계가 불명확하면 기존 엄격 검사를 유지한다."""
+    listeners = {
+        address: body for kind, address, body in resources if kind == "aws_lb_listener_rule"
+    }
+    services = [body for kind, _, body in resources if kind == "aws_ecs_service"]
+    if not services:
+        return set(listeners)
+    result: set[str] = set()
+    for body in services:
+        if _ecs_deployment(body).get("strategy", "ROLLING") != "BLUE_GREEN":
+            continue
+        for balancer in _blocks(body.get("load_balancer"), "ECS_ADVANCED_CONFIGURATION"):
+            advanced = _blocks(
+                balancer.get("advanced_configuration"), "ECS_ADVANCED_CONFIGURATION", count=1
+            )[0]
+            ref = advanced.get("production_listener_rule")
+            if isinstance(ref, PlanReference):
+                result.add(ref.address)
+            elif isinstance(ref, str) and (
+                match := re.fullmatch(
+                    r"\$\{(aws_lb_listener_rule\.[A-Za-z][A-Za-z0-9_]*)\.arn\}", ref
+                )
+            ):
+                result.add(match.group(1))
+            else:
+                matches = {address for address, rule in listeners.items() if rule.get("arn") == ref}
+                result.update(matches or listeners)
+    return result
+
+
 def inspect_ecs(
-    kind: str, body: dict[str, Any], *, hcl: bool = False, account: str = "${var.account_id}"
+    kind: str,
+    body: dict[str, Any],
+    *,
+    hcl: bool = False,
+    account: str = "${var.account_id}",
+    bluegreen_listener: bool = True,
 ) -> None:
     """ECS 배포 소유권. lifecycle은 plan의 after에 없으므로 HCL에서만 검사한다."""
     if kind == "aws_ecs_service":
@@ -316,16 +376,24 @@ def inspect_ecs(
                 {"task_definition", "desired_count"},
                 "ECS_DEPLOYMENT_OWNED_BY_C2",
             )
-        deployment = _blocks(
-            body.get("deployment_configuration"), "ECS_BLUE_GREEN_REQUIRED", count=1
-        )[0]
-        require(deployment.get("strategy") == "BLUE_GREEN", "ECS_BLUE_GREEN_REQUIRED")
-        bake = deployment.get("bake_time_in_minutes")
-        require(type(bake) is int and 0 <= bake <= 2, "ECS_BAKE_TIME")
+        deployment = _ecs_deployment(body)
         controller = body.get("deployment_controller")
         if controller not in (None, []):
             controller = _blocks(controller, "ECS_CONTROLLER", count=1)[0]
             require(controller.get("type") == "ECS", "ECS_CONTROLLER")
+        if deployment.get("strategy", "ROLLING") == "ROLLING":
+            for key, expected in (
+                ("deployment_minimum_healthy_percent", 100),
+                ("deployment_maximum_percent", 200),
+            ):
+                if key in body:
+                    require(
+                        type(body[key]) is int and body[key] == expected,
+                        "ECS_ROLLING_PERCENTAGES",
+                    )
+            return
+        bake = deployment.get("bake_time_in_minutes")
+        require(type(bake) is int and 0 <= bake <= 2, "ECS_BAKE_TIME")
         require(
             not any(
                 key in {"lifecycle_hook", "lifecycle_hooks"} and value for key, value in _walk(body)
@@ -354,7 +422,7 @@ def inspect_ecs(
                 test_rule is None or (isinstance(test_rule, str) and test_rule == ""),
                 "ECS_TEST_LISTENER_FORBIDDEN",
             )
-    if kind == "aws_lb_listener_rule":
+    if kind == "aws_lb_listener_rule" and bluegreen_listener:
         if hcl:
             _ignored(body, {"action"}, "LISTENER_ACTION_OWNED_BY_C2")
         actions = _blocks(body.get("action"), "LISTENER_FORWARD_TARGETS", count=1)
@@ -412,7 +480,14 @@ def inspect_ecs(
         )
 
 
-def _resource(kind: str, label: str, body: dict[str, Any], layer: str) -> None:
+def _resource(
+    kind: str,
+    label: str,
+    body: dict[str, Any],
+    layer: str,
+    *,
+    bluegreen_listener: bool = True,
+) -> None:
     forbidden = {
         "provisioner",
         "connection",
@@ -496,7 +571,7 @@ def _resource(kind: str, label: str, body: dict[str, Any], layer: str) -> None:
             "SECRET_NAME_SCOPE",
         )
         require("policy" not in body, "SECRET_RESOURCE_POLICY_FORBIDDEN")
-    inspect_ecs(kind, body, hcl=True)
+    inspect_ecs(kind, body, hcl=True, bluegreen_listener=bluegreen_listener)
     if kind == "aws_db_instance":
         require(body.get("manage_master_user_password") is True, "RDS_MANAGED_PASSWORD")
         require(body.get("publicly_accessible") is False, "RDS_PRIVATE")

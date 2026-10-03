@@ -127,22 +127,22 @@ def test_bluegreen_valid_hcl_and_plan(kind, factory, action):
 @pytest.mark.parametrize(
     "path,value,rule",
     [
-        (("deployment_configuration",), REMOVE, "ECS_BLUE_GREEN"),
+        (("deployment_configuration",), {}, "ECS_DEPLOYMENT_STRATEGY"),
         (
             (
                 *DEPLOY,
                 "strategy",
             ),
-            "ROLLING",
-            "ECS_BLUE_GREEN",
+            "CANARY",
+            "ECS_DEPLOYMENT_STRATEGY",
         ),
         (
             (
                 *DEPLOY,
                 "strategy",
             ),
-            REMOVE,
-            "ECS_BLUE_GREEN",
+            None,
+            "ECS_DEPLOYMENT_STRATEGY",
         ),
         (
             (
@@ -485,7 +485,7 @@ def test_unknown_forward_targets_must_be_distinct():
 @pytest.mark.parametrize(
     "field,rule",
     [
-        ("strategy", "ECS_BLUE_GREEN"),
+        ("strategy", "ECS_DEPLOYMENT_STRATEGY"),
         ("bake_time_in_minutes", "ECS_BAKE_TIME"),
         ("lifecycle_hook", "LIFECYCLE_HOOK"),
     ],

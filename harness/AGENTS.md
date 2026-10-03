@@ -87,7 +87,9 @@ src/ddak/
 
 ## 최신 실행 전제
 
-- 제품은 `validate_infra` → `plan_infra` → 한 화면의 infra 승인 → foundation(state bucket + app/build 권한 경계) → platform apply 순서로 실행합니다. bucket이 없으면 local backend plan을 승인한 뒤 코드가 SDK로 bucket을 만들고 platform local apply 후 remote backend로 state를 이전합니다. 사람이 미리 foundation/platform을 apply하는 전제는 폐기합니다. 사람의 사전 준비는 AWS 자격증명과 도메인 구매입니다. AI 개발 에이전트는 Terraform을 직접 실행하지 않으며, 승인 뒤 제품 코드가 실행하는 경로와 구분합니다. `generate_infra` 실제 구현(양서윤)은 PR #17로 main에 들어왔지만 실제 AWS 실행 검증은 없고 AWS 전체 완료를 의미하지 않습니다. 클라우드 진행 방식은 정준우가 추후 다시 정합니다(10/3).
+- **10/3 14:35 배포 결정:** 대회(10/4)는 클라우드·온프렘 모두 rolling이다. 블루그린 추가 작업은 대회 뒤로 미루고, 기존 검사·역할 코드는 휴면 분기로 보존한다. 오전·14:20 결정은 [배포 방식 변경 이력](docs/decisions/2026-10-03-cloud-bluegreen.md)에서 확인한다.
+
+- 제품은 `validate_infra` → `plan_infra` → 한 화면의 infra 승인 → foundation(state bucket + app/build 권한 경계) → platform apply 순서로 실행합니다. bucket이 없으면 local backend plan을 승인한 뒤 코드가 SDK로 bucket을 만들고 platform local apply 후 remote backend로 state를 이전합니다. 사람이 미리 foundation/platform을 apply하는 전제는 폐기합니다. 사람의 사전 준비는 AWS 자격증명과 도메인 구매입니다. AI 개발 에이전트는 Terraform을 직접 실행하지 않으며, 승인 뒤 제품 코드가 실행하는 경로와 구분합니다. `generate_infra` 실제 구현(양서윤)은 PR #17로 main에 들어왔지만 실제 AWS 실행 검증은 없고 AWS 전체 완료를 의미하지 않습니다. 클라우드 진행 방식은 10/3 14:35 결정에 따라 대회에서 rolling을 사용합니다.
 
 - 승인 UI는 한 화면·한 번 클릭이며 patch/deploy/infra 등 대상별 해시·기록을 분리한다. 패치 승인은 prod 커밋 SHA·diff 해시·후보 트리 해시에 묶는다. 이전 패치는 merge만으로 유지되지 않는다. 재사용 여부와 새 prod 적합성은 민영님 패치 단계가 판단하고, 맞지 않으면 승인 전에 다시 제안한다.
 - 배포 기준은 PR merge로 앱 저장소 prod 브랜치에 반영된 커밋이다(수동 배포는 감시 브랜치와 v* 태그만). 변경 탐지는 새 prod 커밋을 환경별 마지막 성공 배포(source_sha·원본 파일 manifest)와 비교한다. 빌드 소스는 승인 트리를 고정한 ai-prod 커밋 SHA(CodeBuild sourceVersion, `local` 백엔드는 같은 SHA의 승인 사본)이고, S3 업로드는 대체 경로다. 승인 대기 중 같은 ref에 새 커밋이 오면 이전 자동 run은 `SUPERSEDED`가 된다. 잠금은 `/ops` 해제 버튼·`make -C harness unlock`·만료로 푼다(실행 중 run은 거부).
