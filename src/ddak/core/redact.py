@@ -87,10 +87,12 @@ _RULES: tuple[tuple[re.Pattern[str], _Replacement], ...] = (
     (re.compile(r"\b(arn:aws[a-z-]*:[a-z0-9-]+:[a-z0-9-]*:)\d{12}(?=:)"), r"\1************"),
     # .env / key=value 형식: *_SECRET, *_TOKEN, *_PASSWORD, *_KEY, aws_secret_access_key 등.
     # 비밀 단어 뒤에는 "_단어" 하나만 허용한다(secretsmanager: 같은 서비스 이름은 제외).
+    # 불리언·null 리터럴(manage_master_user_password = true 같은 설정)은 비밀값이 아니므로 남긴다.
     (
         re.compile(
             r"\b([A-Za-z0-9_]*(?:secret|token(?!s)|password|passwd|pwd|api_?key|access_?key|_key)"
-            r"(?:_[A-Za-z0-9]+)?\s*[=:]\s*)(\"[^\"]*\"|'[^']*'|[^\s&;,]+)",
+            r"(?:_[A-Za-z0-9]+)?\s*[=:]\s*)"
+            r"(?!(?:true|false|null|none)\b)(\"[^\"]*\"|'[^']*'|[^\s&;,]+)",
             re.IGNORECASE,
         ),
         rf"\1{REDACTED}",
