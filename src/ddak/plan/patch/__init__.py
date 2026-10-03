@@ -1,4 +1,4 @@
-"""plan/patch: AI 코드 수정 P0(토글 ON 전용). 담당 장민영(O3).
+"""plan/patch: AI 코드 수정 P0(새 AI 제안은 토글 ON, OFF는 이전 패치 재적용만). 담당 장민영(O3).
 
 공개 함수: patch_config(툴 진입점, tool.py가 등록),
 patch_db_access·patch_storage(빈 구현, 등록 안 함),

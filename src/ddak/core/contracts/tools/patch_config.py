@@ -1,6 +1,7 @@
 """patch_config 입출력(초안, 담당 O3, 정준우 승인 대기 NEEDS_CONTEXT).
 
-토글 code_patch가 켜진 run에서 계획 흐름(plan/flow.py)이 부른다(카탈로그상 계획 밖 툴).
+계획 흐름(plan/flow.py)이 부른다(카탈로그상 계획 밖 툴). 토글 code_patch가 켜졌으면 새 제안까지,
+꺼졌어도 이전 승인 패치(previous)가 있으면 AI 없이 재적용만 한다(10/3 결정 12의 7).
 prod 원본 스냅샷에 맞는 설정 패치를 제안하고, 실행기 prepare(patch=, patch_meta=)에 그대로 넘길
 모양으로 돌려준다. 패치는 제안일 뿐이고 사람 승인 뒤에만 승인 트리에 들어간다.
 - 패치는 UTF-8 unified diff 텍스트다(파일별 hunk 하나, core.snapshots.apply_diff 형식).
