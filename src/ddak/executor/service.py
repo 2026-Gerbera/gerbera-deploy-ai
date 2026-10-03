@@ -760,6 +760,22 @@ class DeploymentService:
         envs = self.store.environments(p.plan.project)
         previous = {target: row["current"] for target, row in envs.items() if row["current"]}
         ctx = replace(p.context, lock_token=token, previous_release=previous)
+        if ctx.release_artifacts is None:
+            # 변경 없는 tier의 빌드는 계획에서 생략된다. 이때 DB 준비·환경 갱신·부분 배포가
+            # 사용할 이미지 digest는 마지막 성공 릴리스에서 이어받는다.
+            for target in ("cloud", "local"):
+                saved = previous.get(target)
+                raw_artifacts = saved.get("artifacts") if isinstance(saved, Mapping) else None
+                if not isinstance(raw_artifacts, Mapping):
+                    continue
+                prior = ReleaseArtifacts.model_validate(raw_artifacts)
+                inherited = ReleaseArtifacts(snapshot=p.snapshot, images=prior.images)
+                ctx = replace(
+                    ctx,
+                    release_artifacts=inherited,
+                    images={tier: artifact.ref for tier, artifact in inherited.images.items()},
+                )
+                break
         if ctx.release_artifacts:
             ctx = replace(
                 ctx, release_artifacts=ctx.release_artifacts.model_copy(update={"observations": {}})
