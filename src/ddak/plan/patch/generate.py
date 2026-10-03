@@ -1,8 +1,9 @@
 """patch_config 패치 제안(AI). 담당 장민영(O3). 공통 계약 3-5·3-6절, 10/2 결정 8번.
 
 흐름(토글 ctx.toggles["code_patch"]가 켜진 run만):
-1. 대상 찾기(코드): 허용 파일(.py, tests·migrations 제외)에서 대상 패턴(PATTERNS)이 있는 줄.
-   없으면 패치하지 않는다(no_targets).
+1. 대상 찾기(코드): 허용 파일(.py, tests·migrations 제외)에서 대상 패턴(PATTERNS)이 있고 값이
+   박힌 줄(환경변수 읽기가 없고 값 리터럴이 있는 줄). 없으면 패치하지 않는다(no_targets).
+   AI가 고칠 줄이 없다고 답해도(빈 edits) no_targets다.
 2. 재사용(코드, AI 없음): 이전에 승인된 패치가 새 원본에서도 check_patch를 통과하면 그대로 쓴다.
    build_patch는 파일 전체를 문맥으로 쓰므로, 대상 파일이 한 글자라도 바뀌면 통과하지 못하고
    3으로 간다.
@@ -37,6 +38,8 @@ from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.redact import redact
 from ddak.core.snapshots import digest_bytes
 from ddak.plan.patch.check import (
+    _ENV_READ,
+    _STRING,
     MAX_FILES,
     PATTERNS,
     PatchCheck,
@@ -51,6 +54,8 @@ MAX_SCAN_FILES = 500
 MAX_ATTEMPTS = 2  # 처음 + 위반 코드를 알려 주고 다시 묻기 1회
 _SKIP_DIRS = frozenset({".git", ".venv", "venv", "node_modules", "__pycache__", "site-packages"})
 _ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]{1,63}$")
+# = 또는 : 바로 뒤의 숫자·True·False(x_for=1, SESSION_COOKIE_SECURE=False)
+_SCALAR_VALUE = re.compile(r"[=:]\s*(?:-?\d+|True|False)\b")
 
 INSTRUCTION = """\
 너는 배포 파이프라인의 설정 패치 작성기다.
@@ -70,6 +75,7 @@ INSTRUCTION = """\
   변환만 쓴다. 비밀 이름(SECRET·PASSWORD·TOKEN·KEY)에는 기본값 문자열을 두지 않는다.
 - 주석을 새로 쓰지 않는다. 문자열 이어 붙이기·별칭 import·세미콜론을 쓰지 않는다.
 - [REDACTED]로 가려진 값은 원래 값을 모른다. 그 줄은 통째로 환경변수 읽기로 바꾼다.
+- 이미 환경변수에서 읽고 있어 고칠 줄이 없으면 edits를 빈 목록으로 둔다.
 - reason: 무엇을 왜 바꿨는지 한국어 200자 이내(비밀값·주소를 쓰지 않는다).
 - env_vars: 패치가 새로 읽는 환경변수 이름 목록.
 """
@@ -98,7 +104,7 @@ class PatchDraft(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    edits: list[PatchEdit] = Field(min_length=1, max_length=20)
+    edits: list[PatchEdit] = Field(max_length=20)  # 비면 고칠 줄이 없다는 답
     reason: str = Field(min_length=1, max_length=200)
     env_vars: list[str] = Field(default_factory=list, max_length=10)
 
@@ -155,8 +161,20 @@ def _read(source: Path, rel: str) -> str | None:
         return None
 
 
+def _hardcoded(line: str) -> bool:
+    """값이 코드에 박힌 줄인지. 환경변수를 읽는 줄은 이미 고친 것으로 본다.
+
+    키 이름 같은 문자열("SECRET_KEY", "PROXY_FIX_X_FOR")은 값이 아니다.
+    """
+    if line.lstrip().startswith("#") or _ENV_READ.search(line):
+        return False
+    if _SCALAR_VALUE.search(line):
+        return True
+    return any(not _ENV_NAME.match(m.group("s")) for m in _STRING.finditer(line))
+
+
 def find_targets(source: Path, policy: PatchPolicy | None = None) -> dict[str, list[str]]:
-    """경로 → 대상 패턴 이름(정렬). 검사기처럼 문자열 안도 본다(주석만 있는 줄은 뺀다)."""
+    """경로 → 대상 패턴 이름(정렬). 패턴이 있고 값이 박힌 줄만 센다(문자열 안도 본다)."""
     policy = policy or PatchPolicy()
     targets: dict[str, list[str]] = {}
     for rel in _candidate_files(source, policy):
@@ -167,7 +185,7 @@ def find_targets(source: Path, policy: PatchPolicy | None = None) -> dict[str, l
             name
             for line in text.splitlines()
             for name, pattern in PATTERNS.items()
-            if not line.lstrip().startswith("#") and pattern.search(line)
+            if pattern.search(line) and _hardcoded(line)
         }
         if hits:
             targets[rel] = sorted(hits)
@@ -306,6 +324,9 @@ def propose_config_patch(
         if result.usage is not None:
             proposal.usage.append(result.usage)
         draft = result.value
+        if not draft.edits:  # AI가 고칠 줄이 없다고 답했다
+            proposal.status, proposal.patch, proposal.check = "no_targets", None, None
+            return proposal
         try:
             patch = build_patch(apply_edits(originals, draft.edits))
         except DdakToolError as exc:

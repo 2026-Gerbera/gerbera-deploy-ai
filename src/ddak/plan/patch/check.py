@@ -59,6 +59,9 @@ _ENV_KEY_BEFORE = re.compile(
 )
 # 첨자 키 자리(app.config["SECRET_KEY"]): 이름·]·) 바로 뒤의 [. 리스트 리터럴 ["..."]은 아니다
 _SUBSCRIPT_KEY_BEFORE = re.compile(r"[\w\])]\s*\[\s*$")
+# 딕셔너리 키 자리({"SECRET_KEY": ...}): 앞이 줄 시작·{·, 이고 바로 뒤가 :
+_DICT_KEY_BEFORE = re.compile(r"(?:^|[{,])\s*$")
+_DICT_KEY_AFTER = re.compile(r"^\s*:")
 _STRUCTURAL = re.compile(r"^\s*[()\[\]{},:]*\s*$")
 _DANGEROUS = re.compile(
     r"\bos\.system\b|\bsubprocess\b|\beval\s*\(|\bexec\s*\(|__import__|\bopen\s*\("
@@ -309,13 +312,17 @@ def _is_blank_or_comment(line: str) -> bool:
 def _secret_literal(line: str) -> bool:
     """비밀 이름이 있는 줄에 키 자리가 아닌 문자열이 있으면 True(대문자 값 포함).
 
-    키 자리는 환경변수 키와 첨자 키(app.config["SECRET_KEY"])다. 값은 AST 비교가 다시 본다.
+    키 자리는 환경변수 키, 첨자 키(app.config["SECRET_KEY"]), 딕셔너리 키({"SECRET_KEY": ...})다.
+    값은 AST 비교가 다시 본다.
     """
     if not _SECRET_NAME.search(line):
         return False
     for match in _STRING.finditer(line):
         before = line[: match.start()]
-        key_position = _ENV_KEY_BEFORE.search(before) or _SUBSCRIPT_KEY_BEFORE.search(before)
+        dict_key = _DICT_KEY_BEFORE.search(before) and _DICT_KEY_AFTER.match(line[match.end() :])
+        key_position = (
+            _ENV_KEY_BEFORE.search(before) or _SUBSCRIPT_KEY_BEFORE.search(before) or dict_key
+        )
         if not (key_position and _ENV_NAME.fullmatch(match.group("s"))):
             return True
     return False

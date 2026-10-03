@@ -445,6 +445,51 @@ def test_config_subscript_secret_key_from_env_passes(
     assert result.passed, result.violations
 
 
+DICT_ORIGINAL = """import os
+
+
+def load():
+    return {
+        "APP_BASE_URL": "http://localhost:5000",
+        "SECRET_KEY": "dev",
+    }
+"""
+
+
+def _dict_check(source: Path, new_lines: str):  # type: ignore[no-untyped-def]
+    path = "flaskr/config.py"
+    (source / path).write_text(DICT_ORIGINAL, encoding="utf-8")
+    new = DICT_ORIGINAL.replace('        "SECRET_KEY": "dev",', new_lines)
+    return check_patch(source, build_patch({path: (DICT_ORIGINAL, new)}))
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        '        "SECRET_KEY": os.environ["SECRET_KEY"],',
+        '        "SECRET_KEY": os.environ.get("SECRET_KEY"),',
+        '        **{"SECRET_KEY": os.getenv("SECRET_KEY")},',
+    ],
+)
+def test_dict_key_secret_key_from_env_passes(source: Path, line: str) -> None:
+    # 샘플 앱 config.load()가 딕셔너리라 실제 Claude 패치가 이 모양이다(10/3 실측에서 오탐)
+    result = _dict_check(source, line)
+    assert result.passed, result.violations
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        '        "SECRET_KEY": "HUNTER" + "PW",',
+        '        "SECRET_KEY": "HUNTERPW",',  # 대문자 값도 키 자리가 아니다
+        '        "SECRET_KEY": os.environ.get("SECRET_KEY", "hunter" + "2pass"),',
+    ],
+)
+def test_dict_value_secret_is_still_rejected(source: Path, line: str) -> None:
+    result = _dict_check(source, line)
+    assert "secret_literal" in codes(result)
+
+
 def test_list_literal_secret_is_still_rejected(source: Path) -> None:
     result = _subscript_check(
         source, '"dev"', '["HUNTER" + "PW"][0] or os.environ["SECRET_KEY"]', "import os\n\n"
