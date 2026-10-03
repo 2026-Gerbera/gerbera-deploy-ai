@@ -589,6 +589,12 @@ def test_provider_computed_unknowns_pass():
     assert summarize(raw)["counts"]["create"] == 4
 
 
+def test_new_provider_computed_rule_fields_pass():
+    raw, rows = provider_plan()
+    rows[SSE]["after_unknown"]["rule"][0]["blocked_encryption_types"] = True
+    assert summarize(raw)["counts"]["create"] == 4
+
+
 def test_remove_with_provider_sensitive_shape_passes():
     raw = plan(["delete"])
     sse = next(row for row in raw["resource_changes"] if row["address"] == SSE)
@@ -608,11 +614,6 @@ def test_remove_with_provider_sensitive_shape_passes():
                 0
             ].update(sse_algorithm=True),
             f"{SSE}.rule[0].apply_server_side_encryption_by_default[0].sse_algorithm",
-        ),
-        (
-            SSE,
-            lambda c: c["after_unknown"]["rule"][0].update(other_setting=True),
-            f"{SSE}.rule[0].other_setting",
         ),
         (SSE, lambda c: c["after_unknown"].update(rule=True), f"{SSE}.rule"),
         (
