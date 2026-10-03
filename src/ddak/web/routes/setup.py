@@ -11,12 +11,12 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
-from ddak.core.contracts.errors import DdakToolError
 from ddak.web.dependencies import deployment, selected_project, templates
+from ddak.web.form_errors import FormRoute
 from ddak.web.forms import parse_form
 from ddak.web.security import csrf_token, issue_csrf, require_safe_post
 
-router = APIRouter(prefix="/setup")
+router = APIRouter(prefix="/setup", route_class=FormRoute)
 
 
 def _coordinator(request: Request) -> Any:
@@ -27,17 +27,7 @@ def _coordinator(request: Request) -> Any:
 
 
 async def _call(method: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
-    try:
-        return await asyncio.to_thread(method, *args, **kwargs)
-    except DdakToolError:
-        raise HTTPException(
-            409, "설정을 처리할 수 없습니다. 연결 상태와 승인 조건을 확인하세요"
-        ) from None
-    except (ValueError, KeyError):
-        raise HTTPException(400, "설정 입력을 확인하세요. 비밀값은 표시하지 않습니다") from None
-    except Exception:
-        # SDK·프로세스 예외에도 비밀 입력이나 stdout이 포함될 수 있다.
-        raise HTTPException(502, "설정 처리에 실패했습니다. 연결 설정을 확인하세요") from None
+    return await asyncio.to_thread(method, *args, **kwargs)
 
 
 async def _input(request: Request) -> tuple[str, dict[str, str], Any]:

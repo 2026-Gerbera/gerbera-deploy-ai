@@ -2,12 +2,13 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
 from ddak.core.contracts.errors import DdakToolError
-from ddak.core.redact import redact, redact_obj
+from ddak.core.redact import redact_obj
 from ddak.web.dependencies import deployment, templates
+from ddak.web.form_errors import FormRoute
 from ddak.web.forms import parse_form
 from ddak.web.security import csrf_token, issue_csrf, require_safe_post
 
-router = APIRouter(prefix="/runs")
+router = APIRouter(prefix="/runs", route_class=FormRoute)
 
 
 @router.get("/{run_id}/approval")
@@ -44,7 +45,7 @@ async def decide_approval(request: Request, run_id: str):
         service.approve(run_id, approver="local-operator", approved=approved)
         if approved:
             service.start(run_id)
-    except (KeyError, DdakToolError) as exc:
-        raise HTTPException(status_code=409, detail=redact(str(exc))) from exc
+    except KeyError:
+        raise HTTPException(status_code=404, detail="실행을 찾을 수 없습니다") from None
     page = "progress" if approved else "result"
     return RedirectResponse(f"/runs/{run_id}/{page}", status_code=303)

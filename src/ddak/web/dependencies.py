@@ -13,9 +13,11 @@ from fastapi.templating import Jinja2Templates
 from ddak.core.project_settings import ProjectSettings
 from ddak.executor.engine import RunStatus
 from ddak.executor.service import DeploymentService
+from ddak.web.form_errors import form_context, form_error_for, form_return_to
 
 ROOT = Path(__file__).resolve().parent
-templates = Jinja2Templates(directory=ROOT / "templates")
+templates = Jinja2Templates(directory=ROOT / "templates", context_processors=[form_context])
+templates.env.globals.update(form_error_for=form_error_for, form_return_to=form_return_to)
 
 
 def deployment(request: Request) -> DeploymentService:
