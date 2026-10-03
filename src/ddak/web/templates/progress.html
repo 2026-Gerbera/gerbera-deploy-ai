@@ -1,15 +1,21 @@
-{% extends "base.html" %}
+{% extends 'base.html' %}
+{% from '_status.html' import label, target %}
 {% block title %}배포 진행 · Gerbera{% endblock %}
 {% block breadcrumb %}Live deployment{% endblock %}
 {% block content %}
-<section class="page-heading"><div><p class="eyebrow live"><i></i>LIVE DEPLOYMENT</p><h1>배포가 진행 중입니다</h1><p><code class="run-id">{{ run_id }}</code></p></div><a class="button secondary" href="/">대시보드로 이동</a></section>
-<section class="deployment-flow" aria-label="현재 배포 단계">
-  <div class="flow-step active" data-phase="plan"><span>1<i></i></span><div><strong>Plan</strong><small>승인 계획</small></div></div><i></i>
-  <div class="flow-step" data-phase="infra"><span>2<i></i></span><div><strong>Infra</strong><small>Terraform</small></div></div><i></i>
-  <div class="flow-step" data-phase="build"><span>3<i></i></span><div><strong>Build</strong><small>Image</small></div></div><i></i>
-  <div class="flow-step" data-phase="deploy"><span>4<i></i></span><div><strong>Deploy</strong><small>ECS update</small></div></div><i></i>
-  <div class="flow-step" data-phase="verify"><span>5<i></i></span><div><strong>Verify</strong><small>Health &amp; TLS</small></div></div>
+{% set ended = status in terminal_states %}
+<section class="page-heading"><div><h1 id="progress-title">{{ label(status) }}</h1><p>{{ project }} · <code>{{ run_id }}</code></p></div><div class="heading-actions"><a class="button secondary" href="/?project={{ project|urlencode }}">대시보드</a><a id="result-link" class="button{% if not ended %} hidden{% endif %}" href="/runs/{{ run_id }}/result">결과 보기</a></div></section>
+<section class="progress" data-run-id="{{ run_id }}" data-terminal-states='{{ terminal_states|tojson }}' data-status="{{ status }}" data-targets="{{ targets or 'unknown' }}">
+  <h2>환경별 진행</h2><p id="current-activity" aria-live="polite">{% if ended %}실행이 끝났습니다. 환경별 최종 상태는 결과 화면에서 확인하세요.{% else %}단계 확인 중. 실행 이벤트가 도착하면 갱신합니다.{% endif %}</p>
+  <div class="phase-grid" aria-label="환경별 실행 단계">
+    <span class="phase-head">환경</span>{% for phase in ('계획','인프라','빌드','배포','검증') %}<span class="phase-head">{{ phase }}</span>{% endfor %}
+    {% for track in ('local','cloud') %}{% set excluded = (track == 'cloud' and targets in ('onprem','local')) or (track == 'local' and targets == 'cloud') %}
+    <strong>{{ target(track) }}</strong>{% for phase in ('plan','infra','build','deploy','verify') %}<span class="flow-step" data-phase="{{ phase }}" data-track="{{ track }}" data-excluded="{{ 'true' if excluded else 'false' }}">{{ '대상 아님' if excluded else '결과 확인' if ended else '확인 중' }}</span>{% endfor %}{% endfor %}
+  </div>
+  <p class="note">단계 성공은 수신한 작업의 결과입니다. 해당 구간 전체의 완료를 뜻하지 않습니다.</p>
+  <p id="connection-state" role="status">{% if ended %}실행 종료{% else %}실시간 연결을 준비합니다.{% endif %}</p>
+  <section class="section"><h2>온프렘 이벤트</h2><ol id="local-events" class="event-list"><li class="event-placeholder">{{ '최종 기록은 결과 화면에서 확인하세요.' if ended else '이벤트를 기다리는 중입니다.' }}</li></ol></section>
+  <section class="section"><h2>클라우드 이벤트</h2><ol id="cloud-events" class="event-list"><li class="event-placeholder">{{ '최종 기록은 결과 화면에서 확인하세요.' if ended else '이벤트를 기다리는 중입니다.' }}</li></ol></section>
 </section>
-<section class="grid two progress" data-run-id="{{ run_id }}"><article class="card event-card"><div class="card-header"><div><p class="section-kicker">LOCAL TRACK</p><h2>온프레미스</h2></div><span class="status running"><i></i>Running</span></div><ol id="local-events" class="event-list"><li class="event-placeholder">이벤트를 기다리는 중입니다.</li></ol></article><article class="card event-card"><div class="card-header"><div><p class="section-kicker">CLOUD TRACK</p><h2>AWS Fargate</h2></div><span class="status running"><i></i>Running</span></div><ol id="cloud-events" class="event-list"><li class="event-placeholder">이벤트를 기다리는 중입니다.</li></ol></article></section>
-<section class="card event-card"><div class="card-header"><div><p class="section-kicker">SYSTEM EVENTS</p><h2>공통 이벤트</h2></div><a id="result-link" class="button hidden" href="/runs/{{ run_id }}/result">최종 결과 보기 →</a></div><ol id="common-events" class="event-list horizontal"><li class="event-placeholder">실행 상태를 연결하고 있습니다.</li></ol></section>
+<section class="section"><h2>공통 이벤트</h2><ol id="common-events" class="event-list"><li class="event-placeholder">{{ '최종 기록은 결과 화면에서 확인하세요.' if ended else '이벤트를 기다리는 중입니다.' }}</li></ol></section>
 {% endblock %}

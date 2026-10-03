@@ -163,10 +163,15 @@ class AppRepository:
                 {"operation": "prepare_candidate", "elapsed_s": time.monotonic() - started}
             )
 
-    def validate_candidate(self, *args: Any) -> None:
+    def preflight_source(self, source_sha: str, *, patch: bytes | None = None) -> dict[str, Any]:
+        from ddak.core.candidate import preflight_source
+
+        return preflight_source(self, source_sha, patch=patch)
+
+    def validate_candidate(self, *args: Any) -> dict[str, Any]:
         from ddak.core.candidate import validate_candidate
 
-        validate_candidate(self, *args)
+        return validate_candidate(self, *args)
 
     def publish(
         self,
@@ -264,13 +269,14 @@ class FakeAppRepository(AppRepository):
             "source": "fake",
         }
 
-    def validate_candidate(self, *args: Any) -> None:
+    def validate_candidate(self, *args: Any) -> dict[str, Any]:
         from ddak.core.snapshots import digest_json
 
         _sha, candidate_sha, _files, build_files, _work, guard = args
         guard()
         if candidate_sha != digest_json(build_files).split(":", 1)[1][:40]:
             raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "가짜 후보 해시 불일치")
+        return {"source": "fixture", "ignored_count": 0, "findings": []}
 
     def publish(self, candidate_sha, selected, succeeded, *, update_main=True):
         return {

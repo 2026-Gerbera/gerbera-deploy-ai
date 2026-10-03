@@ -19,7 +19,7 @@ from ddak.core.ai import gateway
 from ddak.core.ai.gateway import ask_jev, build_user_prompt, call_ai
 from ddak.core.ai.providers import AIRequest, api, jev
 from ddak.core.ai.providers.api import AnthropicApiProvider
-from ddak.core.ai.providers.jev import JevClient, JevQuestion
+from ddak.core.ai.providers.jev import GroqJevClient, JevClient, JevQuestion
 from ddak.core.config import Settings
 from ddak.core.contracts.enums import LLMBackend, Source
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
@@ -98,7 +98,7 @@ def fake(monkeypatch: pytest.MonkeyPatch) -> Iterator[Fake]:
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     url = f"http://127.0.0.1:{srv.server_port}/chat"
     monkeypatch.setattr(api, "GROQ_ENDPOINT", url)
-    monkeypatch.setattr(jev, "JEV_ENDPOINT", url)
+    monkeypatch.setattr(jev, "GROQ_JEV_ENDPOINT", url)
     monkeypatch.setattr(api.anthropic, "RateLimitError", _RateLimitError)
     monkeypatch.setattr(api.anthropic, "APIStatusError", _StatusError)
     monkeypatch.setattr(api.anthropic, "APITimeoutError", _TimeoutError)
@@ -267,8 +267,8 @@ QS = [
 ]
 
 
-def _jev(timeout: float = 2.0) -> JevClient:
-    return JevClient(KEY, model="m2", timeout_s=timeout)
+def _jev(timeout: float = 2.0) -> GroqJevClient:
+    return GroqJevClient(KEY, model="m2", timeout_s=timeout)
 
 
 def _answers(**over: Any) -> dict[str, Any]:
@@ -326,7 +326,7 @@ def test_jev_network_and_key(fake: Fake) -> None:
         _jev().ask(state="s", questions=QS)
     assert info.value.code is ErrorCode.AI_UNAVAILABLE and KEY not in str(info.value)
     with pytest.raises(DdakToolError) as info:
-        JevClient(None, model="m", timeout_s=1).ask(state="s", questions=QS)
+        GroqJevClient(None, model="m", timeout_s=1).ask(state="s", questions=QS)
     assert info.value.code is ErrorCode.AI_UNAVAILABLE
 
 
@@ -335,8 +335,8 @@ def test_gateway_end_to_end(fake: Fake) -> None:
         llm_backend=LLMBackend.API,
         llm_api_key=KEY,
         llm_model="m1",
-        jev_api_key=KEY,
-        jev_model="m2",
+        groq_api_key=KEY,
+        groq_model="m2",
         ai_retries=0,
     )
     with tool_context("generate_plan", "run-1"):
@@ -345,7 +345,7 @@ def test_gateway_end_to_end(fake: Fake) -> None:
         assert res.value.tiers == ["web"] and res.source is Source.LIVE and res.usage is not None
         fake.body = _answers()
         assert len(ask_jev(state="s", questions=QS, settings=cfg)) == 3
-    assert gateway.JevClient is JevClient
+    assert gateway.GroqJevClient is GroqJevClient
 
 
 @pytest.mark.llm

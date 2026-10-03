@@ -29,6 +29,7 @@ TOP_LEVEL = (
     ("deploy_config.json", "ddak.core.contracts.deploy_config", "DeployConfig"),
     ("approval.json", "ddak.core.contracts.approval", "ApprovalRecord"),
     ("release_artifacts.json", "ddak.core.contracts.release", "ReleaseArtifacts"),
+    ("carried_image_source.json", "ddak.core.contracts.release", "CarriedImageSource"),
 )
 
 if str(ROOT.parent / "src") not in sys.path:  # 설치 전(스크래치·CI 첫 실행)에도 import되게

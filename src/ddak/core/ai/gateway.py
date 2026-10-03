@@ -21,10 +21,10 @@ from pydantic import BaseModel, ValidationError
 
 from ddak.core import runtime
 from ddak.core.ai.providers import AIRequest, LLMProvider, get_provider
-from ddak.core.ai.providers.jev import JevAnswer, JevClient, JevQuestion
+from ddak.core.ai.providers.jev import GroqJevClient, JevAnswer, JevQuestion, JudgmentClient
 from ddak.core.config import Settings
 from ddak.core.contracts.base import AIUsage
-from ddak.core.contracts.enums import Source
+from ddak.core.contracts.enums import LLMBackend, Source
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.redact import redact
 from ddak.core.registry import ai_tools
@@ -152,17 +152,31 @@ def call_ai[M: BaseModel](
         )
 
 
+def get_jev_client(settings: Settings | None = None) -> JudgmentClient:
+    """판단 backend만 선택한다. 예약한 TypeSafe 키는 사용하지 않는다."""
+    cfg = settings or Settings.from_env()
+    if cfg.jev_backend == "claude-cli":
+        from ddak.core.ai.providers.claude import ClaudeJevClient
+
+        return ClaudeJevClient(
+            cfg.claude_bin,
+            model=cfg.llm_model if cfg.llm_backend is LLMBackend.CLI else None,
+            timeout_s=cfg.ai_timeout_s,
+            effort=cfg.llm_effort,
+        )
+    return GroqJevClient(cfg.groq_api_key, model=cfg.groq_model, timeout_s=cfg.groq_timeout_s)
+
+
 def ask_jev(
     *,
     state: str,
     questions: Sequence[JevQuestion],
     settings: Settings | None = None,
-    client: JevClient | None = None,
+    client: JudgmentClient | None = None,
 ) -> list[JevAnswer]:
     """Jev 한 번 호출(질문 묶음). 허용 툴 안에서만. 실패하면 AI_UNAVAILABLE -> 규칙/Claude 대체."""
     ensure_ai_allowed()
-    cfg = settings or Settings.from_env()
-    jev = client or JevClient(cfg.jev_api_key, model=cfg.jev_model, timeout_s=cfg.jev_timeout_s)
+    jev = client if client is not None else get_jev_client(settings)
     try:
         return jev.ask(state=redact(state), questions=questions)
     except NotImplementedError as exc:

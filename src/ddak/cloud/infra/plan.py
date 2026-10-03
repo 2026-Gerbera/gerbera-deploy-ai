@@ -11,6 +11,7 @@ from ddak.core.redact import redact
 
 from .policy import (
     PolicyViolation,
+    inspect_ecs,
     inspect_policy,
     policy_json,
     protect_platform_resource,
@@ -111,7 +112,12 @@ def _valid_plan_address(resource: dict[str, Any]) -> bool:
     kind = resource.get("type")
     name = resource.get("name")
     address = resource.get("address")
-    if not isinstance(kind, str) or not isinstance(name, str) or not isinstance(address, str):
+    if not isinstance(kind, str) or not isinstance(address, str):
+        return False
+    if name is None and "index" not in resource:
+        prefix = f"{kind}."
+        name = address.removeprefix(prefix) if address.startswith(prefix) else None
+    if not isinstance(name, str):
         return False
     base = f"{kind}.{name}"
     if not re.fullmatch(r"aws_[a-z0-9_]+\.[A-Za-z][A-Za-z0-9_]*", base):
@@ -198,6 +204,11 @@ def summarize_plan(
                     protect_platform_resource(kind, value, state_bucket)
         if kind == "aws_codebuild_project" and change.get("after"):
             protect_platform_resource(kind, change["after"], state_bucket)
+        if (
+            kind in {"aws_ecs_service", "aws_ecs_task_definition"}
+            and change.get("after") is not None
+        ):
+            inspect_ecs(kind, change["after"])
         actions = change.get("actions")
         require(
             actions

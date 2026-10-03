@@ -1,15 +1,23 @@
 """smoke_test 공통 로직: HTTP 클라이언트, 시나리오, 판정. 환경 차이는 어댑터가 준다.
 
 - 같은 시나리오를 두 환경에 독립적으로 보낸다(세션·쿠키를 환경 간에 재사용하지 않는다).
-- 리다이렉트는 따라가지 않고 상태 코드와 Location 경로를 그대로 본다.
+- 리다이렉트는 따라가지 않고 상태 코드와 Location 경로를 그대로 본다. 다른 호스트로 보내면
+  경로 대신 EXTERNAL_LOCATION으로 남겨 실패로 본다(호스트 이름은 결과에 싣지 않는다).
+- 앱 응답은 신뢰하지 않는 입력이다. 본문 크기(MAX_BODY), JSON 중첩 깊이(MAX_JSON_DEPTH),
+  요청 하나의 전체 시간(소켓 연산마다가 아니라 요청 전체), smoke 실행 전체 시간(ctx.deadline,
+  없으면 SMOKE_TOTAL_S)에
+  상한을 둔다. DNS 조회는 표준 라이브러리 소켓 timeout 밖이라 이 상한에 들어가지 않는다.
 - 검사 불합격은 passed=False로 돌려준다. 주소가 없는 등 수행할 수 없으면 DdakToolError.
 """
 
 from __future__ import annotations
 
+import contextlib
 import http.client
 import json
+import socket
 import ssl
+import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -28,8 +36,13 @@ from ddak.core.contracts.tools.smoke_test import (
 )
 
 MAX_BODY = 256 * 1024
-REQUEST_TIMEOUT_S = 10.0
+MAX_JSON_DEPTH = 32
+REQUEST_TIMEOUT_S = 10.0  # 요청 하나(연결·전송·응답 전체)
+# smoke 실행 전체. 실행기는 카탈로그 시간(registry smoke_test 120초)으로 ctx.deadline을 준다.
+# 그 값을 줄이지 않는다. ctx.deadline이 없을 때(수동 호출·테스트)만 이 값을 쓴다
+SMOKE_TOTAL_S = 120.0
 SESSION_COOKIE = "session"
+EXTERNAL_LOCATION = "<external>"
 
 
 @dataclass(frozen=True)
@@ -75,10 +88,16 @@ class UrlClient:
         self._host = parts.hostname
         self._port = parts.port
         self._prefix = parts.path.rstrip("/")
+        self.host = parts.hostname.lower()  # 리다이렉트 호스트 비교용
 
     def request(
         self, method: str, path: str, form: Mapping[str, str] | None, timeout: float
     ) -> Response:
+        """timeout은 요청 전체(연결·전송·응답 헤더·본문) 시간이다.
+
+        소켓 timeout은 연산 한 번마다라서 1바이트씩 천천히 보내는 응답은 끝없이 길어질 수 있다.
+        그래서 timeout이 지나면 감시 타이머가 소켓을 닫고 TimeoutError를 낸다.
+        """
         conn: http.client.HTTPConnection
         if self._https:
             conn = http.client.HTTPSConnection(
@@ -91,13 +110,42 @@ class UrlClient:
         if form is not None:
             body = urlencode(form).encode()
             headers["Content-Type"] = "application/x-www-form-urlencoded"
+        expired = threading.Event()
+        # 연결 직후 소켓을 잡아 둔다. 응답이 연결을 닫는 형식이면 getresponse()가 conn.sock을
+        # 비우고 소켓을 응답 쪽으로 넘기므로, 그때 conn.sock으로는 끊을 수 없다
+        held: list[socket.socket] = []
+
+        def abort() -> None:
+            expired.set()
+            for sock in held:
+                with contextlib.suppress(OSError):
+                    sock.shutdown(socket.SHUT_RDWR)
+
+        watchdog = threading.Timer(timeout, abort)
+        watchdog.daemon = True
+        resp: http.client.HTTPResponse | None = None
         try:
+            watchdog.start()
+            conn.connect()  # 소켓 timeout으로 묶인다
+            if conn.sock is not None:
+                held.append(conn.sock)
+            if expired.is_set():  # 연결하는 사이에 시간이 다 됐으면 바로 끊는다
+                abort()
             conn.request(method, self._prefix + path, body=body, headers=headers)
             resp = conn.getresponse()
             data = resp.read(MAX_BODY + 1)[:MAX_BODY]
-            return Response(resp.status, tuple(resp.getheaders()), data.decode("utf-8", "replace"))
+        except (OSError, http.client.HTTPException):
+            if expired.is_set():
+                raise TimeoutError("요청 전체 시간 초과") from None
+            raise
         finally:
+            watchdog.cancel()
+            if resp is not None:
+                resp.close()
             conn.close()
+        if expired.is_set():  # 소켓을 닫으면 read가 잘린 본문을 오류 없이 돌려줄 수 있다
+            raise TimeoutError("요청 전체 시간 초과")
+        return Response(resp.status, tuple(resp.getheaders()), data.decode("utf-8", "replace"))
 
 
 # ---- 시나리오 -----------------------------------------------------------------
@@ -110,11 +158,13 @@ class Probe:
     client: HttpClient
     ctx: RunContext
     title: str  # 이번 run이 만든 글 제목(표시: [smoke <run_id>])
+    deadline: float  # smoke 실행 전체 마감(monotonic). ctx.deadline, 없으면 시작 + SMOKE_TOTAL_S
+    host: str | None = (
+        None  # 대상 호스트(리다이렉트 비교용). 모르면 절대 주소 Location은 외부로 본다
+    )
 
     def timeout(self) -> float:
-        if self.ctx.deadline is None:
-            return REQUEST_TIMEOUT_S
-        remaining = self.ctx.deadline - time.monotonic()
+        remaining = self.deadline - time.monotonic()
         if remaining <= 0:
             raise DdakToolError(ErrorCode.ADAPTER_TIMEOUT, "스모크 제한 시간 초과")
         return min(REQUEST_TIMEOUT_S, remaining)
@@ -129,18 +179,48 @@ class Probe:
 Check = Callable[[Probe], SmokeScenario]
 
 
+def _json_depth_ok(text: str) -> bool:
+    """문자열 밖 [·{ 중첩이 MAX_JSON_DEPTH 이하인지. json.loads의 RecursionError를 막는다."""
+    depth, in_string, escaped = 0, False, False
+    for ch in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+        elif ch == '"':
+            in_string = True
+        elif ch in "[{":
+            depth += 1
+            if depth > MAX_JSON_DEPTH:
+                return False
+        elif ch in "]}":
+            depth -= 1
+    return True
+
+
 def _json(resp: Response) -> dict[str, Any]:
+    if not _json_depth_ok(resp.body):
+        raise ValueError("JSON 중첩이 너무 깊다")
     value = json.loads(resp.body)
     if not isinstance(value, dict):
         raise ValueError("JSON 객체가 아니다")
     return value
 
 
-def _location_path(resp: Response) -> str | None:
+def _location_path(resp: Response, host: str | None) -> str | None:
+    """Location의 경로. 다른 호스트(또는 호스트를 모르는 절대 주소)면 EXTERNAL_LOCATION."""
     location = resp.header("Location")
     if location is None:
         return None
-    return urlsplit(location).path or "/"
+    parts = urlsplit(location.strip())
+    if parts.scheme or parts.netloc:  # //다른호스트/ 도 netloc이 있다
+        target = (parts.hostname or "").lower()
+        if host is None or target != host:
+            return EXTERNAL_LOCATION
+    return parts.path or "/"
 
 
 def cookie_attrs(resp: Response) -> dict[str, Observed]:
@@ -228,7 +308,7 @@ def b1_index(p: Probe) -> SmokeScenario:
 
 def b2_create(p: Probe) -> SmokeScenario:
     resp = p.post("/create", {"title": p.title, "body": "smoke"})
-    location = _location_path(resp)
+    location = _location_path(resp, p.host)
     listed = p.get("/") if resp.status == 302 else None
     shown = listed is not None and listed.status == 200 and p.title in listed.body
     ok = resp.status == 302 and location == "/" and shown
@@ -255,9 +335,31 @@ def b2_empty_title(p: Probe) -> SmokeScenario:
     )
 
 
+# v2(앱 태그 v2, 1차 데모): 목록 페이지에 이미지(인라인 SVG)와 박스를 추가했다. 템플릿만 바뀐다.
+V2_BOX_MARK = 'class="release-box"'
+V2_BOX_TEXT = "v2: image and box added"
+
+
+def v2_box(p: Probe) -> SmokeScenario:
+    """목록 페이지에 v2 박스와 그 안의 이미지가 보이는지. v1에서는 실패가 정상이다."""
+    resp = p.get("/")
+    start = resp.body.find(V2_BOX_MARK)
+    section = resp.body[start : resp.body.find("</section>", start)] if start >= 0 else ""
+    box = start >= 0 and V2_BOX_TEXT in section
+    image = "<svg" in section
+    ok = resp.status == 200 and box and image
+    return _scenario(
+        "V2.box",
+        ok,
+        resp,
+        f"목록 상태 {resp.status}, 박스 {box}, 이미지 {image}",
+        {"status": resp.status, "box": box, "image": image},
+    )
+
+
 # 시나리오 묶음. plan step params의 scenarios가 이 이름을 고른다. (id, 검사) 순서대로 실행한다.
-# base = v1 익명 게시판(B2는 익명 글쓰기가 되는 동안만 유효).
-# v2 기능의 묶음은 기능이 정해지면 추가한다.
+# base = v1 익명 게시판(B2는 익명 글쓰기가 되는 동안만 유효). v2 = 이미지·박스(base에 더해 고른다:
+# ["base", "v2"]). v1으로 되돌린 run은 base만 고른다.
 GROUPS: dict[str, tuple[tuple[str, Check], ...]] = {
     "base": (
         ("S0.version", s0_version),
@@ -266,6 +368,7 @@ GROUPS: dict[str, tuple[tuple[str, Check], ...]] = {
         ("B2.create", b2_create),
         ("B2.empty", b2_empty_title),
     ),
+    "v2": (("V2.box", v2_box),),
 }
 
 
@@ -276,7 +379,7 @@ def _run_check(sid: str, check: Check, probe: Probe) -> SmokeScenario:
         raise
     except (OSError, http.client.HTTPException) as error:
         return _scenario(sid, False, None, f"연결 실패: {type(error).__name__}", {})
-    except ValueError as error:  # JSON 형식 오류 등
+    except (ValueError, RecursionError) as error:  # JSON 형식 오류 등(깊이 검사를 지나친 경우 대비)
         return _scenario(sid, False, None, f"응답 형식 오류: {type(error).__name__}", {})
 
 
@@ -285,7 +388,15 @@ def run_smoke(adapter: SmokeAdapter, inp: SmokeTestInput, ctx: RunContext) -> Sm
     if unknown:
         raise DdakToolError(ErrorCode.CONFIG_INVALID, f"알 수 없는 스모크 시나리오 묶음: {unknown}")
     started = time.monotonic()
-    probe = Probe(client=adapter.client(ctx), ctx=ctx, title=f"[smoke {ctx.run_id}]")
+    deadline = ctx.deadline if ctx.deadline is not None else started + SMOKE_TOTAL_S
+    client = adapter.client(ctx)
+    probe = Probe(
+        client=client,
+        ctx=ctx,
+        title=f"[smoke {ctx.run_id}]",
+        deadline=deadline,
+        host=getattr(client, "host", None),
+    )
     checks = dict(item for g in inp.scenarios for item in GROUPS[g])  # 같은 검사는 한 번만
     results = [_run_check(sid, check, probe) for sid, check in checks.items()]
     return SmokeTestOutput(

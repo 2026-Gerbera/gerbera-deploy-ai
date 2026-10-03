@@ -50,6 +50,10 @@ async def test_approval_page_shows_exact_patch(monkeypatch: pytest.MonkeyPatch) 
 
     class Service:
         @staticmethod
+        def get_run(run_id: str) -> dict[str, str]:
+            return {"status": "AWAITING_APPROVAL"}
+
+        @staticmethod
         def approval_view(run_id: str) -> dict[str, Any]:
             return {"run_id": run_id, "patch": patch}
 
@@ -74,6 +78,10 @@ async def test_approval_page_shows_exact_patch(monkeypatch: pytest.MonkeyPatch) 
 
 async def test_failed_preparation_redirects_to_result(monkeypatch: pytest.MonkeyPatch) -> None:
     class Service:
+        @staticmethod
+        def get_run(run_id: str) -> dict[str, str]:
+            return {"status": "AWAITING_APPROVAL"}
+
         @staticmethod
         def approval_view(run_id: str) -> dict[str, Any]:
             raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "준비 실패")
@@ -125,6 +133,7 @@ async def test_settings_save_real_deploy_fields(monkeypatch: pytest.MonkeyPatch)
         "dns_mode=external&hosted_zone_id="
     )
     monkeypatch.setattr(settings, "deployment", lambda request: Service())
+    monkeypatch.setattr(settings, "selected_project", lambda request, project: project)
     monkeypatch.setattr(settings, "require_safe_post", lambda *args: None)
 
     response = await settings.save_settings(_form_request("/settings", body))
@@ -144,18 +153,21 @@ async def test_settings_save_real_deploy_fields(monkeypatch: pytest.MonkeyPatch)
     }
 
 
-async def test_manual_deploy_redirects_to_approval(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_manual_deploy_enqueues_and_redirects_to_dashboard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     class Service:
         @staticmethod
-        async def request_deployment(project: str) -> str:
+        def enqueue_deployment(project: str) -> dict:
             assert project == "flaskr"
-            return "run-20261002-180000-abcd"
+            return {"request_id": "fixture", "status": "PREPARING"}
 
     monkeypatch.setattr(settings, "deployment", lambda request: Service())
+    monkeypatch.setattr(settings, "selected_project", lambda request, project: project)
     monkeypatch.setattr(settings, "require_safe_post", lambda *args: None)
     response = await settings.request_deploy(
         _form_request("/settings/deploy", "csrf_token=x&project=flaskr")
     )
 
     assert response.status_code == 303
-    assert response.headers["location"] == "/runs/run-20261002-180000-abcd/approval"
+    assert response.headers["location"] == "/?project=flaskr"

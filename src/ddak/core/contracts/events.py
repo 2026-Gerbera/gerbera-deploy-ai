@@ -37,7 +37,7 @@ class RunEvent(ContractModel):
     type: EventType
     ts: str | None = None  # ISO 8601(UTC)
     stage: Stage | None = None
-    step: str | None = None  # step id, 예) deploy.db.cloud
+    step: str | None = None  # step id, 예) deploy.migrate.cloud
     tool: str | None = None
     target: Target | None = None
     status: str | None = None  # succeeded | failed | check_failed | skipped | waiting | ...

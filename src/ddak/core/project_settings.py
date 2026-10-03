@@ -18,7 +18,7 @@ class ProjectSettings(ContractModel):
     repo_url: RepoUrl | None = None
     watch_branch: str = Field(default="prod", pattern=r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$")
     auto_detect: bool = False
-    default_targets: Literal["onprem", "cloud", "both"] = "both"
+    default_targets: Literal["onprem", "cloud", "both"] = "onprem"
     cloud_domain: str | None = None
     dns_mode: Literal["route53", "external"] = "external"
     hosted_zone_id: str | None = Field(default=None, pattern=r"^Z[A-Z0-9]{5,31}$")
@@ -28,6 +28,7 @@ class ProjectSettings(ContractModel):
     def repository_url(cls, value: str | None) -> str | None:
         if value is not None:
             parts = urlsplit(value)
+            _ = parts.port  # 잘못된 포트는 설정 저장 단계에서 거부한다.
             if (
                 parts.scheme != "https"
                 or not parts.hostname
@@ -80,3 +81,15 @@ class ProjectSettings(ContractModel):
         if self.dns_mode == "route53" and not self.hosted_zone_id:
             raise ValueError("Route 53 zone ID가 필요하다")
         return self
+
+
+def watch_source(repo_url: str, branch: str = "prod") -> tuple[str, str]:
+    """감시 중복 판정용. GitHub URL 표기와 refs/heads 별칭만 정규화한다."""
+    url = urlsplit(repo_url)
+    host = (url.hostname or "").lower()
+    port = url.port
+    authority = host if port in (None, 443) else f"{host}:{port}"
+    path = url.path.rstrip("/").removesuffix(".git")
+    if host == "github.com":
+        path = path.lower()
+    return f"{url.scheme.lower()}://{authority}{path}", branch.removeprefix("refs/heads/")

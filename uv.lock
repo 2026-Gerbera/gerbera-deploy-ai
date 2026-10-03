@@ -115,6 +115,7 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "anyio" },
+    { name = "httpx2" },
     { name = "import-linter" },
     { name = "pyright", extra = ["nodejs"] },
     { name = "pytest" },
@@ -136,6 +137,7 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "anyio", specifier = ">=4.15,<5" },
+    { name = "httpx2", specifier = ">=2.13.1" },
     { name = "import-linter", specifier = "==2.15" },
     { name = "pyright", extras = ["nodejs"], specifier = "==1.1.414" },
     { name = "pytest", specifier = ">=9.1,<10" },

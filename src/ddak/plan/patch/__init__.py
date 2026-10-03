@@ -1,14 +1,38 @@
 """plan/patch: AI 코드 수정 P0(토글 ON 전용). 담당 장민영(O3).
 
-공개 함수: patch_config, patch_db_access, patch_storage. 다른 디렉토리는 이 파일의 공개 함수만 쓴다.
+공개 함수: patch_config, patch_db_access, patch_storage(툴 자리, 빈 구현),
+propose_config_patch(patch_config 제안 로직, generate.py).
+다른 디렉토리는 이 파일의 공개 이름만 쓴다.
 AI 호출은 ddak.core.ai(call_ai, ask_jev)로만 한다(허용 디렉토리, import-linter 계약 2).
-빈 구현이다. 구현이 끝나면 이 디렉토리에 tool.py를 만들고 @tool("<이름>")으로 등록한다
+툴 입출력 계약이 정해지면 이 디렉토리에 tool.py를 만들고 @tool("patch_config")으로 등록한다
 (시그니처: inp: <Tool>Input, ctx: RunContext -> <Tool>Output, 모델은 ddak.core.contracts.tools).
+그 전에는 propose_config_patch를 부르고,
+결과의 patch·meta를 실행기 prepare(patch=, patch_meta=)에 넘긴다.
 """
 
 from __future__ import annotations
 
 from ddak.core.contracts.context import RunContext
+from ddak.plan.patch.generate import (
+    PatchDraft,
+    PatchEdit,
+    PatchProposal,
+    PreviousPatch,
+    find_targets,
+    propose_config_patch,
+)
+
+__all__ = [
+    "PatchDraft",
+    "PatchEdit",
+    "PatchProposal",
+    "PreviousPatch",
+    "find_targets",
+    "patch_config",
+    "patch_db_access",
+    "patch_storage",
+    "propose_config_patch",
+]
 
 _TODO = "plan/patch 미구현: 담당 장민영"
 

@@ -14,6 +14,7 @@ from .bindings import (
     run_validate,
     unbind_infra,
 )
+from .fixture import fixture_binding
 from .foundation import apply_foundation, foundation_template
 from .policy import GateResult, static_gate
 from .runtime import AwsSettings, InfraRuntime, SessionKeys
@@ -27,6 +28,7 @@ __all__ = [
     "apply_foundation",
     "bind_infra",
     "create_binding",
+    "fixture_binding",
     "foundation_template",
     "has_infra_binding",
     "read_bundle",

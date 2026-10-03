@@ -7,11 +7,16 @@ from collections.abc import Mapping
 from types import MappingProxyType
 from typing import Any
 
+IMAGE_REPOSITORY_PATTERN = r"[a-z0-9]+(?:[._-][a-z0-9]+)*/[a-z0-9]+(?:[._-][a-z0-9]+)*"
+
 PLATFORM_OUTPUTS = MappingProxyType(
     {
         "vpc_id": "string",
         "cluster_arn": "string",
         "cluster_name": "string",
+        "ecs_service_name": "string",
+        "target_group_arn": "string",
+        "app_security_group_id": "string",
         "alb_arn": "string",
         "alb_dns_name": "string",
         "alb_security_group_id": "string",
@@ -27,9 +32,6 @@ PLATFORM_OUTPUTS = MappingProxyType(
         "dockerhub_pull_secret_arn": "string",
         "private_subnet_ids": "list(string)",
         "public_subnet_ids": "list(string)",
-        "ecs_service_name": "string",
-        "app_security_group_id": "string",
-        "target_group_arn": "string",
         "task_execution_role_arn": "string",
         "task_role_arn": "string",
         "dbinit_execution_role_arn": "string",
@@ -68,6 +70,8 @@ def checked_outputs(values: Mapping[str, Any], layer: str) -> dict[str, Any]:
         if kind == "string":
             if not isinstance(value, str) or not value or any(c in value for c in "\r\n\0"):
                 raise ValueError("인프라 출력 타입 오류")
+            if name == "image_repository" and not re.fullmatch(IMAGE_REPOSITORY_PATTERN, value):
+                raise ValueError("이미지 저장소 출력 형식 오류")
             if (name.endswith("_arn") or APP_SECRET_OUTPUT.fullmatch(name)) and not re.fullmatch(
                 r"arn:aws:[a-z0-9-]+:[a-z0-9-]*:\d{12}:[A-Za-z0-9/_+=.@:!-]+", value
             ):
@@ -76,3 +80,16 @@ def checked_outputs(values: Mapping[str, Any], layer: str) -> dict[str, Any]:
             raise ValueError("인프라 목록 출력 타입 오류")
         result[name] = value
     return result
+
+
+def checked_cloud_outputs(values: Mapping[str, Any]) -> dict[str, Any]:
+    """저장된 두 층의 출력을 재검증한다. region 등 조립 설정은 저장 출력이 아니다."""
+    platform, app = {}, {}
+    for name, value in values.items():
+        if name in PLATFORM_OUTPUTS:
+            platform[name] = value
+        elif name in APP_OUTPUTS or APP_SECRET_OUTPUT.fullmatch(name):
+            app[name] = value
+        else:
+            raise ValueError("허용되지 않은 클라우드 출력 이름")
+    return {**checked_outputs(platform, "platform"), **checked_outputs(app, "app")}

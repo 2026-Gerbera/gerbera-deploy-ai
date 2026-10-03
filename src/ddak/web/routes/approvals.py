@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
 from ddak.core.contracts.errors import DdakToolError
+from ddak.core.redact import redact, redact_obj
 from ddak.web.dependencies import deployment, templates
 from ddak.web.forms import parse_form
 from ddak.web.security import csrf_token, issue_csrf, require_safe_post
@@ -12,16 +13,22 @@ router = APIRouter(prefix="/runs")
 @router.get("/{run_id}/approval")
 async def approval_page(request: Request, run_id: str):
     try:
-        view = deployment(request).approval_view(run_id)
+        service = deployment(request)
+        if service.get_run(run_id)["status"] != "AWAITING_APPROVAL":
+            return RedirectResponse(f"/runs/{run_id}/result", status_code=303)
+        view = service.approval_view(run_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="실행을 찾을 수 없습니다") from exc
     except DdakToolError:
         return RedirectResponse(f"/runs/{run_id}/result", status_code=303)
+    patch = view.get("patch")
+    view = redact_obj(view)
+    view["patch"] = patch  # 승인한 diff를 잘라 보여 주지 않는다.
     token = csrf_token(request)
     response = templates.TemplateResponse(
         request=request,
         name="approval.html",
-        context={"approval": view, "csrf_token": token},
+        context={"approval": view, "project": view.get("project"), "csrf_token": token},
     )
     issue_csrf(request, response, token)
     return response
@@ -40,5 +47,6 @@ async def decide_approval(request: Request, run_id: str):
         if approved:
             service.start(run_id)
     except (KeyError, DdakToolError) as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return RedirectResponse(f"/runs/{run_id}/progress", status_code=303)
+        raise HTTPException(status_code=409, detail=redact(str(exc))) from exc
+    page = "progress" if approved else "result"
+    return RedirectResponse(f"/runs/{run_id}/{page}", status_code=303)

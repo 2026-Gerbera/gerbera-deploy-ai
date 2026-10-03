@@ -8,16 +8,18 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
-from ddak.core.ai.gateway import ask_jev
-from ddak.core.ai.providers.jev import JevClient, JevQuestion
+from ddak.core.ai.gateway import ask_jev, get_jev_client
+from ddak.core.ai.providers.jev import JevQuestion, JudgmentClient, client_identity
 from ddak.core.contracts.base import TierName
 from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.deploy_config import DeployConfig
-from ddak.core.contracts.enums import By, Source
+from ddak.core.contracts.enums import By, RunMode, Source
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.contracts.plan_facts import EnvKey
 from ddak.core.contracts.tools.analyze_project import AnalyzeProjectInput, AnalyzeProjectOutput
+from ddak.core.env_keys import is_migration_key
 from ddak.plan.analyze import rules
 
 _CONSERVATIVE = "jev 불가: 보수적 secret"
@@ -28,6 +30,15 @@ class _Found:
     tier: TierName | None = None
     is_new: bool = False
     snippet: str | None = None  # 키를 쓰는 코드 한 줄(값·기본값 없음)
+
+
+@dataclass(frozen=True)
+class _Judgment:
+    verdict: dict[str, bool] | None
+    reason: str
+    provider: str | None = None
+    model: str | None = None
+    source: Source | None = None
 
 
 def _resolve(source_dir: str, root: Path | None) -> Path:
@@ -46,10 +57,12 @@ def _parse(ctx: RunContext) -> DeployConfig:
         ) from None
 
 
-def _collect(cfg: DeployConfig, root: Path, changed: frozenset[str]) -> dict[str, _Found]:
+def _collect(
+    cfg: DeployConfig, root: Path, changed: frozenset[str], *, bootstrap: bool = False
+) -> dict[str, _Found]:
     found: dict[str, _Found] = {}
     if cfg.env_example and (root / cfg.env_example).is_file():
-        new = cfg.env_example in changed
+        new = bootstrap or cfg.env_example in changed
         for name in rules.example_keys(root / cfg.env_example):
             f = found.setdefault(name, _Found())
             f.is_new = f.is_new or new
@@ -63,7 +76,7 @@ def _collect(cfg: DeployConfig, root: Path, changed: frozenset[str]) -> dict[str
     return found
 
 
-def _ask(ambiguous: dict[str, _Found], client: JevClient | None) -> dict[str, bool] | None:
+def _ask(ambiguous: dict[str, _Found], client: JudgmentClient | None) -> _Judgment:
     """이름 -> secret 여부. Jev 불가·형식 오류면 None(보수 처리). 가드 위반은 그대로 올린다."""
     questions = [
         JevQuestion(
@@ -79,47 +92,70 @@ def _ask(ambiguous: dict[str, _Found], client: JevClient | None) -> dict[str, bo
     state = "\n".join(
         f"{n}: {f.snippet or '(listed in env example)'}" for n, f in ambiguous.items()
     )
+    reason = "jev"
+    provider: str | None = None
+    model: str | None = None
     try:
-        answers = ask_jev(state=state, questions=questions, client=client)
+        actual = client if client is not None else get_jev_client()
+        provider, model = client_identity(actual)
+        reason = f"{provider} model={model or 'unknown'}"[:160]
+        answers = ask_jev(state=state, questions=questions, client=actual)
     except DdakToolError as exc:
         if exc.code is ErrorCode.AI_NOT_ALLOWED:
             raise
-        return None
+        return _Judgment(None, f"{reason} 불가: 보수적 secret", provider, model)
     prob = {a.id: a.probability for a in answers}
     out: dict[str, bool] = {}
     for q, name in zip(questions, ambiguous, strict=True):
         p = prob.get(q.id)
         if p is None:
-            return None
+            return _Judgment(None, f"{reason} 불가: 보수적 secret", provider, model)
         out[name] = p >= 0.5
-    return out
+    source = getattr(actual, "source", None)
+    return _Judgment(
+        out, reason, provider, model, source if isinstance(source, Source) else Source.LIVE
+    )
 
 
 def analyze_project(
     inp: AnalyzeProjectInput,
     ctx: RunContext,
     *,
-    jev_client: JevClient | None = None,
+    jev_client: JudgmentClient | None = None,
     root: Path | None = None,
 ) -> AnalyzeProjectOutput:
     cfg = _parse(ctx)
     src = _resolve(inp.source_dir, root)
-    found = _collect(cfg, src, frozenset(inp.changed_paths))
-    verdict = {n: rules.classify(n) for n in found}
+    collected = _collect(
+        cfg, src, frozenset(inp.changed_paths), bootstrap=ctx.mode is RunMode.BOOTSTRAP
+    )
+    found = {name: value for name, value in collected.items() if not is_migration_key(name)}
+    verdict: dict[str, rules.Verdict] = {n: rules.classify(n) for n in found}
     ambiguous = {n: found[n] for n, v in verdict.items() if v is None}
-    jev = _ask(ambiguous, jev_client) if ambiguous else {}
+    judgment = _ask(ambiguous, jev_client) if ambiguous else _Judgment({}, _CONSERVATIVE)
+    jev, ai_reason = judgment.verdict, judgment.reason
 
     keys: list[EnvKey] = []
     for name in sorted(found):
+        kind: Literal["plain", "secret"]
         f, v = found[name], verdict[name]
         if v is not None:
             kind, by, reason = v, By.RULE, "rule: name pattern"
         elif jev is None:
-            kind, by, reason = "secret", By.RULE, _CONSERVATIVE
+            kind, by, reason = "secret", By.RULE, ai_reason
         else:
-            kind, by, reason = ("secret" if jev[name] else "plain"), By.AI, "jev"
+            kind, by, reason = ("secret" if jev[name] else "plain"), By.AI, ai_reason
         keys.append(
-            EnvKey(name=name, kind=kind, tier=f.tier, is_new=f.is_new, by=by, reason=reason)
+            EnvKey(
+                name=name,
+                kind=kind,
+                tier=f.tier,
+                is_new=f.is_new,
+                by=by,
+                reason=reason,
+                provider=judgment.provider if v is None else None,
+                model=judgment.model if v is None else None,
+            )
         )
     return AnalyzeProjectOutput(
         tiers=tuple(cfg.tiers),
@@ -129,5 +165,5 @@ def analyze_project(
             for t, tc in cfg.tiers.items()
         },
         infra_inputs_changed=any(k.kind == "secret" and k.is_new for k in keys),
-        source=Source.LIVE if ambiguous and jev else None,
+        source=judgment.source if ambiguous and jev else None,
     )

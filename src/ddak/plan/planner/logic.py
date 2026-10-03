@@ -7,12 +7,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ddak.core.ai.gateway import ask_jev, call_ai
-from ddak.core.ai.providers import LLMProvider
-from ddak.core.ai.providers.jev import JevAnswer, JevClient, JevQuestion
+from ddak.core.ai.gateway import ask_jev, call_ai, get_jev_client
+from ddak.core.ai.providers import LLMProvider, get_provider
+from ddak.core.ai.providers.jev import JevAnswer, JevQuestion, JudgmentClient, client_identity
 from ddak.core.config import Settings
 from ddak.core.contracts.context import RunContext
-from ddak.core.contracts.enums import By, Layer, LLMBackend, Source
+from ddak.core.contracts.enums import By, Layer, Source
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.contracts.plan import Planner
 from ddak.core.contracts.plan_draft import PlanDecisions, PlanDraft, StepDecision
@@ -23,11 +23,7 @@ from ddak.core.contracts.tools.generate_plan import GeneratePlanInput, GenerateP
 PROMPT_VERSION = "plan-v1"
 _PROMPT = (Path(__file__).parent / "prompt.md").read_text(encoding="utf-8")
 _SOFT = (ErrorCode.AI_UNAVAILABLE, ErrorCode.AI_OUTPUT_INVALID)
-_CLAUDE_LABEL = {
-    LLMBackend.API: "claude-api",
-    LLMBackend.CLI: "claude-cli",
-    LLMBackend.REPLAY: "replay",
-}
+_LLM_LABEL = {"api": "groq", "cli": "claude-cli", "replay": "replay"}
 
 
 def decidable_steps(facts: Facts) -> list[StepDef]:
@@ -51,7 +47,9 @@ def _rule(*, fallback: bool) -> PlanDraft:
     return PlanDraft(decisions=(), planner=planner)
 
 
-def _jev(steps: list[StepDef], facts: Facts, cfg: Settings, client: JevClient | None) -> PlanDraft:
+def _jev(
+    steps: list[StepDef], facts: Facts, cfg: Settings, client: JudgmentClient | None
+) -> PlanDraft:
     summary = summarize(facts)
     qs = [
         JevQuestion(
@@ -61,7 +59,9 @@ def _jev(steps: list[StepDef], facts: Facts, cfg: Settings, client: JevClient | 
         )
         for s in steps
     ]
-    answers = {a.id: a for a in ask_jev(state=summary, questions=qs, settings=cfg, client=client)}
+    actual = client if client is not None else get_jev_client(cfg)
+    answers = {a.id: a for a in ask_jev(state=summary, questions=qs, settings=cfg, client=actual)}
+    provider_name, model = client_identity(actual)
     decisions: list[StepDecision] = []
     for s, q in zip(steps, qs, strict=True):
         a: JevAnswer | None = answers.get(q.id)
@@ -69,10 +69,12 @@ def _jev(steps: list[StepDef], facts: Facts, cfg: Settings, client: JevClient | 
             continue
         decisions.append(
             StepDecision(
-                id=s.id, include=a.probability >= 0.5, reason=f"jev 확률 {a.probability:.2f}"
+                id=s.id,
+                include=a.probability >= 0.5,
+                reason=f"{provider_name} 확률 {a.probability:.2f}",
             )
         )
-    planner = Planner(by=By.AI, provider="jev", model=cfg.jev_model, attempts=1)
+    planner = Planner(by=By.AI, provider=provider_name, model=model, attempts=1)
     return PlanDraft(decisions=tuple(decisions), planner=planner)
 
 
@@ -87,19 +89,24 @@ def _claude(
     data = f"facts: {summarize(facts)}\ncandidates: {', '.join(sorted(allowed))}"
     if feedback:
         data += "\nvalidation feedback:\n" + "\n".join(f"- {f}" for f in feedback)
+    actual = provider if provider is not None else get_provider(cfg)
     res = call_ai(
         instruction=_PROMPT,
         data=data,
         output_model=PlanDecisions,
         prompt_version=PROMPT_VERSION,
         settings=cfg,
-        provider=provider,
+        provider=actual,
     )
     kept = tuple(d for d in res.value.decisions if d.id in allowed)
     planner = Planner(
         by=By.AI,
-        provider=_CLAUDE_LABEL[cfg.llm_backend],
-        model=cfg.llm_model,
+        provider=_LLM_LABEL.get(actual.name, actual.name),
+        model=(
+            res.usage.model
+            if res.usage is not None and res.usage.model != "claude-cli-default"
+            else cfg.llm_model
+        ),
         source=res.source,
         attempts=res.attempts,
     )
@@ -110,7 +117,7 @@ def generate_plan(
     inp: GeneratePlanInput,
     ctx: RunContext,
     *,
-    jev_client: JevClient | None = None,
+    jev_client: JudgmentClient | None = None,
     provider: LLMProvider | None = None,
     settings: Settings | None = None,
 ) -> GeneratePlanOutput:

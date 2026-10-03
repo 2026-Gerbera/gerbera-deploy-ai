@@ -29,6 +29,7 @@ async def deploy(service, source, calls, rid, tiers, fail=False):
     )
     p = support.plan(rid)
     if "web" in tiers:
+        p.build.steps.insert(0, support.step("build.web", "build_image", tier="web"))
         for section in (p.deploy.local, p.deploy.cloud):
             section.steps.insert(
                 0,
@@ -181,9 +182,10 @@ async def test_platform_outputs_reach_next_request_and_fake_never_seeds_real(rig
         "a" * 40,
         policy=FetchPolicy(root=source.parent),
     )
-    assert seen == [{"cloud": outputs}]
+    expected = {**outputs, "region": "ap-northeast-2"}
+    assert seen == [{"cloud": expected}]
     assert service.approval_view(rid)["run_id"] == rid
-    assert service._load_prepared(rid).context.platform["cloud"] == outputs
+    assert service._load_prepared(rid).context.platform["cloud"] == expected
 
 
 @pytest.mark.parametrize("missing", [False, True])
@@ -213,6 +215,7 @@ async def test_repository_failure_is_recorded_before_execution(rig, missing):
             p.run_id,
             project=p.project,
             adapter_mode=AdapterMode.REAL,
+            platform={"onprem": {"tiers": {"was": {}}}},
             mode=RunMode.BOOTSTRAP,
             source_sha="a" * 40,
         ),

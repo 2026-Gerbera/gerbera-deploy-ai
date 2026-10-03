@@ -1,0 +1,66 @@
+{
+  "run_id": "run-20261003-000002-bbbb",
+  "target": "local",
+  "passed": true,
+  "elapsed_s": 0.246,
+  "scenarios": [
+    {
+      "id": "S0.version",
+      "ok": true,
+      "status": 200,
+      "detail": "",
+      "normalized": {
+        "release_id": "run-20261003-000002-bbbb",
+        "schema_expected": "0001",
+        "app_env": "onprem",
+        "db.dialect": "mysql",
+        "db.tls": true,
+        "db.tls_verified": false
+      }
+    },
+    {
+      "id": "S0.ready",
+      "ok": true,
+      "status": 200,
+      "detail": "",
+      "normalized": {
+        "status": "ok",
+        "schema.current": "0001",
+        "schema.expected": "0001"
+      }
+    },
+    {
+      "id": "B1",
+      "ok": true,
+      "status": 200,
+      "detail": "",
+      "normalized": {
+        "status": 200,
+        "cookie": null
+      }
+    },
+    {
+      "id": "B2.create",
+      "ok": true,
+      "status": 302,
+      "detail": "",
+      "normalized": {
+        "status": 302,
+        "location": "/",
+        "listed": true,
+        "cookie": null
+      }
+    },
+    {
+      "id": "B2.empty",
+      "ok": true,
+      "status": 200,
+      "detail": "",
+      "normalized": {
+        "status": 200,
+        "error_shown": true
+      }
+    }
+  ],
+  "source": "live"
+}

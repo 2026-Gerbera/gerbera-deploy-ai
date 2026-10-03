@@ -28,5 +28,7 @@ def llm_status(settings: Settings | None = None) -> dict[str, Any]:
     else:
         status = {"backend": "replay", "ok": True, "detail": "저장된 응답 모드(결과에 라벨 표시)"}
     status["model"] = cfg.llm_model
-    status["jev_key"] = bool(cfg.jev_api_key)
+    status["groq_key"] = bool(cfg.groq_api_key)
+    status["jev_key"] = bool(cfg.jev_api_key) or cfg.jev_key_configured
+    status["jev_backend"] = cfg.jev_backend
     return status

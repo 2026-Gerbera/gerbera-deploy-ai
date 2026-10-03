@@ -51,7 +51,7 @@ def get_provider(settings: Settings) -> LLMProvider:
     if settings.llm_backend is LLMBackend.CLI:
         from ddak.core.ai.providers.cli import ClaudeCliProvider
 
-        return ClaudeCliProvider(settings.claude_bin)
+        return ClaudeCliProvider(settings.claude_bin, effort=settings.llm_effort)
     if settings.llm_backend is LLMBackend.API:
         from ddak.core.ai.providers.api import AnthropicApiProvider
 

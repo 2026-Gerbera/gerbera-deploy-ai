@@ -8,6 +8,7 @@ import json
 import sys
 import time
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,9 @@ from fastapi import FastAPI
 from pydantic import ConfigDict, field_validator
 
 from ddak import app
+from ddak.cloud.build import configure_local_build, preflight_local_build
+from ddak.cloud.build.codebuild import exported_names
+from ddak.cloud.build.image import build_image as local_build
 from ddak.core.config import Settings
 from ddak.core.contracts.base import ContractModel, ToolInput
 from ddak.core.contracts.context import RunContext
@@ -26,6 +30,7 @@ from ddak.executor.engine import RunStatus
 from ddak.executor.service import DeploymentService
 from ddak.plan.intake import FetchPolicy, WatchTarget, resolve_head
 from ddak.plan.intake.watch import write_last_commit
+from tests.unit.cloud.build.test_local import FakeRunner
 from tests.unit.core.test_app_repository import git
 from tests.unit.core.test_candidate import operator_identity  # noqa: F401
 from tests.unit.plan.test_flow import FakeJev
@@ -44,8 +49,21 @@ class Output(ContractModel):
 
 
 @pytest.mark.anyio
-async def test_watch_manual_approval_git_roundtrip(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("relative_defaults", [False, True])
+@pytest.mark.parametrize("local_backend", [False, True])
+async def test_watch_manual_approval_git_roundtrip(
+    tmp_path, monkeypatch, capsys, relative_defaults, local_backend
+):
     started = time.monotonic()
+    if relative_defaults:
+        monkeypatch.chdir(tmp_path)
+    settings = Settings.from_env({})
+    if local_backend:
+        settings = replace(settings, build_backend="local", image_repository="2026gerbera/flaskr")
+    runner = FakeRunner()
+    if local_backend:
+        configure_local_build(runner=runner)
+    state_root = settings.run_dir.parent if relative_defaults else tmp_path / "state"
     real_registry = app.load_tools()
     missing = {name: real_registry.spec(name).owners for name in sorted(real_registry.missing())}
     registry = Registry(real_registry.specs)
@@ -59,6 +77,19 @@ async def test_watch_manual_approval_git_roundtrip(tmp_path, monkeypatch, capsys
             if name == "build_image":
                 snapshot = preview(Path(ctx.build_source))
                 digest = snapshot.build_snapshot_hash
+                if local_backend:
+                    runner.sha = ctx.candidate_sha
+                    root = Path(ctx.build_source)
+                    runner.payload = {n: (root / n).read_text() for n in file_manifest(root)}
+                    index, platforms = exported_names(inp.tier)
+                    runner.output = "\n".join(
+                        f"{n}={digest_bytes((digest + n).encode())}"
+                        for n in [index, *platforms.values()]
+                    )
+                    result = local_build(inp.tier, ctx)
+                    assert result.candidate_sha == ctx.candidate_sha
+                    assert result.source.value == "fixture"
+                    return Output(release_artifacts=result.release_artifacts)
                 image = ImageArtifact(
                     ref="fixture.invalid/flaskr@" + digest,
                     index_digest=digest,
@@ -91,8 +122,15 @@ async def test_watch_manual_approval_git_roundtrip(tmp_path, monkeypatch, capsys
         "@app.get('/')\ndef index():\n    return 'Flask v1'\n"
     )
     (work / "was/Dockerfile").write_text("FROM python:3.13-slim\nCOPY . /app\n")
+    (work / "docker").mkdir()
+    (work / "docker/was.Dockerfile").write_text("FROM scratch\nCOPY was /app\nCOPY certs/ certs/\n")
+    certificate = (
+        Path(__file__).parents[1] / "fixtures/certificates/public-ca.pem.txt"
+    ).read_bytes()
+    (work / "certs").mkdir()
+    (work / "certs/global-bundle.pem").write_bytes(certificate * 2)
     (work / "deploy.yaml").write_text(
-        "tiers:\n  was:\n    paths: [was]\n    dockerfile: was/Dockerfile\n"
+        "tiers:\n  was:\n    paths: [was, certs]\n    dockerfile: was/Dockerfile\n"
         "env_example: .env.example\n"
     )
     (work / ".env.example").write_text("# No injected settings in this rehearsal\n")
@@ -103,7 +141,11 @@ async def test_watch_manual_approval_git_roundtrip(tmp_path, monkeypatch, capsys
     assert git(work, "rev-parse", "refs/tags/v1") != v1
     git(work, "push", "origin", "prod", "HEAD:main", "HEAD:ai-prod", "refs/tags/v1")
     git(work, "switch", "-c", "ai-prod")
-    policy = FetchPolicy(allowed_schemes=("file",), allowed_hosts=None, root=tmp_path / "intake")
+    policy = FetchPolicy(
+        allowed_schemes=("file",),
+        allowed_hosts=None,
+        root=Path("var/sources") if relative_defaults else tmp_path / "intake",
+    )
     url = bare.as_uri()
     git(work, "remote", "set-url", "origin", url)
     # 운영 설정은 HTTPS만 허용한다. 이 시험에만 로컬 bare URL을 허용한다.
@@ -139,7 +181,9 @@ async def test_watch_manual_approval_git_roundtrip(tmp_path, monkeypatch, capsys
     monkeypatch.setattr(app, "plan_deployment", plan)
     monkeypatch.setattr(app, "resolve_head", resolve)
     monkeypatch.delenv("DDAK_ONPREM_INVENTORY", raising=False)
-    connected_repository = app._repository_factory(tmp_path / "checkouts", allow_local=True)
+    connected_repository = app._repository_factory(
+        Path("var/checkouts") if relative_defaults else tmp_path / "checkouts", allow_local=True
+    )
     scanner_calls = []
 
     def fixture_scanner(workspace):
@@ -153,13 +197,19 @@ async def test_watch_manual_approval_git_roundtrip(tmp_path, monkeypatch, capsys
 
     service = DeploymentService(
         registry,
-        tmp_path / "state",
+        state_root,
         repository_factory=fixture_repository,
-        planning_flow=app._manual_planning(Settings(), policy),
+        planning_flow=app._manual_planning(settings, policy),
+        build_preflight=lambda ctx: preflight_local_build(ctx.image_repository, runner=runner),
     )
     service.save_project_settings(
         "demo",
-        {"repo_url": url, "watch_branch": "prod", "default_targets": "both", "auto_detect": True},
+        {
+            "repo_url": url,
+            "watch_branch": "prod",
+            "default_targets": "onprem" if local_backend else "both",
+            "auto_detect": True,
+        },
         updated_by="operator",
         expected_version=0,
     )
@@ -168,6 +218,11 @@ async def test_watch_manual_approval_git_roundtrip(tmp_path, monkeypatch, capsys
     async def deploy(rid, source_sha, label, requested_at):
         prepared_at = time.monotonic()
         view = service.approval_view(rid)
+        copied_source = service._load_prepared(rid).source
+        assert (copied_source / "certs/global-bundle.pem").read_bytes() == certificate * 2
+        assert "certs/global-bundle.pem" in file_manifest(copied_source)
+        assert service.root.is_absolute() and service.store.path.is_absolute()
+        assert service._load_prepared(rid).source.is_absolute()
         assert service.get_run(rid)["status"] == "AWAITING_APPROVAL", service.get_run(rid)["result"]
         assert not any(run == rid for _, run in calls)
         service.approve(rid, approver="operator")
@@ -178,9 +233,16 @@ async def test_watch_manual_approval_git_roundtrip(tmp_path, monkeypatch, capsys
         release = service.get_release(rid)
         assert release["source_sha"] == source_sha
         candidate = result.context.candidate_sha
-        for ref in ("main", "refs/tags/deployed/onprem", "refs/tags/deployed/cloud"):
+        for ref in (
+            ("main", "refs/tags/deployed/onprem")
+            if local_backend
+            else ("main", "refs/tags/deployed/onprem", "refs/tags/deployed/cloud")
+        ):
             assert git(bare, "rev-parse", ref) == candidate
-        assert deployed["local"] == deployed["cloud"]
+        if local_backend:
+            assert "cloud" not in deployed
+        else:
+            assert deployed["local"] == deployed["cloud"]
         rows.append(
             {
                 "phase": label,
@@ -202,9 +264,10 @@ async def test_watch_manual_approval_git_roundtrip(tmp_path, monkeypatch, capsys
         await service.shutdown()
         service = DeploymentService(
             registry,
-            tmp_path / "state",
+            state_root,
             repository_factory=fixture_repository,
-            planning_flow=app._manual_planning(Settings(), policy),
+            planning_flow=app._manual_planning(settings, policy),
+            build_preflight=lambda ctx: preflight_local_build(ctx.image_repository, runner=runner),
         )
         assert service.approval_view(first)["repo_url"] == url
         first_release = await deploy(first, v1, "v1", first_started)
@@ -226,7 +289,7 @@ async def test_watch_manual_approval_git_roundtrip(tmp_path, monkeypatch, capsys
         git(dev, "commit", "-m", "Add image and box")
         git(dev, "push", "origin", "prod", "HEAD:refs/tags/v2")
         v2 = git(dev, "rev-parse", "HEAD")
-        target = WatchTarget("demo", url, "prod", "both")
+        target = WatchTarget("demo", url, "prod", "local" if local_backend else "both")
         write_last_commit(policy, target, v1)
         monkeypatch.setenv("DDAK_WATCH_REPO_URL", url)
         monkeypatch.setenv("DDAK_SOURCES_DIR", str(policy.root))
@@ -251,7 +314,7 @@ async def test_watch_manual_approval_git_roundtrip(tmp_path, monkeypatch, capsys
 
         monkeypatch.setattr(app, "Watcher", watcher)
         application = FastAPI(lifespan=lifespan)
-        app._attach_watch(application, Settings())
+        app._attach_watch(application, settings)
         second_started = time.monotonic()
         async with application.router.lifespan_context(application):
             async with asyncio.timeout(5):
@@ -292,6 +355,7 @@ async def test_watch_manual_approval_git_roundtrip(tmp_path, monkeypatch, capsys
         }
         report = {
             "source": "fake",
+            "build_backend": settings.build_backend,
             "secret_scanner": {
                 "source": "fixture",
                 "result": "passed",
@@ -314,3 +378,4 @@ async def test_watch_manual_approval_git_roundtrip(tmp_path, monkeypatch, capsys
             sys.stdout.write("G_E2E_REPORT " + json.dumps(report, ensure_ascii=False) + "\n")
     finally:
         await service.shutdown()
+        configure_local_build()

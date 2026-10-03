@@ -265,3 +265,175 @@ def test_expired_deadline_is_timeout(app_url: str) -> None:
     with pytest.raises(DdakToolError) as caught:
         smoke_test(SmokeTestInput(run_id=RUN, target="local"), ctx)
     assert caught.value.code is ErrorCode.ADAPTER_TIMEOUT
+
+
+# ---- 신뢰하지 않는 응답: 깊은 JSON, 다른 호스트 리다이렉트, 느린 응답, 전체 시간 -----------------
+
+
+def _hostile_run(responses: Mapping[tuple[str, str], Response]) -> SmokeTestOutput:
+    class Hostile(FakeFlaskr):
+        def request(
+            self, method: str, path: str, form: Mapping[str, str] | None, timeout: float
+        ) -> Response:
+            if (method, path) in responses:
+                return responses[(method, path)]
+            return super().request(method, path, form, timeout)
+
+    class Adapter(FakeSmokeAdapter):
+        def client(self, ctx: RunContext) -> Hostile:
+            return Hostile(ctx.run_id)
+
+    return run_smoke(
+        Adapter(Target.LOCAL), SmokeTestInput(run_id=RUN, target="local"), RunContext(RUN)
+    )
+
+
+@pytest.mark.parametrize("body", ["[" * 100_000, '{"a":' * 50_000 + "1" + "}" * 50_000])
+def test_deeply_nested_json_is_format_failure_not_crash(body: str) -> None:
+    out = _hostile_run({("GET", "/version"): Response(200, (), body)})
+    version = out.scenarios[0]
+    assert out.passed is False
+    assert version.ok is False and version.detail.startswith("응답 형식 오류")
+
+
+def test_brackets_inside_json_strings_do_not_count_as_depth() -> None:
+    version = {
+        "release_id": RUN,
+        "schema_expected": "0001",
+        "app_env": "[" * 100 + '\\"{' * 100,
+        "db": {"dialect": "mysql"},
+    }
+    out = _hostile_run({("GET", "/version"): Response(200, (), json.dumps(version))})
+    assert out.scenarios[0].ok is True
+
+
+@pytest.mark.parametrize(
+    "location", ["https://evil.example/", "//evil.example/", "http://evil.example:8080/"]
+)
+def test_redirect_to_other_host_fails_without_leaking_host(location: str) -> None:
+    class Redirecting(FakeFlaskr):
+        def request(
+            self, method: str, path: str, form: Mapping[str, str] | None, timeout: float
+        ) -> Response:
+            resp = super().request(method, path, form, timeout)
+            if method == "POST" and resp.status == 302:
+                return Response(302, (("Location", location),), "")
+            return resp
+
+    class Adapter(FakeSmokeAdapter):
+        def client(self, ctx: RunContext) -> Redirecting:
+            return Redirecting(ctx.run_id)
+
+    out = run_smoke(
+        Adapter(Target.LOCAL), SmokeTestInput(run_id=RUN, target="local"), RunContext(RUN)
+    )
+    create = next(s for s in out.scenarios if s.id == "B2.create")
+    assert create.ok is False
+    assert create.normalized["location"] == "<external>"
+    assert "evil" not in out.model_dump_json()
+
+
+class _Slow(BaseHTTPRequestHandler):
+    """헤더는 바로 보내고 본문은 1바이트씩 천천히 보낸다(소켓 연산마다의 timeout은 넘지 않음)."""
+
+    def log_message(self, *args: object) -> None:
+        del args
+
+    def do_GET(self) -> None:
+        self.send_response(200)
+        self.send_header("Content-Length", "1000")
+        self.end_headers()
+        try:
+            for _ in range(1000):
+                self.wfile.write(b"x")
+                self.wfile.flush()
+                time.sleep(0.1)
+        except OSError:
+            pass
+
+
+def test_slow_drip_response_is_bounded_by_request_timeout() -> None:
+    from ddak.verify.smoke.logic import UrlClient
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Slow)
+    server.daemon_threads = True
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        client = UrlClient(f"http://127.0.0.1:{server.server_address[1]}")
+        started = time.monotonic()
+        with pytest.raises(TimeoutError):
+            client.request("GET", "/", None, 1.0)
+        assert time.monotonic() - started < 3.0
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_whole_smoke_run_has_its_own_time_limit(
+    app_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # ctx.deadline이 없으면 SMOKE_TOTAL_S가 전체 시간을 막는다(있으면 실행기 값을 그대로 쓴다)
+    monkeypatch.setattr("ddak.verify.smoke.logic.SMOKE_TOTAL_S", 0.0)
+    with pytest.raises(DdakToolError) as caught:
+        smoke_test(SmokeTestInput(run_id=RUN, target="local"), _local_ctx(app_url))
+    assert caught.value.code is ErrorCode.ADAPTER_TIMEOUT
+
+
+def test_executor_deadline_is_not_shortened(app_url: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    # 실행기가 카탈로그 시간으로 준 ctx.deadline을 smoke가 자기 상한으로 줄이지 않는다
+    monkeypatch.setattr("ddak.verify.smoke.logic.SMOKE_TOTAL_S", 0.0)
+    ctx = _local_ctx(app_url, deadline=time.monotonic() + 30)
+    assert smoke_test(SmokeTestInput(run_id=RUN, target="local"), ctx).passed is True
+
+
+class _V2Flaskr(FakeFlaskr):
+    """앱 태그 v2처럼 목록 페이지에 이미지·박스를 붙인다."""
+
+    BOX = (
+        '<section class="release-box" style="display: flex;">'
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><path d="M32 6z"/></svg>'
+        '<p style="margin: 0;">v2: image and box added</p></section>'
+    )
+
+    def request(
+        self, method: str, path: str, form: Mapping[str, str] | None, timeout: float
+    ) -> Response:
+        resp = super().request(method, path, form, timeout)
+        if method == "GET" and path == "/" and resp.status == 200:
+            return Response(200, resp.headers, self.BOX + resp.body)
+        return resp
+
+
+def _run_groups(client: FakeFlaskr, groups: list[str]) -> SmokeTestOutput:
+    class Adapter(FakeSmokeAdapter):
+        def client(self, ctx: RunContext) -> FakeFlaskr:
+            return client
+
+    inp = SmokeTestInput(run_id=RUN, target="local", scenarios=groups)
+    return run_smoke(Adapter(Target.LOCAL), inp, RunContext(RUN))
+
+
+def test_v2_group_passes_on_v2_app_after_base() -> None:
+    out = _run_groups(_V2Flaskr(RUN), ["base", "v2"])
+    assert out.passed is True
+    assert [s.id for s in out.scenarios] == [*BASE_IDS, "V2.box"]
+    assert out.scenarios[-1].normalized == {"status": 200, "box": True, "image": True}
+
+
+def test_v2_group_fails_on_v1_app() -> None:
+    # v1으로 되돌린 run에서 v2 묶음을 고르면 실패해야 한다(되돌림 run은 base만 고른다)
+    out = _run_groups(FakeFlaskr(RUN), ["base", "v2"])
+    assert out.passed is False
+    v2 = out.scenarios[-1]
+    assert v2.id == "V2.box" and v2.ok is False
+    assert v2.normalized == {"status": 200, "box": False, "image": False}
+
+
+def test_v2_box_needs_the_image_inside_the_box() -> None:
+    class NoImage(_V2Flaskr):
+        BOX = '<section class="release-box"><p>v2: image and box added</p></section><svg></svg>'
+
+    v2 = _run_groups(NoImage(RUN), ["v2"]).scenarios[0]
+    assert v2.ok is False
+    assert v2.normalized == {"status": 200, "box": True, "image": False}

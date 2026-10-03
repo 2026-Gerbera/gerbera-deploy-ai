@@ -1,0 +1,1 @@
+migrate: require_secure_transport=OFF

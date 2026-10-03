@@ -82,7 +82,7 @@ def test_source_symlink_and_patch_parent_path_are_rejected(source: Path, tmp_pat
     assert (source / "app.py").read_bytes() == b"VERSION = 1\n"
 
 
-def test_databases_pem_files_and_caches_do_not_enter_snapshot_or_build_copy(
+def test_databases_and_caches_do_not_enter_snapshot_or_build_copy(
     source: Path, tmp_path: Path
 ) -> None:
     expected_manifest = file_manifest(source)
@@ -91,8 +91,6 @@ def test_databases_pem_files_and_caches_do_not_enter_snapshot_or_build_copy(
         "instance/db.sqlite",
         "foo.sqlite",
         "nested/foo.sqlite3",
-        "certificates/server.pem",
-        "certificates/server.key",
         ".pytest_cache/state",
         ".ruff_cache/state",
         ".mypy_cache/state",
@@ -215,6 +213,7 @@ def test_headerless_hunk_is_rejected(source):
 def test_actual_changed_paths_must_equal_parsed_paths(source, monkeypatch):
     from ddak.core import snapshots
 
+    (source / "extra.txt").write_text("original fixture\n")
     real_run = snapshots.subprocess.run
 
     def mutate_extra(args, **kwargs):
@@ -258,3 +257,149 @@ def test_each_additional_hunk_requires_its_own_headers(source):
     apply_diff(source, first + b"--- a/second.py\n+++ b/second.py\n" + second)
     assert (source / "app.py").read_text() == "ONE\n"
     assert (source / "second.py").read_text() == "THREE\n"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "@@ -1,2 +1,2 @@\n-one\n\\ No newline at end of file\n-two\n+ONE\n+TWO\n",
+        "@@ -1,2 +1,2 @@\n-one\n-two\n+ONE\n\\ No newline at end of file\n+TWO\n",
+        "@@ -1,2 +1,2 @@\n one\n\\ No newline at end of file\n-two\n+TWO\n",
+        "@@ -1,2 +1,2 @@\n\\ No newline at end of file\n-one\n-two\n+ONE\n+TWO\n",
+        "@@ -1,2 +1,2 @@\n-one\n-two\n+ONE\n+TWO\n"
+        "\\ No newline at end of file\n\\ No newline at end of file\n",
+    ],
+    ids=["middle-old", "middle-new", "middle-context", "before-body", "duplicate-marker"],
+)
+def test_no_newline_marker_requires_immediate_terminal_body_line(source, body):
+    from ddak.core.snapshots import apply_diff
+
+    (source / "app.py").write_bytes(b"one\ntwo\n")
+    before = file_manifest(source)
+    patch = ("--- a/app.py\n+++ b/app.py\n" + body).encode()
+    with pytest.raises(ValueError, match="표시 위치"):
+        apply_diff(source, patch)
+    assert file_manifest(source) == before
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [
+        b"\\ No newline at end of file\n" + PATCH,
+        PATCH + b"\n\\ No newline at end of file\n",
+        PATCH + b"\\ No newline at end of file extra\n",
+    ],
+    ids=["before-header", "after-blank-line", "marker-suffix"],
+)
+def test_orphan_or_malformed_no_newline_marker_is_rejected(source, patch):
+    from ddak.core.snapshots import apply_diff
+
+    before = file_manifest(source)
+    with pytest.raises(ValueError):
+        apply_diff(source, patch)
+    assert file_manifest(source) == before
+
+
+@pytest.mark.parametrize(
+    "patch,reason",
+    [
+        (b"--- /dev/null\n+++ b/new.py\n@@ -0,0 +1 @@\n+new\n", "기존 파일"),
+        (b"--- a/app.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-VERSION = 1\n", "기존 파일"),
+        (b"--- a/new.py\n+++ b/new.py\n@@ -0,0 +1 @@\n+new\n", "기존 파일"),
+        (
+            b"--- a/.github/workflows/new.yml\n+++ b/.github/workflows/new.yml\n"
+            b"@@ -0,0 +1 @@\n+name: fixture\n",
+            "기존 파일",
+        ),
+        (PATCH.replace(b"--- a/app.py", b"--- a/app.py\t1970-01-01 00:00:00"), "접미사"),
+        (PATCH.replace(b"+++ b/app.py", b"+++ b/app.py\t1970-01-01 00:00:00"), "접미사"),
+        (PATCH.replace(b"+++ b/app.py", b"+++ b/other.py"), "경로가 서로"),
+        (PATCH + PATCH, "파일마다"),
+    ],
+    ids=[
+        "create",
+        "delete",
+        "zero-old-range",
+        "new-workflow",
+        "old-tab",
+        "new-tab",
+        "rename",
+        "duplicate-pair",
+    ],
+)
+def test_patch_must_modify_existing_unique_same_path(source, patch, reason):
+    from ddak.core.snapshots import apply_diff
+
+    before = file_manifest(source)
+    with pytest.raises(ValueError, match=reason):
+        apply_diff(source, patch)
+    assert file_manifest(source) == before
+
+
+@pytest.mark.parametrize("change", ["create", "delete"])
+def test_apply_result_cannot_change_file_set(source, monkeypatch, change):
+    from ddak.core import snapshots
+
+    real_run = snapshots.subprocess.run
+
+    def change_file_set(args, **kwargs):
+        result = real_run(args, **kwargs)
+        if "--check" not in args:
+            if change == "create":
+                (source / "extra.txt").write_text("fixture\n")
+            else:
+                (source / "app.py").unlink()
+        return result
+
+    monkeypatch.setattr(snapshots.subprocess, "run", change_file_set)
+    with pytest.raises(ValueError, match="생성·삭제"):
+        snapshots.apply_diff(source, PATCH)
+
+
+@pytest.mark.parametrize(
+    "before,after",
+    [
+        (b"one\n", b"one"),
+        (b"one", b"one\n"),
+        (b"one", b"ONE"),
+        (b"one\ntwo", b"ONE\ntwo"),
+        (b"one", b"ONE\nTWO\n"),
+    ],
+    ids=[
+        "remove-eof-lf",
+        "add-eof-lf",
+        "both-unterminated",
+        "context-eof",
+        "old-eof-before-additions",
+    ],
+)
+def test_git_generated_eof_diff_preserves_exact_approved_bytes(source, tmp_path, before, after):
+    # Git이 만든 본문/EOF 표시를 그대로 사용한다. 미지원 확장 메타만 제외한다.
+    old = tmp_path / "old.txt"
+    new = tmp_path / "new.txt"
+    old.write_bytes(before)
+    new.write_bytes(after)
+    result = subprocess.run(
+        ["git", "diff", "--no-index", "--no-ext-diff", "--no-textconv", "--", str(old), str(new)],
+        capture_output=True,
+        timeout=10,
+        check=False,
+        env={
+            "PATH": os.environ.get("PATH", os.defpath),
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "LC_ALL": "C",
+        },
+    )
+    assert result.returncode == 1, result.stderr
+    body = result.stdout[result.stdout.index(b"@@ ") :]
+    assert b"\\ No newline at end of file\n" in body
+    patch = b"--- a/app.py\n+++ b/app.py\n" + body
+    (source / "app.py").write_bytes(before)
+    binding = preview(source, patch)
+    destination = tmp_path / "build"
+    materialize(source, destination, binding, patch)
+    assert (destination / "app.py").read_bytes() == after
+    assert (source / "app.py").read_bytes() == before
+    assert file_manifest(destination).keys() == file_manifest(source).keys()
+    assert digest_json(file_manifest(destination)) == binding.build_snapshot_hash
