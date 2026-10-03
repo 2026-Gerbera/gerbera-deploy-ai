@@ -510,3 +510,59 @@ def test_page_fingerprint_catches_template_difference() -> None:
     b = _create(_run_groups(OtherTemplate(RUN, "http://a", "2026-10-03", 1), ["base"]))
     assert a["page.head"] != b["page.head"]
     assert a["page.post"] == b["page.post"]
+
+
+# ---- 클라우드 헬스와 같은 준비 판정, passed == all(ok) ---------------------------
+
+
+class _ReadyBody(FakeFlaskr):
+    def __init__(self, run_id: str, status: int, body: object) -> None:
+        super().__init__(run_id)
+        self._ready = (status, body)
+
+    def request(
+        self, method: str, path: str, form: Mapping[str, str] | None, timeout: float
+    ) -> Response:
+        if path == "/health/ready":
+            status, body = self._ready
+            return Response(status, (), json.dumps(body))
+        return super().request(method, path, form, timeout)
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "ok"),
+    [
+        (200, {"status": "ok"}, True),
+        (200, {"status": "ready"}, True),
+        (200, {"ready": True}, True),
+        (200, {"status": "starting"}, False),
+        (200, {"ready": "true"}, False),  # 문자열 "true"는 인정하지 않는다(헬스와 같음)
+        (200, {"status": {"nested": "ok"}}, False),  # 신뢰하지 않는 값: 예외 없이 실패
+        (503, {"status": "ok"}, False),  # 헬스도 200이 아니면 실패
+    ],
+)
+def test_ready_matches_cloud_health_criteria(status: int, body: object, ok: bool) -> None:
+    out = _run_groups(_ReadyBody(RUN, status, body), ["base"])
+    ready = next(s for s in out.scenarios if s.id == "S0.ready")
+    assert ready.ok is ok
+    assert out.passed is ok  # 나머지 시나리오는 통과하므로 passed는 ready만 따라간다
+
+
+@pytest.mark.parametrize("groups", [["base"], ["base", "v2"], ["v2"]])
+@pytest.mark.parametrize("app", ["v1", "v2"])
+def test_passed_is_exactly_all_scenarios_ok(groups: list[str], app: str) -> None:
+    # C-10 약속: passed == (시나리오가 하나 이상 있고 모두 ok)
+    client = FakeFlaskr(RUN) if app == "v1" else _V2Flaskr(RUN)
+    out = _run_groups(client, groups)
+    assert out.scenarios
+    assert out.passed is all(s.ok for s in out.scenarios)
+
+
+def test_no_scenarios_is_never_passed() -> None:
+    # 빈 묶음은 입력에서 막히지 않지만(scenarios=[]), 시나리오가 없으면 passed는 False다
+    out = run_smoke(
+        FakeSmokeAdapter(Target.LOCAL),
+        SmokeTestInput(run_id=RUN, target="local", scenarios=[]),
+        RunContext(RUN),
+    )
+    assert out.scenarios == [] and out.passed is False

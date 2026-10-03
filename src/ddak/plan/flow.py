@@ -26,6 +26,7 @@ from ddak.core.contracts.plan_facts import Env, Facts, FileMeta
 from ddak.core.contracts.tools.analyze_project import AnalyzeProjectInput
 from ddak.core.contracts.tools.detect_changed_tiers import DetectChangedTiersInput
 from ddak.core.contracts.tools.generate_plan import GeneratePlanInput
+from ddak.core.contracts.tools.patch_config import PatchConfigOutput
 from ddak.core.contracts.tools.receive_deploy_request import ReceiveDeployRequestInput
 from ddak.core.contracts.tools.validate_plan import ValidatePlanInput
 from ddak.core.logging import get_logger
@@ -52,6 +53,7 @@ class PlanBundle:
     source: Path
     patch: bytes | None = None
     patch_meta: dict[str, Any] | None = None
+    patch_review: PatchConfigOutput | None = None
 
     def to_json_dict(self) -> dict[str, Any]:
         return {
@@ -253,6 +255,7 @@ def plan_deployment(
         source=checkout,
         patch=patch_result.patch if patch_result else None,
         patch_meta=patch_result.meta if patch_result else None,
+        patch_review=patch_result.review if patch_result else None,
     )
 
 

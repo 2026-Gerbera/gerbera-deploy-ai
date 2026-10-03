@@ -7,6 +7,7 @@ import pytest
 
 from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
+from ddak.core.contracts.tools.patch_config import PatchConfigOutput, PatchMeta
 from ddak.executor.engine import RunStatus
 from tests.unit import test_deployment_service as support
 
@@ -106,7 +107,22 @@ async def test_checked_patch_reuse_reaches_build_with_toggle_off_or_absent(
     service, source, calls = patched_release
     plan, context = request(service, setting, toggle)
     meta = support.patch_metadata(reuse=True, source="cache")
-    run_id = service.prepare(plan, context, source, patch=support.PATCH, patch_meta=meta)
+    review = PatchConfigOutput(
+        run_id=plan.run_id,
+        status="reused",
+        passed=True,
+        patch=support.PATCH.decode(),
+        patch_sha256=meta["patch_sha256"],
+        meta=PatchMeta(reason="fixture", reuse=True, source="cache"),
+    )
+    run_id = service.prepare(
+        plan,
+        context,
+        source,
+        patch=support.PATCH,
+        patch_meta=meta,
+        patch_review=review,
+    )
     view = service.approval_view(run_id)
     assert view["patch_meta"] == meta
     assert view["subjects"]["patch"] == meta["patch_sha256"]
@@ -161,3 +177,18 @@ async def test_no_patch_requires_no_check_metadata(rig, setting, toggle):
     assert view["patch_meta"] is None
     assert set(view["subjects"]) == {"deploy"}
     assert calls.contexts == []
+
+
+async def test_previous_release_cannot_prepare_partial_patch_without_tool_verdict(patched_release):
+    service, source, _ = patched_release
+    plan, context = request(service, False, False)
+    previous = service.store.environments("demo")
+    with pytest.raises(DdakToolError, match="툴 판정"):
+        service.prepare(
+            plan,
+            context,
+            source,
+            patch=support.PATCH,
+            patch_meta=support.patch_metadata(reuse=True, source="cache"),
+        )
+    assert_no_prepared_patch(patched_release, plan.run_id, previous)

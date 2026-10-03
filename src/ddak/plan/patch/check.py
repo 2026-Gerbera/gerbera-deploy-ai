@@ -15,6 +15,10 @@ AI가 만든 unified diff는 신뢰하지 않는 입력이다. 사람 승인 화
 4. 비밀값 리터럴: 추가한 줄에 비밀 이름(SECRET·PASSWORD·TOKEN·API_KEY…)이 있으면 그 줄의 문자열은
    키 자리(환경변수 키, 첨자 키, 딕셔너리 키)만 허용한다(대문자 값도 거부).
    개발값 기본값도 남기지 않는다
+   추가한 줄의 환경변수 읽기는 기본값 없는 필수 읽기(`os.environ["KEY"]`, 앱의 `require_env`)만
+   허용한다. `os.environ.get`·`getenv`·`env_bool`·`env_int`는 키가 없을 때 개발값으로 조용히
+   넘어가므로
+   거부한다(10/3 결정 12의 4, code "env_optional"). 원본에 이미 있던 줄은 따지지 않는다
 5. 적용·문법: O1과 같은 core.snapshots.apply_diff로 임시 사본에 적용하고, 바뀐 .py를 ast로 파싱
 6. 적용 후 AST 비교(문자열 이어붙이기·여러 줄 나누기로 줄 검사를 피하는 경우): 원본에 없던 호출은
    허용 목록(환경변수 읽기, ProxyFix, 형 변환)만, 원본에 없던 import는 os·ProxyFix·앱 자체 모듈만
@@ -77,6 +81,8 @@ ENV_CALLS = frozenset(
     {"os.environ.get", "environ.get", "os.getenv", "getenv", "require_env", "env_bool", "env_int"}
 )
 ALLOWED_CALLS = ENV_CALLS | {"ProxyFix", "int", "bool", "str", "float", "*.lower", "*.strip"}
+# ENV_CALLS 중 키가 없어도 값을 돌려주는 것. 새로 생기면 env_optional(필수 읽기만 허용, 결정 12의 4)
+OPTIONAL_ENV_CALLS = ENV_CALLS - {"require_env"}
 ALLOWED_IMPORTS = frozenset({"os", "werkzeug.middleware.proxy_fix"})
 # 허용 호출이 기대는 이름. 패치가 여기에 새로 값을 묶으면(별칭 import, 대입, 인자 등)
 # getenv()가 다른 함수를 부를 수 있으므로 아래 정식 import만 허용한다
@@ -598,6 +604,67 @@ def _line(node: ast.AST) -> int | None:
     return getattr(node, "lineno", None)
 
 
+def _optional_sites(tree: ast.AST) -> list[tuple[str, ast.AST]]:
+    """선택적 읽기를 받는 설정 대상까지 비교한다. 같은 줄의 이웃 설정은 독립적이다."""
+    sites: list[tuple[str, ast.AST]] = []
+    occurrences: Counter[tuple[str, ...]] = Counter()
+
+    def location(owner: tuple[str, ...], *identity: str) -> tuple[str, ...]:
+        key = (*owner, *identity)
+        occurrences[key] += 1
+        return (*key, f"occurrence:{occurrences[key]}")
+
+    def visit(node: ast.AST, owner: tuple[str, ...] = ()) -> None:
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            owner = location(owner, type(node).__name__, node.name)
+        if isinstance(node, ast.If | ast.While):
+            owner = location(owner, type(node).__name__, ast.dump(node.test))
+        elif isinstance(node, ast.For | ast.AsyncFor):
+            owner = location(owner, type(node).__name__, ast.dump(node.target), ast.dump(node.iter))
+        elif isinstance(node, ast.With | ast.AsyncWith):
+            owner = location(owner, type(node).__name__, *(ast.dump(item) for item in node.items))
+        elif isinstance(node, ast.ExceptHandler):
+            owner = location(
+                owner, "except", ast.dump(node.type) if node.type else "bare", node.name or ""
+            )
+        elif isinstance(node, ast.match_case):
+            owner = location(
+                owner, "case", ast.dump(node.pattern), ast.dump(node.guard) if node.guard else ""
+            )
+        if isinstance(node, ast.Assign | ast.AnnAssign | ast.NamedExpr):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            owner = location(owner, "assign:" + ",".join(ast.dump(t) for t in targets))
+        if isinstance(node, ast.Call):
+            name = _call_name(node)
+            owner = location(owner, "call:" + name)
+            if name in OPTIONAL_ENV_CALLS:
+                sites.append((repr((*owner, ast.dump(node))), node))
+            for index, arg in enumerate(node.args):
+                visit(arg, (*owner, name, f"arg:{index}"))
+            for keyword in node.keywords:
+                visit(keyword.value, (*owner, name, "keyword:" + str(keyword.arg)))
+            visit(node.func, (*owner, "callee"))
+            return
+        if isinstance(node, ast.Dict):
+            for key, value in zip(node.keys, node.values, strict=True):
+                if key is not None:
+                    visit(key, (*owner, "dict-key"))
+                visit(
+                    value, location(owner, "dict:" + (ast.dump(key) if key is not None else "**"))
+                )
+            return
+        for field_name, child in ast.iter_fields(node):
+            if isinstance(child, ast.AST):
+                visit(child, (*owner, field_name))
+            elif isinstance(child, list):
+                for item in child:
+                    if isinstance(item, ast.AST):
+                        visit(item, (*owner, field_name))
+
+    visit(tree)
+    return sites
+
+
 def _ast_diff(source: Path, root: Path, paths: Iterable[str]) -> list[Violation]:
     problems: list[Violation] = []
     local = _local_modules(root)
@@ -615,6 +682,13 @@ def _ast_diff(source: Path, root: Path, paths: Iterable[str]) -> list[Violation]
         def calls(tree: ast.AST) -> list[tuple[str, ast.AST]]:
             return [(_call_name(n), n) for n in ast.walk(tree) if isinstance(n, ast.Call)]
 
+        # 같은 호출을 다른 설정으로 옮긴 것은 새 optional 읽기다.
+        old_optional = (key for key, _ in _optional_sites(old))
+        new_optional = _optional_sites(new)
+        for _, node in _increased(old_optional, new_optional):
+            problems.append(
+                Violation("env_optional", path, _line(node), "필수 환경변수 읽기가 아니다")
+            )
         for name, node in _increased((k for k, _ in calls(old)), calls(new)):
             if name not in ALLOWED_CALLS:
                 problems.append(
@@ -681,7 +755,8 @@ def check_patch(source: Path, patch: bytes, policy: PatchPolicy | None = None) -
     result.patterns = sorted(touched)
     if diffs and not touched:
         result.violations.append(Violation("pattern", message="대상 패턴을 다루지 않는다"))
-    if result.violations:
+    # 줄 단위 내용 오류가 있어도 안전한 형식이면 AST에서 다중 줄 optional 읽기를 판정한다.
+    if any(v.code not in {"pattern", "secret_literal"} for v in result.violations):
         return result
 
     with tempfile.TemporaryDirectory(prefix="ddak-patch-check-") as temp:
@@ -692,8 +767,14 @@ def check_patch(source: Path, patch: bytes, policy: PatchPolicy | None = None) -
         except (ValueError, OSError, subprocess.SubprocessError) as error:  # apply_diff 고정 문구
             result.violations.append(Violation("apply", message=str(error)[:200]))
             return result
-        result.violations += _syntax(root, result.files)
-        if not result.violations:
+        syntax = _syntax(root, result.files)
+        result.violations += syntax
+        if not syntax:
             result.violations += _ast_diff(source, root, result.files)
+    # 줄 검사와 AST 비교가 같은 줄을 같은 이유로 두 번 보고하지 않게 한다
+    unique: dict[tuple[str, str, int | None], Violation] = {}
+    for v in result.violations:
+        unique.setdefault((v.code, v.file, v.line), v)
+    result.violations = list(unique.values())
     result.passed = not result.violations
     return result
