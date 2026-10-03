@@ -37,7 +37,9 @@ def _version(value: Any) -> bool:
     return isinstance(value, str) and _VERSION.fullmatch(value) is not None
 
 
-def _specs(settings: AwsSettings) -> list[tuple[str, str, dict[str, Any]]]:
+def _specs(
+    settings: AwsSettings, *, app_only: bool = False
+) -> list[tuple[str, str, dict[str, Any]]]:
     account = settings.account_id
     _require(
         isinstance(account, str) and re.fullmatch(r"[0-9]{12}", account) is not None,
@@ -51,10 +53,11 @@ def _specs(settings: AwsSettings) -> list[tuple[str, str, dict[str, Any]]]:
         [settings.boundary_arn, settings.build_boundary_arn] == arns,
         "허용된 두 권한 경계 ARN과 설정이 다르다",
     )
-    return [
+    specs = [
         (BOUNDARY_NAME, arns[0], boundary_document(account, settings.project)),
         ("ddak-build-boundary", arns[1], build_boundary_document(account)),
     ]
+    return specs[:1] if app_only else specs
 
 
 def _document(value: Any) -> dict[str, Any]:
@@ -139,9 +142,11 @@ def _read(iam: Any, arn: str) -> dict[str, Any]:
     return snapshot
 
 
-def snapshot_boundaries(settings: AwsSettings, iam: Any) -> list[dict[str, Any]]:
+def snapshot_boundaries(
+    settings: AwsSettings, iam: Any, *, app_only: bool = False
+) -> list[dict[str, Any]]:
     """정확한 app/build 경계만 조회한다. 정책 부재와 버전 부재를 구별한다."""
-    specs = _specs(settings)  # 두 ARN 모두 검증한 뒤 첫 API를 호출한다.
+    specs = _specs(settings, app_only=app_only)
     return [_read(iam, arn) for _, arn, _ in specs]
 
 
@@ -149,8 +154,8 @@ def _snapshots(
     specs: list[tuple[str, str, dict[str, Any]]], snapshots: Sequence[dict[str, Any]]
 ) -> list[dict[str, Any]]:
     _require(
-        isinstance(snapshots, (list, tuple)) and len(snapshots) == 2,
-        "권한 경계 스냅샷 두 개가 필요하다",
+        isinstance(snapshots, (list, tuple)) and len(snapshots) == len(specs),
+        "승인 대상 권한 경계 스냅샷이 필요하다",
     )
     allowed = {arn for _, arn, _ in specs}
     indexed: dict[str, dict[str, Any]] = {}
@@ -238,10 +243,10 @@ def _resources(statements: dict[bytes, dict[str, Any]]) -> set[str]:
 
 
 def boundary_changes(
-    settings: AwsSettings, snapshots: Sequence[dict[str, Any]]
+    settings: AwsSettings, snapshots: Sequence[dict[str, Any]], *, app_only: bool = False
 ) -> list[dict[str, Any]]:
     """승인표에는 완전한 Statement의 추가/제거만 넣고 계정을 재귀 마스킹한다."""
-    specs = _specs(settings)
+    specs = _specs(settings, app_only=app_only)
     expected = _snapshots(specs, snapshots)
     changes = []
     for (_, arn, document), previous in zip(specs, expected, strict=True):
@@ -327,9 +332,11 @@ def _check_one(iam: Any, previous: dict[str, Any], document: dict[str, Any]) -> 
     return unchanged
 
 
-def check_boundaries(settings: AwsSettings, iam: Any, snapshots: Sequence[dict[str, Any]]) -> None:
+def check_boundaries(
+    settings: AwsSettings, iam: Any, snapshots: Sequence[dict[str, Any]], *, app_only: bool = False
+) -> None:
     """부모는 foundation의 모든 쓰기 전에 두 경계 전체를 검사한다."""
-    specs = _specs(settings)
+    specs = _specs(settings, app_only=app_only)
     expected = _snapshots(specs, snapshots)
     for (_, _, document), previous in zip(specs, expected, strict=True):
         _check_one(iam, previous, document)
@@ -355,11 +362,12 @@ def apply_boundaries(
     *,
     guard: Callable[[], None],
     record: Callable[[dict[str, Any]], None],
+    app_only: bool = False,
 ) -> list[dict[str, Any]]:
     """각 쓰기 직전 재검사한다. unknown 선기록은 부모의 영속 upsert를 요구한다."""
     from .runtime import canonical
 
-    specs = _specs(settings)
+    specs = _specs(settings, app_only=app_only)
     expected = _snapshots(specs, snapshots)
     result = []
     try:

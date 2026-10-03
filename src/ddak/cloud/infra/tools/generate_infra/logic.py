@@ -13,7 +13,7 @@ from ddak.core.ai.gateway import call_ai
 from ddak.core.config import Settings
 from ddak.core.contracts.base import ContractModel
 from ddak.core.contracts.context import RunContext
-from ddak.core.contracts.enums import Source
+from ddak.core.contracts.enums import RunMode, Source
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.contracts.tools.generate_infra import GenerateInfraInput, GenerateInfraOutput
 from ddak.core.project_settings import cloud_platform_name
@@ -265,6 +265,16 @@ def _write_bundle(directory: Path, rendered: dict[str, str]) -> dict[str, str]:
 def generate_infra(inp: GenerateInfraInput, ctx: RunContext) -> GenerateInfraOutput:
     if inp.run_id != ctx.run_id:
         raise DdakToolError(ErrorCode.CONFIG_INVALID, "인프라 생성 run ID가 다르다")
+    if inp.layer == "app":
+        if ctx.mode != RunMode.UPDATE:
+            raise DdakToolError(
+                ErrorCode.CONFIG_INVALID,
+                "앱 인프라 갱신에는 새 시크릿 키 목록 계약이 필요하다; 저장소는 UPDATE만 허용한다",
+                needs_human=True,
+            )
+        from .storage import generate_storage
+
+        return generate_storage(inp, ctx, ai=call_ai)
     if inp.layer != "platform":
         raise DdakToolError(
             ErrorCode.CONFIG_INVALID,

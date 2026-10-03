@@ -40,6 +40,7 @@ PLATFORM_OUTPUTS = MappingProxyType(
 )
 APP_OUTPUTS = MappingProxyType(
     {
+        "upload_bucket": "string",
         "task_execution_role_arn": "string",
         "task_role_arn": "string",
         "dbinit_execution_role_arn": "string",

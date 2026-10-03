@@ -51,7 +51,10 @@ def test_plan_tool_bounds_summary_after_generation_source(monkeypatch):
     from ddak.core.contracts.tools.plan_infra import PlanInfraInput
 
     binding = SimpleNamespace(
-        runtime=SimpleNamespace(plan=lambda **kw: {"headline": "x" * 16362}),
+        runtime=SimpleNamespace(
+            plan=lambda **kw: {"headline": "x" * 16362},
+            settings=SimpleNamespace(storage_intent=None),
+        ),
         read_session=lambda: None,
         analyzer=lambda: None,
         generation_source=Source.FIXTURE,

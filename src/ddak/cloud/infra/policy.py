@@ -246,11 +246,23 @@ def _walk(value: Any):
 
 
 def static_gate(
-    files: Mapping[str, str], *, layer: str, state_bucket: str | None = None
+    files: Mapping[str, str],
+    *,
+    layer: str,
+    state_bucket: str | None = None,
+    storage_intent: str | None = None,
+    external_roles: Mapping[str, Any] | None = None,
+    project: str = "",
+    account_id: str = "",
 ) -> GateResult:
     """리소스 블록만 허용. 변수/provider/backend/outputs는 코드 소유 틀에서 주입한다."""
     try:
-        require(layer in ("app", "platform") and bool(files), "BUNDLE_REQUIRED")
+        from .storage_policy import inspect_storage_hcl
+
+        removing_storage = layer == "app" and storage_intent == "remove"
+        require(
+            layer in ("app", "platform") and (bool(files) or removing_storage), "BUNDLE_REQUIRED"
+        )
         require(
             len(files) <= 32 and sum(len(s.encode()) for s in files.values()) <= 1024 * 1024,
             "BUNDLE_SIZE",
@@ -272,6 +284,8 @@ def static_gate(
                         str(node.children[0].children[0]) == "jsonencode", "FUNCTION_NOT_ALLOWED"
                     )
             data = loads(source)
+            if not data and removing_storage:
+                continue
             require(set(data) == {"resource"}, "RESOURCE_BLOCKS_ONLY")
             for item in data["resource"]:
                 for kind, named in item.items():
@@ -286,7 +300,15 @@ def static_gate(
                         addresses.add(address)
                         protect_platform_resource(kind, body, state_bucket, hcl=True)
                         resources.append((kind, address, body))
-        require(bool(addresses), "BUNDLE_REQUIRED")
+        require(bool(addresses) or removing_storage, "BUNDLE_REQUIRED")
+        inspect_storage_hcl(
+            resources,
+            layer=layer,
+            intent=storage_intent,
+            external_roles=external_roles,
+            project=project,
+            account=account_id,
+        )
         bluegreen_rules = bluegreen_listener_addresses(resources)
         for kind, address, body in resources:
             _resource(

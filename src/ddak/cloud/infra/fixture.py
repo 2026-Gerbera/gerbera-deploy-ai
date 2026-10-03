@@ -142,6 +142,10 @@ def fixture_binding(ctx: RunContext, *, root: Path, approvals: Any, guard: Any) 
     """일반 runtime의 plan 해시·승인·잠금 검사는 유지한다. REAL에서 호출하면 거부한다."""
     if ctx.adapter_mode is not AdapterMode.FAKE:
         raise DdakToolError(ErrorCode.CONFIG_INVALID, "fixture 인프라는 FAKE 모드 전용이다")
+    if (ctx.project_settings.get("_infra_storage") or {}).get("intent") in {"create", "remove"}:
+        from .storage_fixture import storage_fixture_binding
+
+        return storage_fixture_binding(ctx, root=root, approvals=approvals, guard=guard)
     layer = "platform" if ctx.mode is RunMode.BOOTSTRAP else "app"
     resource = "aws_ecs_cluster" if layer == "platform" else "aws_secretsmanager_secret"
     platform = cloud_platform_name(ctx.project, ctx.project_settings)

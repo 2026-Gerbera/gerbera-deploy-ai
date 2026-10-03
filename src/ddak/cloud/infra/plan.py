@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Mapping
 from typing import Any
 
 from ddak.core.redact import redact
@@ -24,6 +25,7 @@ from .policy import (
     strings,
 )
 from .providers.aws import APP_RESOURCE_TYPES, REGION, RESOURCE_TYPES, bootstrap_dbinit_exception
+from .storage_policy import STORAGE_ADDRESSES, external_task_role, inspect_storage_plan
 
 
 def _masked(value: str) -> str:
@@ -247,6 +249,8 @@ def summarize_plan(
     rds_master_secret_arn: str | None = None,
     state_bucket: str | None = None,
     bootstrap_prepared: bool = False,
+    storage_intent: str | None = None,
+    external_roles: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """정책 불합격은 PolicyViolation, API 수행 실패는 호출자가 DdakToolError로 바꾼다."""
     require(raw.get("format_version", "").startswith("1."), "PLAN_FORMAT")
@@ -288,6 +292,17 @@ def summarize_plan(
     buckets_by_address = {}
     configured_roles = _configured_role_addresses(raw)
     configured_buckets = _configured_bucket_addresses(raw)
+    storage_deletes = inspect_storage_plan(
+        changes,
+        layer=layer,
+        update=update,
+        intent=storage_intent,
+        project=project,
+        account=account_id,
+        boundary=boundary_arn,
+        external_roles=external_roles,
+        configured_buckets=configured_buckets,
+    )
     for resource in changes:
         if resource.get("type") == "aws_s3_bucket":
             after = resource["change"].get("after") or {}
@@ -361,6 +376,20 @@ def summarize_plan(
             "PLAN_ACTION",
         )
         after = change.get("after") or {}
+        if (
+            layer == "app"
+            and kind == "aws_iam_role_policy"
+            and address not in STORAGE_ADDRESSES
+            and after.get("policy")
+        ):
+            require(
+                not any(
+                    action.lower().startswith("s3:")
+                    for stmt in statements(policy_json(after["policy"]))
+                    for action in strings(stmt.get("Action"))
+                ),
+                "STORAGE_POLICY_SCOPE",
+            )
         wildcard_policy = (
             kind == "aws_iam_role_policy"
             and bool(after.get("policy"))
@@ -400,11 +429,14 @@ def summarize_plan(
             "PLAN_REGION",
         )
         if kind.startswith("aws_iam_"):
-            require(action not in ("delete", "replace"), "IAM_DESTRUCTIVE")
+            storage_delete = address in storage_deletes and actions == ["delete"]
+            require(action not in ("delete", "replace") or storage_delete, "IAM_DESTRUCTIVE")
             require(kind in ("aws_iam_role", "aws_iam_role_policy"), "IAM_RESOURCE")
             role = after
             role_address = address if kind == "aws_iam_role" else configured_roles.get(address)
             if kind == "aws_iam_role_policy":
+                if storage_delete:
+                    after = change["before"]
                 role = roles.get(after.get("role"))
                 if unknown.get("role") is True:
                     role = roles_by_address.get(role_address or "")
@@ -415,6 +447,11 @@ def summarize_plan(
                         if value.get("name") == after.get("role")
                     ]
                     role_address = addresses[0] if len(addresses) == 1 else None
+                if address == "aws_iam_role_policy.uploads" and external_roles is not None:
+                    _, _, role = external_task_role(
+                        external_roles, project=project, account=account_id, boundary=boundary_arn
+                    )
+                    role_address = None
             if not isinstance(role, dict):
                 raise PolicyViolation("IAM_ROLE_UNKNOWN")
             path = role.get("path")
@@ -558,15 +595,15 @@ def summarize_plan(
                         if bootstrap_dbinit
                         else {}
                     ),
-                    "proposed_allow": added,
+                    "proposed_allow": [] if storage_delete else added,
                     # no-op은 before가 after와 같으므로 싣지 않는다(승인 기록 16KiB 한도).
                     "before": _policy_view(policy_json(change["before"][field]))
                     if action != "no-op" and change.get("before") and change["before"].get(field)
                     else [],
-                    "after": _policy_view(policy),
+                    "after": [] if storage_delete else _policy_view(policy),
                 }
             )
-    require(not update or not destructive, "UPDATE_DESTRUCTIVE")
+    require(not update or set(destructive) <= storage_deletes, "UPDATE_DESTRUCTIVE")
     require(errors == 0, "ACCESS_ANALYZER_ERROR")
     require(checkov.get("passed") is True, "CHECKOV_FAILED")
     result = {

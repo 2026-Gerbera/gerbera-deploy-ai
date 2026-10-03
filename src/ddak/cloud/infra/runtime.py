@@ -227,12 +227,21 @@ class AwsSettings:
     rds_master_secret_arn: str | None = None
     # 승인 기록의 프로젝트 이름(관리 페이지 프로젝트). 없으면 project와 같다.
     approval_project: str | None = None
+    storage_intent: str | None = None
+    task_role_arn: str | None = None
 
     @property
     def run_project(self) -> str:
         return self.approval_project or self.project
 
     def __post_init__(self) -> None:
+        if self.storage_intent is not None and (
+            self.storage_intent not in {"create", "remove"}
+            or self.layer != "app"
+            or self.task_role_arn
+            != f"arn:aws:iam::{self.account_id}:role/ddak/app/{self.project}-task"
+        ):
+            raise DdakToolError(ErrorCode.CONFIG_INVALID, "저장소 의도·태스크 역할 설정 오류")
         if self.approval_project is not None and not re.fullmatch(
             r"[a-z][a-z0-9_-]{0,63}", self.approval_project
         ):
@@ -418,6 +427,7 @@ class InfraRuntime:
         self.foundation_clients = foundation_clients
         self._foundation: bytes | None = None
         self._boundary_snapshot: bytes | None = None
+        self._storage_boundary: bytes | None = None
         self._boundary_versions: list[BoundaryPolicyVersion] = []
         self._local_backend = False
 
@@ -489,7 +499,95 @@ class InfraRuntime:
             framework["terraform"]["backend"] = {"local": {}}
         self._framework = canonical(framework)
 
+    def prepare_storage(self, *, session: SessionKeys) -> None:
+        """UPDATE 저장소 계획에는 app 경계만 같은 승인에 묶는다."""
+        from .boundary_versions import snapshot_boundaries
+        from .providers.aws import boundary_document
+
+        if self._files or not self.settings.storage_intent:
+            raise DdakToolError(
+                ErrorCode.PRECONDITION_FAILED, "새 저장소 검증 전에 경계를 계획해야 한다"
+            )
+        clients = self._clients(session)
+        if clients["sts"].get_caller_identity().get("Account") != self.settings.account_id:
+            raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "저장소 대상 계정이 다르다")
+        self._boundary_snapshot = canonical(
+            snapshot_boundaries(self.settings, clients["iam"], app_only=True)
+        )
+        self._storage_boundary = canonical(
+            boundary_document(self.settings.account_id, self.settings.project)
+        )
+
+    def _storage_roles(self, session: SessionKeys) -> dict[str, Any]:
+        if self._storage_boundary is None:
+            raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "저장소 경계 승인 준비가 필요하다")
+        name = f"{self.settings.project}-task"
+        try:
+            role = self._clients(session)["iam"].get_role(RoleName=name)["Role"]
+            if (
+                role.get("Arn") != self.settings.task_role_arn
+                or role.get("RoleName") != name
+                or role.get("Path") != "/ddak/app/"
+                or role.get("PermissionsBoundary", {}).get("PermissionsBoundaryArn")
+                != self.settings.boundary_arn
+            ):
+                raise ValueError
+        except Exception:
+            raise DdakToolError(
+                ErrorCode.PRECONDITION_FAILED,
+                "저장소 태스크 역할의 실재·경로·권한 경계를 확인할 수 없다",
+            ) from None
+        return {name: role}
+
+    def _apply_storage_boundary(self, session: SessionKeys) -> None:
+        from .boundary_versions import apply_boundaries, check_boundaries
+
+        receipts = 0
+
+        def record(row: dict[str, Any]) -> None:
+            nonlocal receipts
+            receipts += 1
+            private_write(
+                self._attempt.with_name(self._attempt.name + f"-storage-boundary-{receipts}.json"),
+                canonical(row),
+            )
+            self._record_boundary(row)
+
+        clients = self._clients(session)
+        self._storage_roles(session)
+        snapshots = json.loads(self._boundary_snapshot or b"[]")
+        with _FOUNDATION_LOCK:
+            check_boundaries(self.settings, clients["iam"], snapshots, app_only=True)
+            apply_boundaries(
+                self.settings,
+                clients["iam"],
+                snapshots,
+                guard=self._guard,
+                record=record,
+                app_only=True,
+            )
+
     def _approval_hash(self, plan_hash: str) -> str:
+        if self._storage_boundary is not None:
+            from .providers.aws import boundary_document
+
+            if (
+                canonical(boundary_document(self.settings.account_id, self.settings.project))
+                != self._storage_boundary
+            ):
+                raise DdakToolError(ErrorCode.APPROVAL_REQUIRED, "승인할 저장소 경계가 바뀌었다")
+            return digest(
+                canonical(
+                    {
+                        "plan": plan_hash,
+                        "storage_intent": self.settings.storage_intent,
+                        "task_role_arn": self.settings.task_role_arn,
+                        "boundary_template": digest(self._storage_boundary),
+                        "boundary_snapshot": digest(self._boundary_snapshot or b""),
+                        "backend": self.settings.backend(),
+                    }
+                )
+            )
         if self._foundation is None:
             return plan_hash
         from .foundation import foundation_template
@@ -659,7 +757,12 @@ class InfraRuntime:
                 ErrorCode.PRECONDITION_FAILED, "새 검증은 새 인프라 실행에서 시작한다"
             )
         result = static_gate(
-            files, layer=self.settings.layer, state_bucket=self.settings.state_bucket
+            files,
+            layer=self.settings.layer,
+            state_bucket=self.settings.state_bucket,
+            storage_intent=self.settings.storage_intent,
+            project=self.settings.project,
+            account_id=self.settings.account_id,
         )
         if not result.passed:
             return result
@@ -701,8 +804,11 @@ class InfraRuntime:
         self.deadline = time.monotonic() + self.timeout
         if not self._validated or self._consumed or self._planned:
             raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "검증한 새 인프라 실행이 필요하다")
+        if self.settings.storage_intent and not update:
+            raise DdakToolError(ErrorCode.CONFIG_INVALID, "저장소 변경은 UPDATE 계획이어야 한다")
         self._guard()
         self._unchanged()
+        external_roles = self._storage_roles(session) if self.settings.storage_intent else None
         if (
             self._run(
                 "init",
@@ -754,6 +860,8 @@ class InfraRuntime:
                 bootstrap_prepared=self._foundation is not None,
                 analyzer=analyzer,
                 checkov=checked,
+                storage_intent=self.settings.storage_intent,
+                external_roles=external_roles,
             )
             if self.settings.run_project != self.settings.project:
                 # 프로젝트와 다른 기존 플랫폼을 쓰는 계획임을 승인 화면에 드러낸다.
@@ -781,6 +889,21 @@ class InfraRuntime:
         finally:
             json_plan.unlink(missing_ok=True)
         self._planned = self._approval_hash(plan_hash)
+        if self._storage_boundary is not None:
+            from .boundary_versions import boundary_changes
+
+            summary["plan_sha256"] = self._planned
+            summary["headline"] += " · 저장소 권한 경계 승인 뒤 갱신"
+            summary["iam_diff"].append(
+                {
+                    "address": "ddak.foundation.app_boundary",
+                    "action": "ensure",
+                    "template_sha256": digest(self._storage_boundary),
+                    "boundary_changes": boundary_changes(
+                        self.settings, json.loads(self._boundary_snapshot or b"[]"), app_only=True
+                    ),
+                }
+            )
         if self._foundation is not None:
             from .boundary_versions import boundary_changes
             from .plan import _masked, _policy_view
@@ -939,6 +1062,22 @@ class InfraRuntime:
                     or self._approval_hash(digest(plan.read_bytes())) != self._planned
                 ):
                     raise DdakToolError(ErrorCode.APPROVAL_REQUIRED, "기반 생성 중 plan이 바뀌었다")
+            if self._storage_boundary is not None:
+                self._apply_storage_boundary(session)
+                self._guard()
+                self._unchanged()
+                check_approval(
+                    self._approval_reader(),
+                    run_id=self.run_id,
+                    project=self.settings.run_project,
+                    kind="infra",
+                    bound_to=self._planned,
+                )
+                if (
+                    plan.is_symlink()
+                    or self._approval_hash(digest(plan.read_bytes())) != self._planned
+                ):
+                    raise DdakToolError(ErrorCode.APPROVAL_REQUIRED, "경계 갱신 중 plan이 바뀌었다")
             result = self._run(
                 "apply",
                 "-input=false",

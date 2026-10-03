@@ -642,7 +642,14 @@ async def _prepare_commit_inner(
             trigger=trigger,
             targets=context.targets,
             platform=platform,
-            project_settings=context.project_settings,
+            project_settings={
+                **context.project_settings,
+                **(
+                    {"_infra_storage": bundle.context.project_settings["_infra_storage"]}
+                    if "_infra_storage" in bundle.context.project_settings
+                    else {}
+                ),
+            },
             cloud_domain=context.cloud_domain,
             build_backend=context.build_backend,
             image_repository=context.image_repository,

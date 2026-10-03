@@ -44,7 +44,16 @@ RESOURCE_TYPES = frozenset(
         "aws_route53_record",
     ]
 )
-APP_RESOURCE_TYPES = frozenset({"aws_secretsmanager_secret", "aws_iam_role", "aws_iam_role_policy"})
+APP_RESOURCE_TYPES = frozenset(
+    {
+        "aws_secretsmanager_secret",
+        "aws_iam_role",
+        "aws_iam_role_policy",
+        "aws_s3_bucket",
+        "aws_s3_bucket_public_access_block",
+        "aws_s3_bucket_server_side_encryption_configuration",
+    }
+)
 CHECKS = tuple(
     f"CKV_AWS_{n}" for n in (17, 24, 25, 260, 277, 382, 62, 1, 63, 355, 286, 289, 290, 61, 293)
 )
@@ -145,6 +154,16 @@ def boundary_document(account_id: str, project: str) -> dict:
                         )
                     }
                 },
+            },
+            {
+                "Effect": "Allow",
+                "Action": ["s3:GetObject", "s3:PutObject"],
+                "Resource": f"arn:aws:s3:::ddak-{project}-uploads-{account_id}/*",
+            },
+            {
+                "Effect": "Allow",
+                "Action": "s3:ListBucket",
+                "Resource": f"arn:aws:s3:::ddak-{project}-uploads-{account_id}",
             },
             {
                 "Effect": "Deny",
