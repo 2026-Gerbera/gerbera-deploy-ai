@@ -90,3 +90,72 @@ git diff --check
 검증: `UV_NO_SYNC=1 PYTHONPATH="$PWD/src" .venv/bin/python -m pytest harness/tests/unit/test_ui_narrative.py -k all_text_tokens_meet_aa_on_used_surfaces -q --tb=short` → 1 passed, 9 deselected. `git diff --check -- src/ddak/web/static/app.css` 통과.
 
 확정 화면: `.orchestrator/design/mockups/ac-refresh/captures/selected-a-result.jpg`. 현재 브라우저는 이 CSS를 복사한 정적 미리보기이며, 실제 서버 재시작·배포는 수행하지 않았다. 이 시각 변경의 후속 작업은 없다.
+
+## 2026-10-04 · 기능 보완
+
+1안의 색·구조를 유지하면서 대조표에서 지정한 기능 결함을 보완했다.
+
+- 결과: 성공 시 건너뛴 원인 분석은 `— 원인 분석: 실패가 없어 생략`으로 표시한다. 사용자 시나리오를 N/N으로 묶고 검증 중복을 제거했다. 다음 행동은 최대 하나이며, 환경별 서비스 링크는 해당 환경이 완료된 경우만 표시한다. 기록된 버전·커밋과 새 빌드·재사용 행을 환경 카드에 담았다.
+- 승인: 문장 전체와 이유 코드를 사전에서 찾고, 미등록 한국어 문장은 비밀값을 가린 뒤 보존한다. 기술 정보 JSON은 한국어를 유지한다. 코드 가림은 비밀값·주소·문자열·숫자·주석으로 구분하고 해석 불가 줄은 `[가림 · 코드 줄]`로 표시한다. 승인 주체 배지는 `사람 승인`이다.
+- 진행: SSE 갱신에서 상태 아이콘을 유지한다. 시각은 KST `HH:MM:SS`, 완료 행은 제목·완료 문장·상태를 한 summary로 접고 주체·툴·시간은 펼칠 수 있다. S3 삭제 경고색과 연결 단절 시 동작 중지·재연결 시 진행 행만 재개를 적용했다.
+- 대시보드: 실제 클라우드 인프라 계획이 있으면 레일의 `클라우드 구성`을 표시한다. 준비 실패 안내는 오류 사전 문장으로 바꿨다.
+
+### 레인 시계·변경 수 합의
+
+- 서버는 해당 환경의 기록된 `step.started` 중 가장 이른 `ts`를 `pipeline.lanes_progress[track].started`에 담는다. 템플릿은 이를 `data-lane-started`로 전달하며 SSE도 기존 `step`·`target`·`ts`만 사용한다. `lane_started` 별도 필드나 새 이벤트는 없다.
+- 현재 `ApplyInfraOutput`에는 `passed`, `layer`, `plan_sha256`, `outputs`, `elapsed_seconds`, `source`, `boundary_versions`가 있으며 변경 집계 필드는 없다. 표시용 캐시에도 `passed`·`source`·검증 시나리오만 남고 SSE에는 counts가 없다.
+- 완료 문장의 `(변경 N)`은 `output.counts`의 `create/update/delete/replace`에 유효한 정수가 기록된 경우에만 붙는다. 실제 현재 경로에서는 집계가 없으므로 생략한다. SSR 기록의 숫자는 같은 시작 시각의 SSE 재생에서 보존하고 새 실행에서는 이어받지 않는다. 계획 숫자를 실제 적용 숫자로 대체하지 않는다.
+
+### 이번 변경 파일
+
+- 서버: `src/ddak/{core/code_mask.py,executor/presentation.py,web/narrative.py,web/story.py,web/dependencies.py,web/routes/events.py,web/routes/pages.py}`.
+- 화면: `src/ddak/web/templates/{approval.html,dashboard.html,progress.html,result.html,_environment_cards.html}`, `src/ddak/web/static/{app.js,app.css}`. CSS는 진행 상태·애니메이션 선택자만 추가 조정했다.
+- 테스트: `harness/tests/unit/test_ui_explanations_followup.py`, `test_ui_result_followup.py`, `test_ui_progress_followup.py` 신규 및 `test_deployment_story.py`, `test_ui_flow.py`, `test_ui_integration_fix10.py`, `test_ui_patch_review.py`, `test_ui_redesign.py` 기대값 갱신.
+
+### 이번 검증
+
+```sh
+UV_NO_SYNC=1 PYTHONPATH="$PWD/src" make -C harness fmt
+UV_NO_SYNC=1 PYTHONPATH="$PWD/src" .venv/bin/python -m pytest \
+  harness/tests/unit/test_ui_explanations_followup.py \
+  harness/tests/unit/test_ui_result_followup.py \
+  harness/tests/unit/test_ui_progress_followup.py \
+  harness/tests/unit/test_deployment_story.py \
+  harness/tests/unit/test_ui_narrative.py \
+  harness/tests/unit/test_ui_storage_narrative.py -q --tb=short
+UV_NO_SYNC=1 PYTHONPATH="$PWD/src" make -C harness check
+```
+
+- 관련 테스트 **68 passed (1.52초)**. `harness/var/validation/ui-narrative-followup/related.txt`에 저장했다.
+- `make fmt`와 `git diff --check` 통과. 새 테스트의 긴 JS 문자열을 줄바꿈한 뒤 확인했다.
+- `make check`: **4298 passed, 28 failed, 1 skipped, 4 deselected**. 출력은 `harness/var/validation/ui-narrative-followup/check.txt`에 저장했다. 형식·타입·경계·계약·이력 검사는 통과했고 테스트 단계가 실패했다.
+
+```text
+lint         PASS     0.0s
+type         PASS     2.0s
+boundary     PASS     0.4s
+contracts    PASS     0.2s
+test         FAIL   351.1s
+attribution  PASS     0.1s
+합계 353.8s
+```
+
+28개 실패 중 이번 표시 변경에 해당하는 기대값 7개를 갱신했다. 준비 실패의 사람 문장 2개, 결과 서비스 링크 2개, 한국어 가림 표기 2개, 상태 아이콘 옆 라벨 1개다. 기존 비노출·폼·HTTP 검증은 유지했다.
+
+위 관련 6파일에 `test_ui_flow.py`, `test_ui_integration_fix10.py`, `test_ui_patch_review.py`, `test_ui_redesign.py`를 더한 최종 검사: **135 passed (10.44초)**. 명령은 앞 pytest 명령에 이 네 파일을 추가한 것으로, 출력은 `harness/var/validation/ui-narrative-followup/related-final.txt`다. 이후 `make -C harness lint`와 `git diff --check`도 통과했다. 전체 check는 다시 실행하지 않았으므로 전체 통과로 보고하지 않는다.
+
+나머지 21개는 별도 반영 브랜치 담당 범위다: `test_bootstrap_dbinit_policy` 1개, `test_boundary_views` 3개, `test_demo_reset` 1개, `test_first_run_connections` 2개, `test_form_submit_js` 7개, `test_ui_settings_fix10` 7개. 이 파일들은 수정하지 않았다.
+
+### 2026-10-04 · 가로 단계 띠 제거·요약 전체 표시
+
+최신 화면 피드백에 따라 대시보드·승인·진행·결과 템플릿의 공통 가로 단계 띠 호출을 제거했다. 환경별 실제 진행 레인은 유지한다. 선택 화면의 정적 목업 A/C에도 같은 제거를 적용했다.
+
+`narrative.short_summary`의 56자 절단을 제거하고, 식별자 정리만 유지한다. 요약 항목은 전체 문장을 표시하고 폭을 넘으면 줄바꿈한다. 최대 3개 항목 구성은 유지한다. 이 결정이 이전 단계 띠 표시·요약 56자 제한 요구를 대체한다.
+
+검증: `test_ui_narrative.py`, `test_ui_explanations_followup.py`, `test_ui_result_followup.py`, `test_deployment_story.py` **48 passed (0.60초)**. 긴 요약의 마지막 문장이 보존되고 강제 말줄임표가 없는지 확인했다. `make -C harness lint`, `git diff --check` 통과. 현재 정적 결과 미리보기는 HTTP 200이며 `data-pipeline-rail`이 없다. 실제 관리 서버 재시작은 수행하지 않았다.
+
+### 후속 작업
+
+- 실 적용 변경 수를 표시하려면 툴 출력·저장·표시 경로의 집계 제공이 필요하다. 이번 작업에서는 계약을 확장하지 않았다.
+- 이전 릴리스의 `ref`·`version`을 표시 데이터로 보존한다. 명시된 v1/v2 기록이 없으면 `버전 기록 없음`으로 표시하며 추정하지 않는다.
+- 사용자가 별도 반영 브랜치에 맡긴 기존 22개 회귀는 이 작업에서 변경하지 않았다. S3 저장 계약 연동도 해당 반영 시 확인이 필요하다.

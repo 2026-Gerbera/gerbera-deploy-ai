@@ -86,11 +86,12 @@ def test_preparation_without_run_has_visible_terminal_reason(rig, status):
         "request_id": "prepare-only",
         "run_id": None,
         "status": status,
-        "detail": "fixture preparation stopped",
+        "detail": "ADAPTER_FAILED: fixture preparation stopped",
     }
     with client_for(service) as client:
         html = client.get("/?project=plain").text
-        assert "fixture preparation stopped" in html
+        assert "대상 환경에서 작업을 완료하지 못했습니다." in html
+        assert "ADAPTER_FAILED: fixture preparation stopped" not in html
         assert 'href="/runs/None/' not in html
         assert "승인 자료 준비 중" not in html
         assert f'data-code="{status}"' in client.get("/projects").text

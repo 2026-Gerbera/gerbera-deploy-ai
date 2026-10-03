@@ -56,7 +56,7 @@ def test_story_approval_masks_literals_and_keeps_one_form(rig):
     with client_for(service) as client:
         html = client.get(f"/runs/{rid}/approval").text
         assert secret not in html and address not in html
-        assert "app.py:1" in html and "SECRET_KEY = [REDACTED]" in html
+        assert "app.py:1" in html and "SECRET_KEY = [가림 · 하드코딩 서명 키]" in html
         assert "os.environ" in html and 'class="del"' in html and 'class="add"' in html
         assert html.count("data-approval-form") == 1
         assert html.count('value="approved"') == 2
@@ -113,7 +113,7 @@ def test_result_digest_checks_and_failure_order():
     assert story["images"][0]["after"] == "b" * 12
     assert story["elapsed_s"] == 65
     assert story["failure"]["stage"] == "서비스 응답 확인"
-    assert any(c["title"] == "사용자 동작 확인" for c in story["checks"])
+    assert any(c.get("scenarios") == {"passed": 1, "total": 1} for c in story["checks"])
 
 
 def test_progress_and_result_render(rig):
@@ -128,7 +128,7 @@ def test_progress_and_result_render(rig):
     )
     with client_for(service) as client:
         html = client.get(f"/runs/{rid}/result").text
-        assert "a" * 12 in html and "총 소요 시간" in html and "검증 결과" in html
+        assert "a" * 12 in html and "총 소요 시간" in html and 'aria-label="환경별 결과"' in html
         assert "data-live-region" in html
         progress = client.get(f"/runs/{rid}/progress")
         assert progress.status_code == 200

@@ -222,7 +222,10 @@ input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--ink); }
 .progress[data-activity="ended"] .activity-dots { display: none; }
 .progress[data-activity="ended"] .live-activity strong { color: var(--ink); }
 .progress[data-activity="ended"] .flow-step::after { animation: none; }
-.progress[data-stream="reconnecting"] .activity-dots i, .progress[data-stream="reconnecting"] .flow-step::after { animation-play-state: paused; }
+.progress[data-stream="reconnecting"] .activity-dots i,
+.progress[data-stream="reconnecting"] .flow-step::after,
+.progress[data-stream="reconnecting"] .pipeline-step::after,
+.progress[data-stream="reconnecting"] .state.running i { animation-play-state: paused; }
 .progress[data-stream="reconnecting"] .live-activity strong { color: var(--waiting); }
 @keyframes activity-pulse { 0%, 80%, 100% { opacity: .3; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-4px); } }
 @keyframes stage-travel { from { left: 0; } to { left: calc(100% - 7px); } }
@@ -332,6 +335,11 @@ pre, .diff-panel { background: var(--surface-code); }
 .pipeline-lane progress { width: 100%; height: 8px; accent-color: var(--running); }
 .pipeline-step.complete { padding-block: 8px; }
 .pipeline-step.complete [data-step-summary] { font-size: 14px; color: var(--ink-2); }
+.pipeline-step [data-step-summary] { cursor: pointer; }
+.pipeline-step [data-step-outcome] { min-width: 0; }
+.pipeline-step.complete [data-step-summary] { display: grid; grid-template-columns: minmax(0, auto) minmax(0, 1fr) auto; align-items: center; }
+.pipeline-step.complete [data-step-title], .pipeline-step.complete [data-step-outcome] { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pipeline-step.complete [data-step-status] { white-space: nowrap; }
 .resource-metrics { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 12px; margin: 20px 0; }
 .resource-metric { background: var(--surface-2); padding: 16px; border-radius: 8px; }
 .resource-metric strong { display: block; font-size: 28px; }
@@ -352,7 +360,7 @@ pre, .diff-panel { background: var(--surface-code); }
 .notice.running, .live-activity { background: var(--accent-bg); }
 .summary-chips, .compact-checks { list-style: none; padding: 0; }
 .summary-chips { display: flex; flex-wrap: wrap; gap: 8px; }
-.summary-chips li { background: var(--surface-2); padding: 8px 12px; border-radius: 4px; max-width: 56ch; }
+.summary-chips li { background: var(--surface-2); padding: 8px 12px; border-radius: 4px; max-width: min(56ch, 100%); white-space: normal; overflow-wrap: anywhere; }
 .compact-checks li { padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
 .story-section > p, .notice p, .page-heading p { max-width: 66ch; }
 /* 진행 중 결과와 최종 결과는 같은 두 환경 카드로 표시한다. */

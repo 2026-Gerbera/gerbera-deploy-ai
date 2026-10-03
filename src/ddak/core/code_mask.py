@@ -10,7 +10,7 @@ import tokenize
 from pathlib import Path
 
 KEY = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
-MASK = "[REDACTED]"
+MASK = "[가림 · 문자열]"
 
 
 def masked_code(code: str) -> str:
@@ -19,6 +19,45 @@ def masked_code(code: str) -> str:
     try:
         tree = ast.parse(code)
         allowed = set()
+        kinds = {}
+
+        def target_kind(node):
+            name = (
+                node.id
+                if isinstance(node, ast.Name)
+                else node.attr
+                if isinstance(node, ast.Attribute)
+                else str(node.slice.value)
+                if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant)
+                else ""
+            )
+            if re.search(
+                r"secret|password|passwd|token|credential|api_?key|private|_key$", name, re.I
+            ):
+                return "비밀값"
+            if re.search(r"url|uri|host|address", name, re.I):
+                return "주소"
+            return None
+
+        for assignment in ast.walk(tree):
+            targets = (
+                assignment.targets
+                if isinstance(assignment, ast.Assign)
+                else (
+                    [assignment.target]
+                    if isinstance(assignment, ast.AnnAssign | ast.NamedExpr)
+                    else []
+                )
+            )
+            kind = next((target_kind(target) for target in targets if target_kind(target)), None)
+            value = getattr(assignment, "value", None)
+            if kind and isinstance(value, ast.AST):
+                for literal in ast.walk(value):
+                    if isinstance(literal, ast.Constant) and isinstance(literal.value, str):
+                        column = len(
+                            lines[literal.lineno - 1].encode()[: literal.col_offset].decode()
+                        )
+                        kinds[(literal.lineno, column)] = kind
         for node in ast.walk(tree):
             keys = []
             if isinstance(node, ast.Subscript):
@@ -53,15 +92,16 @@ def masked_code(code: str) -> str:
                 raise ValueError("형식 문자열은 전체 줄을 가린다")
             replacement = None
             if token.type == tokenize.STRING:
+                mask = f"[가림 · {kinds.get(token.start, '문자열')}]"
                 if token.end[0] != token.start[0]:
                     # 문자열 내부 줄을 부분 노출하지 않는다.
-                    replacement = '"' + MASK + '"' + "\n" * (token.end[0] - token.start[0])
+                    replacement = '"' + mask + '"' + "\n" * (token.end[0] - token.start[0])
                 elif token.start not in allowed:
-                    replacement = '"' + MASK + '"'
+                    replacement = '"' + mask + '"'
             elif token.type == tokenize.NUMBER:
-                replacement = '"' + MASK + '"'
+                replacement = '"[가림 · 숫자]"'
             elif token.type == tokenize.COMMENT:
-                replacement = "# " + MASK
+                replacement = "# [가림 · 주석]"
             if replacement is not None:
                 spans.append(
                     (
@@ -74,7 +114,7 @@ def masked_code(code: str) -> str:
             code = code[:start] + replacement + code[end:]
         return code
     except (SyntaxError, ValueError, tokenize.TokenError, IndentationError):
-        return "\n".join("[REDACTED · code line]" for _ in lines)
+        return "\n".join("[가림 · 코드 줄]" for _ in lines)
 
 
 def code_changes(patch: str | None, source: Path | None = None) -> list[dict]:

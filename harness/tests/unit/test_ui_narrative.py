@@ -375,7 +375,8 @@ def test_result_banner_and_short_chips_have_no_raw_status_or_scenario(rig):
         "state": "ready",
         "source": "ai",
         "narrative": {
-            "conclusion": "SUCCEEDED · verify.health.local · null " * 8,
+            "conclusion": "SUCCEEDED · verify.health.local · null " * 8
+            + "마지막 항목까지 확인했습니다.",
             "changes": ["S0.version 확인", "verify.smoke.local 통과"],
             "checks": [],
             "next_action": "verify.diagnose",
@@ -392,7 +393,10 @@ def test_result_banner_and_short_chips_have_no_raw_status_or_scenario(rig):
     assert not any(raw in visible for raw in ("verify.", "S0.", "null", "SUCCEEDED"))
     chips = html.split('<ul class="summary-chips">', 1)[1].split("</ul>", 1)[0]
     lines = re.findall(r"<li>(.*?)</li>", chips)
-    assert len(lines) <= 3 and max(map(len, lines)) <= 56
+    assert len(lines) <= 3 and len(lines[0]) > 56
+    assert lines[0].endswith("마지막 항목까지 확인했습니다.")
+    assert "…" not in chips
+    assert "data-pipeline-rail" not in html
     assert 'id="failure"' not in html
 
 

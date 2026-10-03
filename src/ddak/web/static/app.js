@@ -309,7 +309,12 @@
   const nodes = new Map(ids.map((id) => [id, document.getElementById(id)]));
   const rail = [...document.querySelectorAll("[data-rail-step]")];
   const lanes = new Map();
-  document.querySelectorAll("[data-step-row]").forEach((node) => lanes.set(node.dataset.stepRow, { node, status: node.querySelector("[data-step-status]"), sentence: node.querySelector("[data-step-sentence]"), age: node.querySelector("[data-step-age]"), detail: node.querySelector("[data-step-detail]"), summary: node.querySelector("[data-step-summary]") }));
+  document.querySelectorAll("[data-step-row]").forEach((node) => {
+    const wrapper = node.querySelector("[data-step-status]");
+    const status = wrapper?.querySelector?.(".state") || wrapper;
+    const sentence = node.querySelector("[data-step-sentence]");
+    lanes.set(node.dataset.stepRow, { node, status, statusLabel: status?.querySelector?.("span"), title: node.querySelector("[data-step-title]"), outcome: node.querySelector("[data-step-outcome]"), sentence, recordedOutcome: node.dataset.stepState === "succeeded" ? sentence?.textContent : null, recordedStart: node.dataset.started, age: node.querySelector("[data-step-age]"), detail: node.querySelector("[data-step-detail]"), summary: node.querySelector("[data-step-summary]") });
+  });
   const active = new Map(), seen = new Set();
   let finished = false, connected = false, lastEventAt = null, clock;
   const timestamp = (value) => { const date = Date.parse(value || ""); return Number.isNaN(date) ? null : date; };
@@ -323,12 +328,15 @@
     const list = nodes.get(["verify.compare", "verify.report", "verify.diagnose"].includes(id) ? "pipeline-final" : `pipeline-${track}`);
     if (!list) return null;
     const node = document.createElement("li"); node.className = "pipeline-step"; node.dataset.stepRow = id; node.dataset.lane = track;
-    const heading = document.createElement("div"), title = document.createElement("strong"), status = document.createElement("span"), sentence = document.createElement("p"), age = document.createElement("span");
-    heading.className = "step-heading"; title.textContent = text.name;
-    heading.appendChild(title); heading.appendChild(status); node.appendChild(heading); node.appendChild(sentence); node.appendChild(age); list.appendChild(node);
-    const row = { node, status, sentence, age }; lanes.set(id, row); return row;
+    const detail = document.createElement("details"), summary = document.createElement("summary"), title = document.createElement("strong"), outcome = document.createElement("span"), status = document.createElement("span"), sentence = document.createElement("p"), age = document.createElement("span");
+    detail.dataset.stepDetail = ""; summary.dataset.stepSummary = ""; summary.className = "step-heading";
+    title.dataset.stepTitle = ""; title.textContent = text.name; outcome.dataset.stepOutcome = "";
+    status.dataset.stepStatus = ""; sentence.dataset.stepSentence = ""; age.dataset.stepAge = ""; age.className = "numeric";
+    summary.appendChild(title); summary.appendChild(outcome); summary.appendChild(status);
+    detail.appendChild(summary); detail.appendChild(sentence); detail.appendChild(age); node.appendChild(detail); list.appendChild(node);
+    const row = { node, title, outcome, status, sentence, age, detail, summary }; lanes.set(id, row); return row;
   };
-  const renderRow = (row, state, sentence, elapsed, ts) => {
+  const renderRow = (row, state, sentence, elapsed, ts, text) => {
     row.node.dataset.stepState = state;
     if (state === "running") row.node.dataset.started = ts || "";
     row.node.classList.remove("active", "complete", "failed", "is-running");
@@ -336,17 +344,25 @@
     if (["failed", "check_failed"].includes(state)) row.node.classList.add("failed");
     if (state === "running") row.node.classList.add("active", "is-running");
     const kind = state === "succeeded" ? "success" : ["failed", "check_failed"].includes(state) ? "failure" : state === "running" ? "running" : state === "waiting" ? "waiting" : "neutral";
-    row.status.className = `state ${kind}`; row.status.textContent = states[state] || "확인 중";
+    row.status.className = `state ${kind}`; row.status.dataset.code = state;
+    if (!row.statusLabel) {
+      const icon = document.createElement("i"); icon.setAttribute("aria-hidden", "true");
+      row.statusLabel = document.createElement("span"); row.status.appendChild(icon); row.status.appendChild(row.statusLabel);
+    }
+    row.statusLabel.textContent = states[state] || "확인 중";
+    if (text && row.title) { row.title.textContent = text.name; row.title.classList.toggle("state", !!text.warning); row.title.classList.toggle("failure", !!text.warning); }
     row.sentence.textContent = sentence || "실행 기록을 확인합니다.";
     if (row.detail) row.detail.open = state !== "succeeded";
-    if (row.summary) row.summary.textContent = state === "succeeded" ? sentence : "작업 설명";
+    if (row.outcome) { row.outcome.textContent = sentence || ""; row.outcome.hidden = state !== "succeeded"; }
     row.age.textContent = elapsed != null ? secondsText(elapsed) : state === "running" ? "작업 시작" : "시간 기록 없음";
   };
   const updateClock = () => {
     lanes.forEach((row) => { const start = timestamp(row.node.dataset.started); if (row.node.dataset.stepState === "running" && start !== null) row.age.textContent = `진행 ${secondsText((Date.now() - start) / 1000)}`; });
     for (const track of ["local", "cloud", "common"]) {
       const work = [...active.values()].filter((item) => item.track === track);
-      if (work.length) { setText(`${track}-activity`, work.map((item) => item.text.name).join(" · ")); setText(`${track}-work-note`, work[0].text.running); const starts = work.map((item) => item.start).filter((value) => value !== null); setText(`${track}-work-age`, starts.length ? `현재 작업 시작 후 ${secondsText((Date.now() - Math.min(...starts)) / 1000)}` : "시작 시각 기록 없음"); }
+      if (work.length) { setText(`${track}-activity`, work.map((item) => item.text.name).join(" · ")); setText(`${track}-work-note`, work[0].text.running); }
+      const laneStart = timestamp(nodes.get(`${track}-work-age`)?.dataset.laneStarted);
+      if (!finished) setText(`${track}-work-age`, laneStart !== null ? `환경 시작 후 ${secondsText((Date.now() - laneStart) / 1000)}` : "시작 시각 기록 없음");
     }
     const started = timestamp(progress.dataset.started);
     if (!finished && started !== null) setText("total-clock", secondsText((Date.now() - started) / 1000));
@@ -363,10 +379,16 @@
     }
     if (!finished && lastEventAt !== null) setText("event-age", `마지막 이벤트 ${secondsText((Date.now() - lastEventAt) / 1000)} 전 · ${connected ? "연결 유지 · 완료 기록 대기" : "다시 연결하는 중"}`);
   };
+  const syncActivity = () => {
+    const working = connected && !finished;
+    nodes.get("now-working")?.classList.toggle("is-working", working && active.size > 0);
+    lanes.forEach((row) => row.node.classList.toggle("is-running", working && row.node.dataset.stepState === "running"));
+  };
   const append = (event) => {
     if (finished) return;
     let data; try { data = JSON.parse(event.data); } catch { return; }
     if (data.seq !== undefined) { if (seen.has(data.seq)) return; seen.add(data.seq); }
+    connected = true;
     const track = ["local", "cloud"].includes(data.target) ? data.target : data.step?.endsWith(".local") ? "local" : data.step?.endsWith(".cloud") ? "cloud" : "common";
     const id = data.type === "stage.finished" ? data.preparation_stage : data.type.startsWith("rollback.") ? `rollback.${track}` : data.step;
     const text = textFor(id, data.tool);
@@ -379,12 +401,20 @@
       if (id === "verify.compare" && state === "skipped") sentence = "한 환경이 실패해 두 환경을 비교하지 않았습니다.";
       if (["failed", "check_failed"].includes(state)) { const code = String(data.detail || "").split(":", 1)[0]; sentence = dictionary.errors?.[code] || sentence; }
       if (data.type === "step.started") {
+        const laneClock = nodes.get(`${track}-work-age`), first = timestamp(laneClock?.dataset.laneStarted), start = timestamp(data.ts);
+        if (laneClock && start !== null && (first === null || start < first)) laneClock.dataset.laneStarted = data.ts;
         for (const [previous, entry] of lanes) {
           if (previous === id) break;
           if (entry.node.dataset.lane === track && entry.node.dataset.stepState === "waiting") renderRow(entry, "unrecorded", "앞 작업의 실행 기록 없음");
         }
       }
-      const row = lanes.get(id) || makeRow(id, track, text); if (row) renderRow(row, state, sentence, data.elapsed_s, data.ts);
+      const row = lanes.get(id) || makeRow(id, track, text);
+      // 재연결로 받은 완료 이벤트에 요약 숫자가 없으면 서버가 렌더한 완료 문장을 유지한다.
+      if (row && state === "succeeded") {
+        if (row.recordedOutcome && timestamp(row.node.dataset.started) === timestamp(row.recordedStart)) sentence = row.recordedOutcome;
+        else if (row.node.dataset.stepState === "succeeded") sentence = row.sentence.textContent || sentence;
+      }
+      if (row) renderRow(row, state, sentence, data.elapsed_s, data.ts, text);
       if (state === "running") active.set(id, { track, text, start: timestamp(data.ts) }); else active.delete(id);
       setText(`${track}-activity`, `${text.name} · ${states[state] || "기록 확인"}`); setText(`${track}-work-note`, sentence);
       if (["failed", "check_failed"].includes(state) && track !== "common") setText(`${track === "local" ? "cloud" : "local"}-work-note`, "이 환경은 영향 없이 계속 진행합니다.");
@@ -397,13 +427,15 @@
     if (list) {
       const item = document.createElement("li"), technical = document.createElement("small");
       const date = new Date(data.ts || Date.now());
-      const time = Number.isNaN(date.getTime()) ? "시각 없음" : date.toLocaleTimeString("ko-KR", { hour12: false, timeZone: "Asia/Seoul" });
+      const time = Number.isNaN(date.getTime()) ? "시각 없음" : date.toLocaleTimeString("ko-KR", { hourCycle: "h23", hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone: "Asia/Seoul" });
       item.textContent = `${time} · ${text.name} · ${states[data.status] || typeLabels[data.type] || "기록"}${data.elapsed_s != null ? ` · ${secondsText(data.elapsed_s)}` : ""}`;
       technical.className = "tool-label"; technical.textContent = [id, data.type.startsWith("gate.") ? data.detail : null].filter(Boolean).join(" · "); item.appendChild(technical); list.appendChild(item);
     }
     progress.dataset.stream = "live"; setText("connection-state", "실시간 연결됨 · 이벤트 시각은 KST");
-    nodes.get("now-working")?.classList.toggle("is-working", active.size > 0);
+    syncActivity();
     setText("activity-title", active.size ? [...active.values()].map((item) => item.text.name).join(" · ") : "다음 작업 준비 중");
+    const warning = [...active.values()].some((item) => item.text.warning);
+    for (const name of ["state", "failure"]) nodes.get("activity-title")?.classList.toggle(name, warning);
     setText("current-activity", active.size ? [...active.values()].map((item) => `${{ local: "온프레미스", cloud: "클라우드", common: "공통" }[item.track]} · ${item.text.running}`).join(" / ") : "다음 실행 상태를 기다립니다.");
     if (data.type === "run.state") {
       progress.dataset.status = data.status; setText("progress-title", labels[data.status] || "실행 상태 확인");
@@ -417,9 +449,10 @@
     updateClock();
   };
   lanes.forEach((row, id) => { if (row.node.dataset.stepState === "running") active.set(id, { track: row.node.dataset.lane, text: textFor(id), start: timestamp(row.node.dataset.started) }); });
+  syncActivity();
   updateClock();
   if (hasWindow) { clock = window.setInterval(updateClock, 1000); window.addEventListener?.("pagehide", () => { finished = true; source.close(); window.clearInterval(clock); }, { once: true }); }
   Object.keys(typeLabels).forEach((type) => source.addEventListener(type, append));
-  source.onopen = () => { connected = true; progress.dataset.stream = "live"; setText("connection-state", "실시간 연결됨 · 이벤트 시각은 KST"); };
-  source.onerror = () => { if (finished) return; connected = false; progress.dataset.stream = "reconnecting"; setText("connection-state", "실시간 연결이 끊겼습니다. 배포 중단 여부는 아직 확인되지 않았으며 자동으로 다시 연결합니다."); };
+  source.onopen = () => { if (finished) return; connected = true; progress.dataset.stream = "live"; syncActivity(); setText("connection-state", "실시간 연결됨 · 이벤트 시각은 KST"); };
+  source.onerror = () => { if (finished) return; connected = false; progress.dataset.stream = "reconnecting"; syncActivity(); setText("connection-state", "실시간 연결이 끊겼습니다. 배포 중단 여부는 아직 확인되지 않았으며 자동으로 다시 연결합니다."); };
 })();

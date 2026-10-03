@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime
+
+from ddak.core.redact import redact
 
 ENV = {"local": "온프레미스", "cloud": "클라우드", "common": "공통"}
 TEXT = {
@@ -414,7 +417,7 @@ TEXT = {
         "running": "코드·배포·인프라 대상별 해시를 한 화면에서 확인합니다.",
         "skipped": "이번 실행에서는 건너뛰었습니다.",
         "waiting": "앞 단계가 끝나면 시작합니다.",
-        "actor": "코드 실행",
+        "actor": "사람 승인",
     },
     "reset_demo_state": {
         "description": "승인한 시연 상태 초기화 작업을 실행합니다.",
@@ -646,6 +649,21 @@ PATTERNS = {
     "proxy_fix": ("프록시 설정", "배포 환경의 프록시 전달 수에 맞춰야 합니다."),
 }
 RULES = {
+    "입력 트리 변경": "변경된 코드로 이미지를 새로 빌드합니다.",
+    "입력 트리 변경 없음": "코드 변경이 없어 이전 이미지를 재사용합니다.",
+    "변경 또는 새 env 키 있음": "코드 또는 환경 설정이 바뀌어 다시 배포합니다.",
+    "배포된 digest와 같고 새 env 키 없음": "이미지와 환경 설정이 같아 교체를 생략합니다.",
+    "새 마이그레이션 있음": "새 DB 변경을 적용합니다.",
+    "새 마이그레이션 없음": "새 DB 변경이 없어 마이그레이션을 생략합니다.",
+    "앱 DB 초기화 필요": "앱 데이터베이스와 계정을 준비합니다.",
+    "앱 DB·계정이 이미 있음": "앱 데이터베이스와 계정이 있어 초기화를 생략합니다.",
+    "새 env 키 있음": "새 환경 설정을 배포 대상에 전달합니다.",
+    "새 env 키 없음": "추가할 환경 설정이 없습니다.",
+    "새 secret 키 있음": "새 비밀 설정을 배포 대상에 전달합니다.",
+    "새 secret 키 없음": "추가할 비밀 설정이 없습니다.",
+    "인프라 입력 변경": "클라우드 구성 변경을 적용합니다.",
+    "인프라 입력 변경 없음": "클라우드 구성이 같아 적용을 생략합니다.",
+    "필수 step": "배포에 필요한 기본 작업입니다.",
     "R-ids": "지원하는 작업만 실행합니다.",
     "R-params": "허용한 입력만 사용합니다.",
     "R-mandatory": "필수 작업을 유지합니다.",
@@ -799,7 +817,32 @@ def explain(code: str | None, kind: str = "error") -> str:
         "category": CATEGORIES,
         "gate": GATES,
     }
-    return dictionaries.get(kind, {}).get(str(code or "").split(":", 1)[0]) or (
+    text = str(code or "").strip()
+    dictionary = dictionaries.get(kind, {})
+    # 전체 문장을 먼저 찾고, 코드가 붙은 문장은 코드 사전을 적용한다.
+    if text in dictionary:
+        return dictionary[text]
+    prefix, separator, rest = text.partition(":")
+    if prefix in dictionary:
+        return dictionary[prefix]
+    if text in dictionary.values():
+        return text
+    for key, sentence in dictionary.items():
+        if re.fullmatch(r"[A-Za-z0-9_.-]+", key) and re.search(
+            rf"(?<![\w.-]){re.escape(key)}(?![\w.-])", text
+        ):
+            return sentence
+    if kind in {"rule", "error"} and not text.startswith(("{", "[")):
+        human = rest.strip() if separator and re.fullmatch(r"[A-Za-z0-9_.-]+", prefix) else text
+        if re.search(r"[가-힣]", human):
+            human = redact(human, max_len=240).replace("[REDACTED]", "[가림 · 비밀값]")
+            human = human.replace("온프렘", "온프레미스")
+            return re.sub(
+                r"(?:verify|deploy|build|prepare)\.[A-Za-z0-9_.-]+",
+                lambda match: wording(match[0])["name"],
+                human,
+            )
+    return (
         "사용자 동작 확인"
         if kind == "scenario"
         else "확인할 준비 항목이 있습니다."
@@ -814,6 +857,14 @@ def outcome_sentence(row: dict, record: dict) -> str:
         return "이번 환경에는 해당하지 않는 작업입니다."
     if output.get("changed") is False:
         return "변경 없이 기존 상태를 유지했습니다."
+    if row.get("tool") == "apply_infra" or row.get("id") == "deploy.infra.cloud":
+        counts = output.get("counts")
+        if isinstance(counts, dict) and counts:
+            numbers = [counts.get(key, 0) for key in ("create", "update", "delete", "replace")]
+            if any(key in counts for key in ("create", "update", "delete", "replace")) and all(
+                type(number) is int and number >= 0 for number in numbers
+            ):
+                return f"{row['finished']} (변경 {sum(numbers)})"
     scenarios = output.get("scenarios")
     if isinstance(scenarios, list):
         passed = sum(s.get("ok") is True for s in scenarios if isinstance(s, dict))
@@ -906,6 +957,7 @@ def pipeline_view(
         )
         status = record.get("status", "waiting")
         row.update(status=status, elapsed_s=record.get("elapsed_s"))
+        row["started"] = row.get("started") or record.get("started")
         row["sentence"] = (
             row["running"]
             if status == "running"
@@ -946,9 +998,32 @@ def pipeline_view(
         )
     }
     ordered = sorted(rows.values(), key=lambda row: order.get(row["id"], 7))
+    lanes = {track: [row for row in ordered if row["track"] == track] for track in ENV}
+    lane_starts = {track: [] for track in ENV}
+    for event in events:
+        if event.get("type") != "step.started" or not event.get("ts"):
+            continue
+        track = track_for(event.get("step") or "", event.get("target"))
+        try:
+            lane_starts[track].append(
+                (datetime.fromisoformat(event["ts"]).timestamp(), event["ts"])
+            )
+        except (TypeError, ValueError):
+            continue
     return {
         "rows": ordered,
-        "lanes": {track: [row for row in ordered if row["track"] == track] for track in ENV},
+        "lanes": lanes,
+        "lanes_progress": {
+            track: {
+                "total": len(lane),
+                "done": sum(
+                    row["status"] in {"succeeded", "failed", "check_failed", "skipped"}
+                    for row in lane
+                ),
+                "started": min(lane_starts[track])[1] if lane_starts[track] else None,
+            }
+            for track, lane in lanes.items()
+        },
         "texts": {
             **TEXT,
             **{sid: wording(sid, row.get("tool"), backend, storage) for sid, row in rows.items()},
@@ -1007,7 +1082,7 @@ def preparation_rows(
 
 
 def short_summary(text: str | None) -> str:
-    """보고 설명을 작업 이름과 짧은 항목으로 한정한다. 판정에는 사용하지 않는다."""
+    """보고 설명의 식별자를 사람 이름으로 바꾼다. 문장 길이는 제한하지 않는다."""
     text = str(text or "")
     if '{"' in text or "{'" in text:
         return "배포 기록을 확인했습니다."
@@ -1021,4 +1096,4 @@ def short_summary(text: str | None) -> str:
     text = re.sub(r"\b[A-Z][A-Z_]{3,}\b", "", text)
     text = re.sub(r"\b[A-Za-z_]+\.[A-Za-z0-9_.]+\b", "확인 작업", text)
     text = re.sub(r"\s+", " ", text).strip(" ·:,-()")
-    return text[:55].rstrip() + "…" if len(text) > 56 else text or "배포 기록을 확인했습니다."
+    return text or "배포 기록을 확인했습니다."

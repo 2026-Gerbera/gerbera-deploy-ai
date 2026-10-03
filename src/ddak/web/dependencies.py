@@ -39,6 +39,7 @@ def navigation_context(request: Request) -> dict:
 templates = Jinja2Templates(
     directory=ROOT / "templates", context_processors=[navigation_context, form_context]
 )
+templates.env.policies["json.dumps_kwargs"] = {"sort_keys": True, "ensure_ascii": False}
 templates.env.globals.update(
     form_error_for=form_error_for,
     form_return_to=form_return_to,
