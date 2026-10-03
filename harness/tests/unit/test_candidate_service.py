@@ -111,7 +111,7 @@ async def test_cancel_during_completed_push_keeps_candidate_sha(
 
     def pause(self, *args, **kwargs):
         out = run(self, *args, **kwargs)
-        if args[0] == "push":
+        if args[0] == "push" and "--dry-run" not in args:
             entered.set()
             assert release.wait(3)
         return out

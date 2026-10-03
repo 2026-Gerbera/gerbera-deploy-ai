@@ -52,9 +52,13 @@ CLI = Settings(llm_backend=LLMBackend.CLI)
 
 
 @pytest.mark.parametrize("host", ["127.0.0.1", "::1"])
-def test_cli_local_loopback_allowed(monkeypatch, host):
+@pytest.mark.parametrize("invocation", [False, True])
+def test_cli_local_loopback_allowed(monkeypatch, host, invocation):
     monkeypatch.setattr(Path, "exists", lambda self: False)
-    require_local_cli(CLI, host=host, environ={"WSL_DISTRO_NAME": "fixture"})
+    environment = {"WSL_DISTRO_NAME": "fixture"}
+    if invocation:
+        environment["INVOCATION_ID"] = "fixture-systemd-invocation"
+    require_local_cli(CLI, host=host, environ=environment)
 
 
 @pytest.mark.parametrize("host", [None, "0.0.0.0", "::", "192.0.2.1", "localhost"])  # noqa: S104
@@ -76,14 +80,21 @@ def test_cli_unknown_or_non_loopback_binding_denied(monkeypatch, host):
         "ECS_CONTAINER_METADATA_URI",
         "ECS_CONTAINER_METADATA_URI_V4",
         "AWS_EXECUTION_ENV",
-        "INVOCATION_ID",
         "CI",
     ],
 )
 def test_cli_remote_container_ci_denied(monkeypatch, key):
     monkeypatch.setattr(Path, "exists", lambda self: False)
     with pytest.raises(DdakToolError):
-        require_local_cli(CLI, host="127.0.0.1", environ={key: "fixture"})
+        require_local_cli(
+            CLI,
+            host="127.0.0.1",
+            environ={
+                key: "fixture",
+                "INVOCATION_ID": "fixture-systemd",
+                "WSL_DISTRO_NAME": "Ubuntu",
+            },
+        )
 
 
 @pytest.mark.parametrize("marker", ["/.dockerenv", "/run/.containerenv"])

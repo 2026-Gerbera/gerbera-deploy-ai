@@ -61,6 +61,7 @@
     box.querySelector("[data-error-code]").textContent = code;
     box.querySelector("[data-error-message]").textContent = message;
     box.hidden = false;
+    box.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
   };
   const boundForms = new WeakSet();
   const bindForms = () => {
@@ -217,9 +218,17 @@
           bindForms();
           updateWaiting();
         }
+        if (next.dataset.summaryState && next.dataset.summaryState !== "pending") {
+          stopped = true;
+          window.clearInterval(clock);
+        }
         if (!stopped && message) message.textContent = `최신 상태 확인 · ${new Date().toLocaleTimeString("ko-KR", { hour12: false })}`;
       } catch {
         delay = 6000;
+        if (next.dataset.summaryState && next.dataset.summaryState !== "pending") {
+          stopped = true;
+          window.clearInterval(clock);
+        }
         if (!stopped && message) message.textContent = "자동 갱신 연결이 끊겼습니다. 표시된 기록을 유지하며 다시 확인합니다.";
       } finally {
         window.clearTimeout(timeout);
@@ -286,6 +295,12 @@
     "deploy.was": "앱 서버 배포", "deploy.web": "웹 서버 배포", "deploy.app": "앱 배포",
     "verify.health": "응답 확인", "verify.smoke": "기본 동작 확인", "verify.tls": "HTTPS 확인",
     "verify.compare": "두 환경 결과 비교", "verify.report": "결과 보고", "verify.watch": "배포 후 지켜보기" };
+  const stepSentence = (step) => {
+    const name = step.replace(/\.(local|cloud)$/, "");
+    if (name.startsWith("build.")) return `${name.split(".")[1].toUpperCase()} 이미지 빌드 중 — 배포용 이미지 준비`;
+    if (/^deploy\.(was|web|app)$/.test(name)) return `${name.split(".")[1].toUpperCase()} 컨테이너 교체 중 — 새 컨테이너 헬스 통과 대기`;
+    return `${stepLabels[name] || "실행 작업"} 중`;
+  };
   const setText = (id, text) => {
     const node = document.getElementById(id);
     if (node) node.textContent = text;
@@ -382,7 +397,7 @@
     }
     progress.dataset.stream = "live";
     setText("connection-state", `실시간 연결됨 · 최근 이벤트 ${time} (KST)`);
-    if (data.step && data.type === "step.started") activeWork.set(data.step, `${target} · ${step}`);
+    if (data.step && data.type === "step.started") activeWork.set(data.step, `${target} · ${stepSentence(data.step)}`);
     if (data.step && ["step.finished", "step.skipped"].includes(data.type)) activeWork.delete(data.step);
     if (data.type === "rollback.started") activeWork.set(`rollback:${track}`, `${target} · 이전 배포로 복구 중`);
     if (data.type === "rollback.finished") activeWork.delete(`rollback:${track}`);
@@ -394,7 +409,7 @@
       const key = data.step;
       const title = stepLabels[data.step.replace(/\.(local|cloud)$/, "")] || data.step;
       const bucket = trackWork[track] || trackWork.common;
-      bucket[key] = { label: title, step: key, started: timestamp(data.ts), running: data.type === "step.started" };
+      bucket[key] = { label: stepSentence(key), step: key, started: timestamp(data.ts), running: data.type === "step.started" };
       if (!Object.values(bucket).some((item) => item.running)) {
         setText(`${track}-activity`, `${title} · ${statusLabels[data.status] || typeLabels[data.type] || "기록 확인"}`);
         setText(`${track}-work-note`, data.detail || "다음 작업이나 최종 결과를 기다립니다.");

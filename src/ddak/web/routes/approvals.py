@@ -3,10 +3,11 @@ from fastapi.responses import RedirectResponse
 
 from ddak.core.contracts.errors import DdakToolError
 from ddak.core.redact import redact_obj
-from ddak.web.dependencies import deployment, templates
+from ddak.web.dependencies import deployment, public_links, templates
 from ddak.web.form_errors import FormRoute
 from ddak.web.forms import parse_form
 from ddak.web.security import csrf_token, issue_csrf, require_safe_post
+from ddak.web.story import approval_story
 
 router = APIRouter(prefix="/runs", route_class=FormRoute)
 
@@ -32,6 +33,8 @@ async def approval_page(request: Request, run_id: str):
         name="approval.html",
         context={
             "approval": view,
+            "public_links": public_links(service.get_run(run_id).get("context") or {}),
+            "story": approval_story(view, service.get_display_data(run_id)),
             "project": view.get("project"),
             "csrf_token": token,
             "patch_review": review,

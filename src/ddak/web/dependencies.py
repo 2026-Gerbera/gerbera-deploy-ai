@@ -12,10 +12,12 @@ from urllib.parse import urlsplit, urlunsplit
 from fastapi import HTTPException, Request
 from fastapi.templating import Jinja2Templates
 
+from ddak.core.defaults import load_aws_defaults, load_defaults, project_values
 from ddak.core.project_settings import ProjectSettings
 from ddak.executor.engine import RunStatus
 from ddak.executor.service import DeploymentService
 from ddak.web.form_errors import form_context, form_error_for, form_return_to
+from ddak.web.story import approval_story
 
 ROOT = Path(__file__).resolve().parent
 
@@ -29,7 +31,9 @@ def navigation_context(request: Request) -> dict:
 templates = Jinja2Templates(
     directory=ROOT / "templates", context_processors=[navigation_context, form_context]
 )
-templates.env.globals.update(form_error_for=form_error_for, form_return_to=form_return_to)
+templates.env.globals.update(
+    form_error_for=form_error_for, form_return_to=form_return_to, approval_story=approval_story
+)
 
 
 def deployment(request: Request) -> DeploymentService:
@@ -50,10 +54,28 @@ def selected_project(request: Request, project: str | None = None) -> str:
 
 
 def project_settings(request: Request, project: str) -> dict:
-    return {
-        **ProjectSettings().model_dump(mode="json"),
-        **(deployment(request).get_project_settings(project) or {}),
+    saved = deployment(request).get_project_settings(project) or {}
+    defaults = load_defaults()
+    result = {
+        **saved,
+        **project_values(saved),
+        "aws_expected_account_id": load_aws_defaults()["expected_account_id"],
+        "setting_sources": {
+            key: "관리 페이지"
+            if saved.get(key) is not None
+            else "기본 파일"
+            if key in defaults
+            else "기본 설정"
+            for key in ProjectSettings.model_fields
+        },
     }
+    base = getattr(request.app.state, "settings", None)
+    if saved.get("aws_profile") is None and base is not None and base.aws_profile:
+        result["aws_profile"] = base.aws_profile
+        result["setting_sources"]["aws_profile"] = base.setting_sources.get(
+            "aws_profile", "실행환경"
+        )
+    return result
 
 
 def run_link(run: dict) -> str:

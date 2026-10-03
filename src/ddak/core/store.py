@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import secrets
 import sqlite3
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -15,7 +16,8 @@ from typing import Any
 from ddak.core.contracts.approval import ApprovalRecord
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.contracts.infra_outputs import checked_cloud_outputs
-from ddak.core.project_settings import watch_source
+from ddak.core.defaults import project_values
+from ddak.core.project_settings import ProjectSettings, watch_source
 from ddak.core.redact import redact_obj
 
 _DDL = """
@@ -39,6 +41,13 @@ CREATE TABLE IF NOT EXISTS env_release (
 CREATE TABLE IF NOT EXISTS project_settings (
  project TEXT PRIMARY KEY, version INTEGER NOT NULL, data TEXT NOT NULL,
  updated_by TEXT NOT NULL, updated_at REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS project_settings_history (
+ project TEXT NOT NULL, version INTEGER NOT NULL, data TEXT NOT NULL,
+ displayed TEXT,
+ PRIMARY KEY (project, version));
+CREATE TABLE IF NOT EXISTS project_settings_views (
+ token TEXT PRIMARY KEY, project TEXT NOT NULL, version INTEGER NOT NULL,
+ displayed TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS prepared_runs (
  run_id TEXT PRIMARY KEY, payload TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS unlock_audit (
@@ -78,7 +87,7 @@ def _auto_source(payload: dict[str, Any]) -> tuple[str, str, str | None] | None:
         or not isinstance(ref, str)
         or not ref
         or ref.startswith("refs/tags/")
-        or ref != watch
+        or ref.removeprefix("refs/heads/") != watch.removeprefix("refs/heads/")
     ):
         return None
     return sha, ref, context.get("repo_url")
@@ -116,6 +125,10 @@ class Store:
         path.parent.mkdir(parents=True, exist_ok=True)
         with self.connection() as db:
             db.executescript(_DDL)
+            if "displayed" not in {
+                row["name"] for row in db.execute("PRAGMA table_info(project_settings_history)")
+            }:
+                db.execute("ALTER TABLE project_settings_history ADD COLUMN displayed TEXT")
         path.chmod(0o600)
 
     @contextmanager
@@ -363,6 +376,25 @@ class Store:
                         (data["revision"], json.dumps(data, ensure_ascii=False), row[0]),
                     )
 
+    def has_auto_run(self, repo_url: str, ref: str, sha: str) -> bool:
+        """소유 프로젝트가 바뀌어도 같은 소스의 활성 자동 실행은 하나다."""
+        identity = watch_source(repo_url, ref)
+        with self.connection() as db:
+            rows = db.execute(
+                "SELECT payload FROM prepared_runs JOIN runs USING(run_id) "
+                "WHERE runs.status IN ('AWAITING_APPROVAL', 'APPROVED', 'RUNNING', 'NEEDS_HUMAN')"
+            ).fetchall()
+        for row in rows:
+            source = _auto_source(json.loads(row[0]))
+            if (
+                source is not None
+                and source[0] == sha
+                and source[2]
+                and watch_source(source[2], source[1]) == identity
+            ):
+                return True
+        return False
+
     def supersede_awaiting(self, project: str, run_id: str, source_sha: str) -> list[str]:
         """준비 파일까지 성공한 뒤 호출한다. 수동·태그 요청과 승인된 run은 유지한다."""
         with self.connection() as db:
@@ -438,15 +470,15 @@ class Store:
 
     def list_project_settings(self) -> list[dict[str, Any]]:
         with self.connection() as db:
-            projects = [
-                row[0]
-                for row in db.execute("SELECT project FROM project_settings ORDER BY project")
-            ]
-        return [
-            settings
-            for project in projects
-            if (settings := self.project_settings(project)) is not None
-        ]
+            rows = db.execute("SELECT * FROM project_settings ORDER BY project").fetchall()
+        return [self._settings_row(row) for row in rows]
+
+    @staticmethod
+    def _settings_row(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            **json.loads(row["data"]),
+            **{key: row[key] for key in ("project", "version", "updated_by", "updated_at")},
+        }
 
     def platform_outputs(self, project: str, source_mode: str) -> dict[str, Any]:
         """마지막 기록된 허용 출력. FAKE 결과를 REAL 준비에 재사용하지 않는다."""
@@ -479,6 +511,40 @@ class Store:
             "updated_at": row["updated_at"],
         }
 
+    def remember_settings_view(
+        self, project: str, version: int, displayed: dict[str, Any]
+    ) -> str | None:
+        """서버가 실제 표시한 기본값을 버전과 함께 보관한다. 요청의 원본값은 믿지 않는다."""
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT version, data FROM project_settings WHERE project=?", (project,)
+            ).fetchone()
+            if (row["version"] if row else 0) != version:
+                return
+            db.execute(
+                "INSERT OR IGNORE INTO project_settings_history (project, version, data) "
+                "VALUES (?, ?, ?)",
+                (project, version, row["data"] if row else "{}"),
+            )
+            db.execute(
+                "UPDATE project_settings_history SET displayed=? "
+                "WHERE project=? AND version=? AND displayed IS NULL",
+                (_json(displayed), project, version),
+            )
+            token = hashlib.sha256(_json([project, version, displayed]).encode()).hexdigest()
+            db.execute(
+                "INSERT OR IGNORE INTO project_settings_views VALUES (?, ?, ?, ?)",
+                (token, project, version, _json(displayed)),
+            )
+            db.execute(
+                "DELETE FROM project_settings_views WHERE project=? AND rowid NOT IN "
+                "(SELECT rowid FROM project_settings_views WHERE project=? "
+                "ORDER BY rowid DESC LIMIT 128)",
+                (project, project),
+            )
+            return token
+
     def save_project_settings(
         self,
         project: str,
@@ -486,9 +552,12 @@ class Store:
         *,
         updated_by: str,
         expected_version: int | None,
+        view_token: str | None = None,
+        validate: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
-        """낙관적 버전 검사로 도메인 설정 덮어쓰기를 막는다."""
-        safe_data = _json(data)
+        """기준 snapshot의 실제 수정만 병합하고 감시 소유권을 원자적으로 이관한다."""
+        if set(data) - ProjectSettings.model_fields.keys():
+            raise DdakToolError(ErrorCode.CONFIG_INVALID, "프로젝트 설정 필드 오류")
         now = time.time()
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -496,39 +565,123 @@ class Store:
                 "SELECT version, data FROM project_settings WHERE project=?", (project,)
             ).fetchone()
             current = row["version"] if row else 0
-            if expected_version is not None and current != expected_version:
-                raise DdakToolError(
-                    ErrorCode.PRECONDITION_FAILED, "설정이 다른 화면에서 변경됐다. 새로고침하세요"
+            existing = json.loads(row["data"]) if row else {}
+            changes = dict(data)
+            displayed = None
+            if view_token:
+                view = db.execute(
+                    "SELECT displayed FROM project_settings_views "
+                    "WHERE token=? AND project=? AND version=?",
+                    (view_token, project, expected_version),
+                ).fetchone()
+                if view is None:
+                    raise DdakToolError(
+                        ErrorCode.PRECONDITION_FAILED, "설정 기준 화면이 만료됐다. 새로고침하세요"
+                    )
+                displayed = json.loads(view[0])
+            if expected_version is not None:
+                basis = db.execute(
+                    "SELECT data, displayed FROM project_settings_history "
+                    "WHERE project=? AND version=?",
+                    (project, expected_version),
+                ).fetchone()
+                if basis is None and current != expected_version and expected_version != 0:
+                    raise DdakToolError(
+                        ErrorCode.PRECONDITION_FAILED, "설정 기준 버전이 없다. 새로고침하세요"
+                    )
+                before = (
+                    json.loads(basis[0])
+                    if basis
+                    else existing
+                    if current == expected_version
+                    else {}
                 )
-            merged = {**(json.loads(row["data"]) if row else {}), **json.loads(safe_data)}
-            if merged.get("auto_detect") and merged.get("repo_url"):
-                identity = watch_source(merged["repo_url"], merged.get("watch_branch", "prod"))
+                before_values = project_values(before)
+                if basis and basis["displayed"]:
+                    before_values.update(json.loads(basis["displayed"]))
+                if displayed is not None:
+                    before_values.update(displayed)
+                if (
+                    current != expected_version
+                    or displayed is not None
+                    or (basis and basis["displayed"])
+                ):
+                    changes = {
+                        key: value
+                        for key, value in data.items()
+                        if value != (before.get(key) if value is None else before_values.get(key))
+                    }
+                # 저장소가 없어 OFF로 보였던 폼은 URL 입력 뒤에도 제출한 OFF를 유지한다.
+                # URL 변경으로 auto_detect 기본값의 의미가 바뀌므로 독립적인 무수정이 아니다.
+                if "repo_url" in changes and data.get("auto_detect") is False:
+                    changes["auto_detect"] = False
+                if current != expected_version and any(
+                    existing.get(key) != before.get(key) and existing.get(key) != value
+                    for key, value in changes.items()
+                ):
+                    raise DdakToolError(
+                        ErrorCode.PRECONDITION_FAILED,
+                        "같은 설정이 다른 화면에서 변경됐다. 새로고침하세요",
+                    )
+            merged = {**existing, **changes}
+            merged = ProjectSettings.model_validate(merged).model_dump(
+                mode="json", exclude_unset=True
+            )
+            effective = ProjectSettings.model_validate(project_values(merged))
+            if validate is not None:
+                validate(merged)
+            db.execute(
+                "INSERT OR IGNORE INTO project_settings_history (project, version, data) "
+                "VALUES (?, ?, ?)",
+                (project, current, _json(existing)),
+            )
+            transferred = []
+            if effective.auto_detect and effective.repo_url:
+                identity = watch_source(effective.repo_url, effective.watch_branch)
                 others = db.execute(
-                    "SELECT project, data FROM project_settings "
+                    "SELECT project, version, data FROM project_settings "
                     "WHERE project != ? ORDER BY project",
                     (project,),
                 ).fetchall()
                 for other in others:
                     settings = json.loads(other["data"])
-                    if not settings.get("auto_detect") or not settings.get("repo_url"):
+                    other_values = project_values(settings)
+                    if not other_values.get("auto_detect") or not other_values.get("repo_url"):
                         continue
                     try:
                         other_source = watch_source(
-                            settings["repo_url"], settings.get("watch_branch", "prod")
+                            other_values["repo_url"], other_values["watch_branch"]
                         )
                     except ValueError:
                         continue  # 기존 잘못된 URL은 감시 조립에서 제외하고 경고한다.
                     if other_source == identity:
-                        raise DdakToolError(
-                            ErrorCode.CONFIG_INVALID,
-                            f"자동 감시 중복: {other['project']} 프로젝트가 같은 저장소·브랜치를 "
-                            "이미 감시합니다. 기존 프로젝트의 자동 감지를 먼저 끄세요",
+                        db.execute(
+                            "INSERT OR IGNORE INTO project_settings_history "
+                            "(project, version, data) VALUES (?, ?, ?)",
+                            (other["project"], other["version"], other["data"]),
                         )
+                        settings["auto_detect"] = False
+                        updated = _json(settings)
+                        db.execute(
+                            "UPDATE project_settings SET version=?, data=?, updated_by=?, "
+                            "updated_at=? WHERE project=?",
+                            (other["version"] + 1, updated, updated_by, now, other["project"]),
+                        )
+                        db.execute(
+                            "INSERT INTO project_settings_history (project, version, data) "
+                            "VALUES (?, ?, ?)",
+                            (other["project"], other["version"] + 1, updated),
+                        )
+                        transferred.append(other["project"])
             safe_data = _json(merged)
             version = current + 1
             db.execute(
                 "INSERT OR REPLACE INTO project_settings VALUES (?, ?, ?, ?, ?)",
                 (project, version, safe_data, updated_by, now),
+            )
+            db.execute(
+                "INSERT INTO project_settings_history (project, version, data) VALUES (?, ?, ?)",
+                (project, version, safe_data),
             )
         return {
             "project": project,
@@ -536,6 +689,7 @@ class Store:
             **json.loads(safe_data),
             "updated_by": updated_by,
             "updated_at": now,
+            **({"transferred_watchers": transferred} if transferred else {}),
         }
 
     def approve(self, records: Sequence[ApprovalRecord]) -> None:

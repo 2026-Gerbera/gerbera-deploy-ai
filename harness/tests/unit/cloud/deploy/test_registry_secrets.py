@@ -1,5 +1,4 @@
 import json
-from types import SimpleNamespace
 
 import pytest
 
@@ -8,6 +7,7 @@ from ddak.cloud.deploy.registry_secrets import seed_registry_secrets
 from ddak.core.config import AdapterMode
 from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.errors import DdakToolError
+from tests.unit.cloud.test_aws_credentials import SELECTION, StubSessions
 
 
 class Client:
@@ -23,14 +23,13 @@ def test_seed_registry_secrets_uses_host_env_without_returning_values(monkeypatc
     monkeypatch.setenv("DDAK_DOCKERHUB_USER", "operator")
     monkeypatch.setenv("DDAK_DOCKERHUB_PUSH_TOKEN", "push-value")
     monkeypatch.setenv("DDAK_DOCKERHUB_PULL_TOKEN", "pull-value")
-    monkeypatch.setattr(
-        registry_secrets.boto3,
-        "Session",
-        lambda **_kwargs: SimpleNamespace(client=lambda *_args, **_kwargs: client),
-    )
+    sessions = StubSessions()
+    sessions.service = client
+    monkeypatch.setattr(registry_secrets.boto3, "Session", sessions)
     ctx = RunContext(
         "run-1",
         adapter_mode=AdapterMode.REAL,
+        project_settings=SELECTION,
         platform={
             "cloud": {
                 "dockerhub_push_secret_arn": "push-secret",
@@ -40,6 +39,8 @@ def test_seed_registry_secrets_uses_host_env_without_returning_values(monkeypatc
     )
 
     assert seed_registry_secrets(ctx) is None
+    sessions.sts.get_caller_identity.assert_called_once_with()
+    assert sessions.events[:2] == ["sts", "identity"]
     assert [call["SecretId"] for call in client.calls] == ["push-secret", "pull-secret"]
     assert json.loads(client.calls[0]["SecretString"]) == {
         "username": "operator",

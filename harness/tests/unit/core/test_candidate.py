@@ -444,9 +444,18 @@ def test_preflight_injected_scanner_exports_pinned_source_and_labels_fixture(rep
         "source": "fixture",
         "ignored_count": 0,
         "findings": [],
+        "git_auth_source": "machine",
     }
     assert seen == [("version = 1\n", False)] + ([("version = 2\n", False)] if patch else [])
-    assert {t["operation"] for t in repo.timings} <= {"fetch", "merge-base", "cat-file", "ls-tree"}
+    assert {t["operation"] for t in repo.timings} <= {
+        "fetch",
+        "merge-base",
+        "cat-file",
+        "ls-tree",
+        "check-ref-format",
+        "ls-remote",
+        "push",
+    }
 
 
 def test_preflight_fetches_missing_sha_in_reused_no_checkout(repository, tmp_path):

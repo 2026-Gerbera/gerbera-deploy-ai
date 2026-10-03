@@ -75,7 +75,7 @@ def test_dashboard_approval_progress_result_http_flow(rig, monkeypatch, failure)
         assert progress.status_code == 200
         assert 'data-activity="running"' in progress.text
         assert 'class="activity-dots"' in progress.text
-        assert "상세 로그가 도착하면" in progress.text
+        assert "각 단계의 작업과 경과 시간" in progress.text
         assert "FAILED_VERIFY" in progress.text and "SUPERSEDED" in progress.text
         assert f'href="/runs/{rid}/progress"' in client.get(f"/?project={PROJECT}").text
         assert client.portal is not None

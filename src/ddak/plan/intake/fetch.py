@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
+from ddak.core.git_credentials import credential_source, helper_options, isolated_git_env
 from ddak.core.logging import get_logger
 from ddak.core.redact import redact
 from ddak.plan.intake.policy import FetchPolicy
@@ -118,38 +119,44 @@ def check_ref(ref: str | None) -> str | None:
 
 
 def _env(policy: FetchPolicy, url: str) -> dict[str, str]:
-    env = {
-        "PATH": os.environ.get("PATH", os.defpath),
-        "GIT_CONFIG_GLOBAL": os.devnull,
-        "GIT_CONFIG_NOSYSTEM": "1",
-        "GIT_TERMINAL_PROMPT": "0",
-        "GIT_LFS_SKIP_SMUDGE": "1",
-    }
+    options: list[str] = []
     if policy.credentials:
-        from ddak.core.git_credentials import helper_options, isolated_git_env
-
         if policy.credentials[2] != url:
             raise DdakToolError(ErrorCode.CONFIG_INVALID, "접수 인증 저장소가 다르다")
-        options = helper_options(*policy.credentials)
-        env = isolated_git_env(env)
-        env["GIT_CONFIG_COUNT"] = str(len(options))
-        for index, option in enumerate(options):
-            key, value = option.split("=", 1)
-            env[f"GIT_CONFIG_KEY_{index}"] = key
-            env[f"GIT_CONFIG_VALUE_{index}"] = value
-    elif policy.token and url.startswith("https://"):
+        source = credential_source(*policy.credentials)
+        options = helper_options(*policy.credentials, source=source)
+    else:
+        source = "managed" if policy.token else "machine"
+    # 머신 helper가 HOME/XDG/gh 설정을 평소대로 찾게 한다. 파일 내용은 Git만 읽는다.
+    base = dict(os.environ) if source == "machine" else {}
+    base["PATH"] = os.environ.get("PATH", os.defpath)
+    env = isolated_git_env(base, source=source)
+    env["GIT_LFS_SKIP_SMUDGE"] = "1"
+    if not policy.credentials and policy.token and url.startswith("https://"):
         host = url.split("/")[2]
         cred = base64.b64encode(f"x-access-token:{policy.token.get_secret_value()}".encode())
-        env |= {
-            "GIT_CONFIG_COUNT": "1",
-            "GIT_CONFIG_KEY_0": f"http.https://{host}/.extraheader",
-            "GIT_CONFIG_VALUE_0": f"AUTHORIZATION: basic {cred.decode()}",
-        }
+        options = [f"http.https://{host}/.extraheader=AUTHORIZATION: basic {cred.decode()}"]
+    if source == "machine" and not options:
+        options = ["credential.interactive=false"]
+    try:
+        offset = int(env.get("GIT_CONFIG_COUNT", "0"))
+        if offset < 0:
+            raise ValueError
+    except ValueError:
+        raise DdakToolError(ErrorCode.CONFIG_INVALID, "Git 머신 설정 개수 형식 오류") from None
+    env["GIT_CONFIG_COUNT"] = str(offset + len(options))
+    for index, option in enumerate(options, offset):
+        key, value = option.split("=", 1)
+        env[f"GIT_CONFIG_KEY_{index}"] = key
+        env[f"GIT_CONFIG_VALUE_{index}"] = value
     return env
 
 
 def _clean(text: str, policy: FetchPolicy) -> str:
     """git stderr를 메시지로 쓰기 전: 토큰·절대 경로 제거, 200자로 자른다."""
+    if policy.credentials or not policy.token:
+        # 머신/관리 helper의 값은 이 호출자에게 opaque라 문자열 치환으로 보호할 수 없다.
+        return "원문 출력은 숨김"
     if policy.token:
         secret = policy.token.get_secret_value()
         for s in (secret, base64.b64encode(f"x-access-token:{secret}".encode()).decode()):
@@ -200,6 +207,10 @@ class _Git:
                 res = self.runner([*self.prefix, *args], self.env, cwd, self.policy.timeout_s)
             except subprocess.TimeoutExpired:
                 raise DdakToolError(ErrorCode.ADAPTER_TIMEOUT, "git 실행 시간이 초과됐다") from None
+            except OSError:
+                raise DdakToolError(
+                    ErrorCode.ADAPTER_FAILED, "git 실행 실패; 원문 출력은 숨김"
+                ) from None
             if res.returncode == 0:
                 return res.stdout
             kind = _classify(res.stderr)
@@ -207,7 +218,7 @@ class _Git:
                 raise DdakToolError(
                     ErrorCode.ADAPTER_FAILED,
                     "저장소에 접근할 수 없거나 존재하지 않는다. "
-                    "비공개면 읽기 전용 토큰(DDAK_GITHUB_TOKEN)이 필요하다",
+                    "Git 머신 인증 또는 관리 저장소 토큰의 읽기 권한을 확인하세요",
                 )
             if kind == "ref":
                 raise DdakToolError(ErrorCode.ADAPTER_FAILED, "요청한 ref를 찾을 수 없다")

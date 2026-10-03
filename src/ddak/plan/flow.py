@@ -127,6 +127,17 @@ def plan_deployment(
         },
         cloud_domain=cloud_domain if cloud_domain is not None else base_context.cloud_domain,
         platform=dict(platform if platform is not None else base_context.platform),
+        project_settings={
+            **{
+                key: value
+                for key, value in (
+                    ("aws_profile", settings.aws_profile),
+                    ("aws_expected_account_id", settings.aws_expected_account_id),
+                )
+                if value is not None
+            },
+            **base_context.project_settings,
+        },
     )
 
     with _stage("intake", run_id, record_stage):

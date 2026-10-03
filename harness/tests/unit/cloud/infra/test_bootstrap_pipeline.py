@@ -19,6 +19,7 @@ from ddak.core.contracts.tools.validate_infra import ValidateInfraInput
 from ddak.core.runtime import tool_context
 from ddak.executor.approval_meta import encode_meta
 from tests.unit.cloud.infra import test_runtime as f
+from tests.unit.cloud.test_aws_credentials import SELECTION, StubSessions
 
 
 def missing(code):
@@ -49,6 +50,8 @@ def bootstrap(tmp_path):
     }
     runner.outputs = {}
     runtime = f.InfraRuntime(
+        aws_project_settings=SELECTION,
+        session_factory=StubSessions(),
         root=tmp_path,
         run_id="run-1",
         settings=settings,
@@ -264,6 +267,8 @@ def test_registered_bootstrap_with_existing_bucket_uses_remote_backend(tmp_path)
     runner.raw = {"format_version": "1.2", "resource_changes": []}
     runner.outputs = {}
     runtime = f.InfraRuntime(
+        aws_project_settings=SELECTION,
+        session_factory=StubSessions(),
         root=tmp_path,
         run_id="run-1",
         settings=settings,
@@ -372,6 +377,8 @@ def test_partial_local_state_blocks_a_different_run_until_recovery(bootstrap, tm
     assert str(marker) in str(exc.value)
     with pytest.raises(DdakToolError, match="로컬 state 복구"):
         f.InfraRuntime(
+            aws_project_settings=SELECTION,
+            session_factory=StubSessions(),
             root=tmp_path,
             run_id="run-new",
             settings=runtime.settings,

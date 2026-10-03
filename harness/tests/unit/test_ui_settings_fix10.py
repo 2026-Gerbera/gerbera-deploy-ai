@@ -13,6 +13,7 @@ import pytest
 from fastapi import FastAPI, HTTPException, Request
 
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
+from ddak.core.defaults import project_values
 from ddak.core.project_settings import ProjectSettings
 from ddak.executor.service import DeploymentService
 from ddak.web.routes import ops, settings
@@ -36,6 +37,8 @@ class SettingsStore:
         version = (self.rows.get(project) or {}).get("version", 0)
         if kwargs["expected_version"] != version:
             raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "설정 버전 충돌")
+        # 저장 검증은 병합과 같은 트랜잭션 안에서 Store가 수행한다.
+        data = ProjectSettings.model_validate(data).model_dump(mode="json", exclude_unset=True)
         self.writes.append({"project": project, "data": data, **kwargs})
         self.rows[project] = {**data, "version": version + 1}
         return self.rows[project]
@@ -82,7 +85,7 @@ def service(monkeypatch: pytest.MonkeyPatch) -> Service:
 def request(service: Service, path: str = "/settings", form: dict | None = None) -> Request:
     app = FastAPI()
     app.state.deployment = service
-    app.state.settings = SimpleNamespace(admin_port=8765)
+    app.state.settings = SimpleNamespace(admin_port=8765, aws_profile=None, setting_sources={})
     headers = [(b"host", b"127.0.0.1:8765")]
     if form is not None:
         headers.extend(
@@ -112,12 +115,13 @@ def request(service: Service, path: str = "/settings", form: dict | None = None)
     )
 
 
-async def test_unsaved_settings_use_model_defaults_and_watch_project(service: Service) -> None:
+async def test_unsaved_settings_use_product_defaults_and_watch_project(service: Service) -> None:
     response = await settings.settings_page(request(service))
     html = response.body.decode()
     markup = FormMarkup(html)
-    defaults = ProjectSettings()
-    assert response.context["settings"] == defaults.model_dump(mode="json")
+    actual = response.context["settings"]
+    assert {key: actual[key] for key in ProjectSettings.model_fields} == project_values({})
+    assert actual["setting_sources"]["watch_branch"] == "기본 파일"
     assert markup.fields["project"]["value"] == "flaskr-three"
     assert markup.fields["watch_branch"]["value"] == "prod"
     assert markup.selected == ["onprem", "external"]

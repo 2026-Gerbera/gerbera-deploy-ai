@@ -1054,10 +1054,29 @@ async def test_settings_require_version_and_preserve_unmentioned_fields(rig: Any
         expected_version=row["version"],
     )
     assert saved["repo_url"] == row["repo_url"] and saved["default_targets"] == "onprem"
-    with pytest.raises(DdakToolError):
+    merged = service.save_project_settings(
+        "demo",
+        {"watch_branch": "release"},
+        updated_by="operator",
+        expected_version=row["version"],
+    )
+    assert merged["watch_branch"] == "release"
+    assert merged["cloud_domain"] == saved["cloud_domain"]
+    assert merged["repo_url"] == row["repo_url"] and merged["default_targets"] == "onprem"
+    unchanged = service.save_project_settings(
+        "demo", {}, updated_by="operator", expected_version=row["version"]
+    )
+    for key in ("repo_url", "default_targets", "watch_branch", "cloud_domain"):
+        assert unchanged[key] == merged[key]
+    with pytest.raises(DdakToolError) as conflict:
         service.save_project_settings(
-            "demo", {}, updated_by="operator", expected_version=row["version"]
+            "demo",
+            {"cloud_domain": "conflict.example.test", "image_repository": "fixture/not-saved"},
+            updated_by="operator",
+            expected_version=row["version"],
         )
+    assert conflict.value.code is ErrorCode.PRECONDITION_FAILED
+    assert service.get_project_settings("demo") == unchanged
 
 
 async def test_legacy_approval_without_new_export_is_readable(rig: Any):

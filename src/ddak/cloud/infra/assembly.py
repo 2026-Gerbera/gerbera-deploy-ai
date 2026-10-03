@@ -7,6 +7,7 @@ from pathlib import Path
 import boto3
 from botocore.config import Config
 
+from ddak.core.aws_credentials import aws_settings, checked_session
 from ddak.core.config import AdapterMode
 from ddak.core.contracts.approval import ApprovalRecord
 from ddak.core.contracts.context import RunContext
@@ -59,39 +60,21 @@ def create_binding(
             ErrorCode.CONFIG_INVALID, "FAKE 인프라에는 fixture binding factory가 필요하다"
         )
     config = Config(connect_timeout=5, read_timeout=10, retries={"max_attempts": 2})
+    selection = aws_settings(ctx.project_settings)
 
     def session_keys() -> SessionKeys:
-        try:
-            sdk = boto3.Session(region_name=REGION)
-            credentials = sdk.get_credentials()
-            if credentials is None:
-                raise ValueError
-            credentials = credentials.get_frozen_credentials()
-            return SessionKeys(
-                credentials.access_key,
-                credentials.secret_key,
-                credentials.token,
-            )
-        except Exception:
-            raise DdakToolError(
-                ErrorCode.CONFIG_INVALID, "AWS 단기 자격증명을 확보할 수 없다"
-            ) from None
+        return SessionKeys.from_sdk(sdk_session(), profile_name=selection["aws_profile"])
 
     def sdk_session():
-        keys = session_keys()
-        return boto3.Session(
-            aws_access_key_id=keys.access_key,
-            aws_secret_access_key=keys.secret_key,
-            aws_session_token=keys.token or None,
+        return checked_session(
+            selection,
             region_name=REGION,
+            config=config,
+            session_factory=boto3.Session,
         )
 
-    try:
-        account = sdk_session().client("sts", config=config).get_caller_identity()["Account"]
-    except Exception:
-        raise DdakToolError(
-            ErrorCode.CONFIG_INVALID, "인프라 대상 AWS 계정을 확인할 수 없다"
-        ) from None
+    sdk_session()
+    account = selection["aws_expected_account_id"]
     settings = AwsSettings(
         project=ctx.project,
         account_id=account,
@@ -113,6 +96,7 @@ def create_binding(
         lock_file=(Path(__file__).parent / "providers/aws.lock.hcl").read_bytes(),
         approvals=approvals,
         guard=guard,
+        aws_project_settings=selection,
     )
     return InfraBinding(
         runtime,

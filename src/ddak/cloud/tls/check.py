@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import http.client
-import os
 import re
 import ssl
 import subprocess
@@ -17,6 +16,7 @@ import boto3
 from botocore.config import Config
 
 from ddak.cd.interface import ProviderResult
+from ddak.core.aws_credentials import checked_session
 from ddak.core.config import AdapterMode
 from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
@@ -197,15 +197,17 @@ def ensure_tls(mode: Literal["check", "apply"], ctx: RunContext) -> ProviderResu
     if remaining <= 0:
         return _result(False, "TLS 확인 제한 시간 초과")
     try:
-        session = boto3.Session(
-            profile_name=os.environ.get("DDAK_AWS_READONLY_PROFILE", "ddak-readonly"),
-            region_name="ap-northeast-2",
-        )
         config = Config(
-            # 세 번의 API 호출 각각의 connect/read에 전체 예산을 나눠 쓴다.
-            connect_timeout=remaining / 6,
-            read_timeout=remaining / 6,
+            # STS와 세 번의 조회 각각의 connect/read에 전체 예산을 나눠 쓴다.
+            connect_timeout=remaining / 8,
+            read_timeout=remaining / 8,
             retries={"total_max_attempts": 1},
+        )
+        session = checked_session(
+            ctx.project_settings,
+            region_name="ap-northeast-2",
+            config=config,
+            session_factory=boto3.Session,
         )
         return check_tls(
             domain=ctx.cloud_domain,
@@ -217,6 +219,4 @@ def ensure_tls(mode: Literal["check", "apply"], ctx: RunContext) -> ProviderResu
     except DdakToolError:
         raise
     except Exception:
-        raise DdakToolError(
-            ErrorCode.ADAPTER_FAILED, "AWS 읽기 전용 세션을 준비할 수 없다"
-        ) from None
+        raise DdakToolError(ErrorCode.ADAPTER_FAILED, "AWS 검증 세션을 준비할 수 없다") from None

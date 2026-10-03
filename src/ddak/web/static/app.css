@@ -218,3 +218,23 @@ input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--ink); }
 @keyframes activity-pulse { 0%, 80%, 100% { opacity: .3; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-4px); } }
 @keyframes stage-travel { from { left: 0; } to { left: calc(100% - 7px); } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation: none !important; } }
+/* 시연 화면: 변경 → 실행 → 결과를 같은 원장 순서로 읽는다. */
+.story-lead { max-width: 920px; font-size: 20px; line-height: 1.6; }
+.story-section { margin-top: 32px; }
+.section-index { display: inline-block; min-width: 40px; font: 600 14px var(--font-mono); color: var(--muted); }
+.story-section > h2 { border-top: 2px solid var(--line); background: var(--section-bg); padding: 12px 16px; margin-bottom: 16px; }
+.story-section > h3 { margin-top: 20px; }
+.story-decision { margin: 20px 0; padding: 16px 0; }
+.story-patch { margin: 20px 0; }
+.story-patch h4 { margin: 8px 0 0; font-size: 14px; }
+.story-diff, .story-resources { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 16px; }
+.story-diff > div, .story-resources > div { min-width: 0; }
+.story-diff pre { margin: 4px 0; background: var(--surface); border-color: var(--row-line); min-height: 100px; }
+.story-diff > div:last-child pre { border-left: 4px solid var(--success); }
+.story-timeline { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 16px; padding: 0; list-style: none; }
+.story-timeline li { border-top: 2px solid var(--ink); padding-top: 12px; }
+.story-timeline p { font-size: 14px; margin-top: 8px; }
+.story-metrics { display: flex; gap: 40px; flex-wrap: wrap; margin: 20px 0; }
+.story-metrics strong { display: block; font-size: 24px; }
+.story-technical { margin-top: 32px; }
+@media(max-width:700px) { .story-diff, .story-resources, .story-timeline { grid-template-columns: minmax(0,1fr); } .story-lead { font-size: 18px; } }

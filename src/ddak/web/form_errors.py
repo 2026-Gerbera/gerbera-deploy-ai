@@ -79,9 +79,12 @@ def error_data(exc: Exception, form: dict[str, str]) -> tuple[int, dict[str, Any
     else:
         status, code = 502, ErrorCode.INTERNAL.value
         message = "요청 처리에 실패했습니다. 연결 설정과 실행 상태를 확인하세요"
-    if code == ErrorCode.PRECONDITION_FAILED.value and message == (
-        "설정이 다른 화면에서 변경됐다. 새로고침하세요"
-    ):
+    if code == ErrorCode.PRECONDITION_FAILED.value and message in {
+        "설정이 다른 화면에서 변경됐다. 새로고침하세요",
+        "같은 설정이 다른 화면에서 변경됐다. 새로고침하세요",
+        "설정 기준 버전이 없다. 새로고침하세요",
+        "설정 기준 화면이 만료됐다. 새로고침하세요",
+    }:
         message = "다른 화면에서 설정이 바뀌었습니다. 새로고침 후 다시 저장하세요"
     for key in ("value", "token"):
         for value in (form.get(key, ""), form.get(key, "").strip()):

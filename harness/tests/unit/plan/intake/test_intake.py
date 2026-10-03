@@ -360,7 +360,7 @@ def test_f6_auth_no_retry(stderr: str, tmp_path: Path) -> None:
         fetch_repo("https://github.com/o/r", None, run_id="r", project="demo", policy=pol,
                    runner=runner, sleep=sleeps.append)  # fmt: skip
     assert code_of(e) is ErrorCode.ADAPTER_FAILED
-    assert "DDAK_GITHUB_TOKEN" in e.value.message and "존재하지 않는다" in e.value.message
+    assert "Git 머신 인증" in e.value.message and "존재하지 않는다" in e.value.message
     assert len(runner.calls) == 1 and sleeps == []
 
 
@@ -405,13 +405,16 @@ def test_f18_no_token_or_abs_path_in_message(tmp_path: Path) -> None:
 # ---- F17 --------------------------------------------------------------------------------------
 
 
-def test_f17_minimal_env_and_hardening(repo: Path, tmp_path: Path) -> None:
+def test_f17_machine_env_and_hardening(repo: Path, tmp_path: Path) -> None:
     spy = Spy()
     fetch(repo, tmp_path, runner=spy)
     for args, env in spy.calls:
-        assert set(env) == {"PATH", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM",
-                            "GIT_TERMINAL_PROMPT", "GIT_LFS_SKIP_SMUDGE"}  # fmt: skip
-        assert env["GIT_CONFIG_GLOBAL"] == os.devnull and env["GIT_TERMINAL_PROMPT"] == "0"
+        assert env.get("HOME") == os.environ.get("HOME")
+        assert env.get("GIT_CONFIG_GLOBAL") == os.environ.get("GIT_CONFIG_GLOBAL")
+        assert env["GIT_TERMINAL_PROMPT"] == "0"
+        assert env["GIT_ASKPASS"] == env["SSH_ASKPASS"] == "/usr/bin/false"
+        assert env["GCM_INTERACTIVE"] == "never" and env["GH_PROMPT_DISABLED"] == "1"
+        assert not any(k.startswith(("GIT_TRACE", "GCM_TRACE")) for k in env)
         assert f"core.hooksPath={os.devnull}" in args and "protocol.allow=never" in args
         assert "protocol.https.allow=always" in args
     assert "--no-recurse-submodules" in next(a for a, _ in spy.calls if "fetch" in a)

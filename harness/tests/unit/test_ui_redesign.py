@@ -115,8 +115,8 @@ def test_approval_onprem_scope_comes_from_plan(rig):
     )
     assert "승인하면 온프렘에 배포합니다. 클라우드는 바뀌지 않습니다." in html
     assert 'data-code="N/A"' in html
-    assert html.count('value="approved"') == 1
-    assert html.count('value="denied"') == 1
+    assert html.count('value="approved"') == 2
+    assert html.count('value="denied"') == 2
 
 
 def test_parallel_progress_events_and_confirmation():
@@ -162,8 +162,8 @@ def test_parallel_progress_events_and_confirmation():
     assert.ok(others['activity-title'].textContent.includes('확인 대기'));
     connection.onopen();
     assert.equal(progress.dataset.stream,'live');
-    assert.equal(others['local-activity'].textContent,'응답 확인');
-    assert.equal(others['cloud-activity'].textContent,'인프라 적용');
+    assert.equal(others['local-activity'].textContent,'응답 확인 중');
+    assert.equal(others['cloud-activity'].textContent,'인프라 적용 중');
     send('step.started',{seq:3,step:'deploy.was.local',target:'local'});
     assert.ok(cell('local','verify').classList.values.has('active')); // both remain active
     send('step.finished',{seq:4,step:'deploy.infra.cloud',
@@ -535,12 +535,12 @@ def test_approval_keeps_main_context_and_single_final_decision(review_ui, monkey
         ):
             assert text in html
         buttons = ReviewControls(html).named("decision")
-        assert len(buttons) == 2 and "disabled" in next(
+        assert len(buttons) == 4 and "disabled" in next(
             b for b in buttons if b["value"] == "approved"
         )
         review.update(state="sealed", selected=["retained"])
         html = client.get(f"/runs/{rid}/approval").text
-        assert html.count('value="approved"') == 1
+        assert html.count('value="approved"') == 2
         assert "disabled" not in next(
             b for b in ReviewControls(html).named("decision") if b["value"] == "approved"
         )

@@ -177,3 +177,32 @@ gitleaks git --redact --no-banner --report-format json \
 
 - 정준우가 push 전에 샌드박스 밖에서 전체 CI와 gitleaks를 실행한다.
 - 실제 AWS·VM·Docker·모델 연결을 사용하는 배포는 이번 로컬 fixture 검증과 별도로 확인한다.
+
+
+## 시연용 배포 이야기·결과 요약 — 2026-10-03
+
+- 기준 HEAD `6edd3a1058db1a925e96be687ea0158e4fcc83d1`에 origin/main `d01b7d4ea3b9776a7bd3a65c581706e40f1e6a35`(#33 first-run 포함)를 no-commit merge했다. `store.py`의 패치 검토와 감시 소스 중복 방지 메서드를 모두 보존했고 O1 기록은 양쪽 내용을 유지했다. 기본값·설정 병합·감시 이관·AWS 프로필·push 인증 출처 기록은 main 구현을 유지한다.
+- 승인: 요약 → 파일 변경·값을 가린 before/after → 탐지 위치·종류 → 환경별 키 대응 → 이미지·컨테이너·DB·인프라·권한 경계 → 실행 순서 → 최종 결과 순서다. 위·아래 두 버튼은 같은 폼 하나를 제출한다. 대상별 승인 해시, patch_lost 차단, #32 오류 박스, /ops 별칭 HTML 동일 조건을 보존한다.
+- 진행: 환경별 현재 작업 문장, 경과 시간, 움직이는 점, 기존 SSE를 사용한다. 작업별 이벤트는 접힌 기술 정보로 옮겼다. 결과: 단계별 기록, 커밋·digest 앞 12자리 before→after, 헬스·시나리오, 승인 대기를 포함한 총 경과 시간, 주소, 첫 실패 단계·다음 행동을 표시한다.
+- 표시 데이터는 기존 plan/facts/prepared/source_files/context/release/events만 사용한다. 파일 비교는 해시, 코드 표시는 리터럴·주석을 제거한 사본이다. 실행 패치와 해시는 바꾸지 않는다. 개발값·시크릿·주소 원문을 HTML에 넣지 않는다. 설정 대응표는 값 대신 출처만 표시하고 미확인 출처는 추측하지 않는다.
+- 결과 요약: 파이프라인의 post_report는 즉시 규칙 카드를 반환한다. run/release 봉인, 최종 이벤트, 잠금 해제 이후 등록 post_report를 별도 작업으로 다시 호출한다. 실제 생성은 verify/report/logic.py의 call_ai 한 경로다. JSON 필드는 conclusion·changes 2~3줄·checks·next_action. 허용 필드의 구조화 사실만 redact 후 보내며 원문 로그·diff·설정값은 제외한다. 출력 source=ai, 실패·20초 초과는 source=rule. 별도 report-summary.json만 쓰며 run/판정/승인/release는 수정하지 않는다. fake 어댑터는 실제 모델을 부르지 않는다.
+- 결과 화면은 pending일 때 요약 작성 중을 표시하고 3초 간격으로 요약 영역만 갱신한다. 준비되면 갱신을 멈춘다. 요약 소요 시간은 별도 elapsed_s로 기록한다. verify.report 단계의 규칙 카드 시간과 비동기 요약 시간을 혼동하지 않는다.
+- 추가형 계약: PostReportInput.facts, PostReportOutput.narrative, 기존 source 리터럴에 ai 추가. 기존 이름·값은 유지. `UV_NO_SYNC=1 PYTHONPATH=<wt>/src make -C harness contracts-update` 완료, 변경 스냅샷은 post_report 입·출력 2개다.
+
+### 검증
+
+- 관련 테스트: `test_deployment_story.py`, `verify/report/`, `test_ui_redesign.py`, `test_ui_integration_fix10.py`, `test_form_submit_js.py`, `test_patch_review_form_errors.py`, `test_first_run.py` — **116 passed, 14.76초**. 값 가림 표시 보완·템플릿 제목 정리 뒤 직접 관련 화면/보고/HTTP 흐름 **23 passed, 1.04초**, 마지막 요약 파일 중복 집계 정리 뒤 보고 테스트 **5 passed**.
+- 가짜 모델 정상 JSON, 예외/시간 초과 규칙 카드, run 완료를 기다리지 않는 pending, run/release 바이트 불변, 시크릿 원문·로그·diff 입력 제외를 확인했다. 화면의 HTML 원문에서도 시크릿·개발 주소 sentinel 없음. 실제 모델·AWS·VM·Docker 호출 없음.
+- app.js 기존 VM 시험(window 없는 실행, step당 data-phase 조회 1회), 중복 폼 제출 차단, /ops 승인 별칭 일치, CSRF·오류 재시도 회귀 통과. 변경 Python 파일의 ruff 검사 통과. 전체 CI·독립 검토·gitleaks는 실행하지 않았다.
+- 실제 템플릿을 fixture 데이터로 렌더링해 1440×1000 브라우저에서 확인했다. 세 화면 모두 scrollWidth=1440. 결과 pending→ready 자동 갱신 확인. 임시 탭과 viewport, 로컬 fixture 서버는 정상 종료로 정리했다.
+- 캡처:
+  - `harness/var/validation/ui-story-20261003/approval-1440.jpg`
+  - `harness/var/validation/ui-story-20261003/progress-1440.jpg`
+  - `harness/var/validation/ui-story-20261003/result-1440.jpg`
+- 로그·변경 파일 목록·캡처 생성 fixture·브라우저 관찰은 `harness/var/validation/ui-story-20261003/`에 있다. test_*.py 소스 사본은 만들지 않았다. 커밋·push·PR·태그·git config 변경은 하지 않았다. `.venv` 링크는 stage에서 제외한다.
+
+### 후속 작업
+
+- 정준우가 push 전 전체 CI·gitleaks를 실행하고 실제 인프라·모델 연결로 시연한다. 이 작업의 캡처와 모델 테스트는 fixture 근거다.
+- 현재 infra_summary는 일반 생성·변경 리소스 전체 이름을 저장하지 않는다. 화면은 기존 개수와 기록된 IAM·삭제·교체 이름만 표시하며 전체 이름 목록 보강은 후속 계약 작업이다.
+- 진행 격자에서 계획에 없는 인프라 단계도 이벤트 대기로 남을 수 있다. 계획 기준으로 생략 표시를 구분하는 작업은 후속으로 둔다.
