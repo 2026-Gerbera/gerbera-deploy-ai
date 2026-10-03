@@ -26,7 +26,7 @@ EXPECTED_DIFFS: Mapping[str, str] = {
     "app_env": "환경 이름(onprem/cloud)",
     "base_url": "환경별 공개 주소",
     "db.host": "환경별 DB 주소",
-    "db.tls": "DB TLS(온프렘은 평문 또는 검증 없는 TLS, 클라우드는 CA 검증 TLS)",
+    "db.tls": "DB TLS(온프레미스는 평문 또는 검증 없는 TLS, 클라우드는 CA 검증 TLS)",
     "db.tls_verified": "DB 인증서 검증 여부(클라우드만 필수)",
     "secure": "쿠키 Secure 속성(공개 주소 스킴을 따름)",
 }

@@ -105,7 +105,7 @@ class DemoReset:
                 )
             value = {
                 "environment": env,
-                "label": "온프렘" if env == "local" else "클라우드",
+                "label": "온프레미스" if env == "local" else "클라우드",
                 "url": url,
                 "version": "확인 불가",
                 "sha": "",

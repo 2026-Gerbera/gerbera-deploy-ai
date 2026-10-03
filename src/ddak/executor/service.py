@@ -356,7 +356,7 @@ class DeploymentService:
             tiers = inventory.get("tiers") if isinstance(inventory, Mapping) else None
             if not isinstance(tiers, Mapping) or not tiers:
                 raise DdakToolError(
-                    ErrorCode.CONFIG_INVALID, "실제 온프렘 배포 인벤토리가 필요하다"
+                    ErrorCode.CONFIG_INVALID, "실제 온프레미스 배포 인벤토리가 필요하다"
                 )
             needed = {s.tier for s in plan.deploy.local.steps if s.tool == "deploy_tier" and s.tier}
             needed |= {s.tier or "was" for s in plan.deploy.local.steps if s.tool == "prepare_db"}
@@ -364,7 +364,7 @@ class DeploymentService:
             if missing:
                 raise DdakToolError(
                     ErrorCode.CONFIG_INVALID,
-                    "온프렘 인벤토리 tier 누락: " + ", ".join(sorted(missing)),
+                    "온프레미스 인벤토리 tier 누락: " + ", ".join(sorted(missing)),
                 )
         if patch and (
             (patch_meta or {}).get("passed") is not True
@@ -391,14 +391,14 @@ class DeploymentService:
         ):
             raise DdakToolError(
                 ErrorCode.PLAN_INVALID,
-                "온프렘 MySQL은 cloud db 배포에 공유할 수 없다; 클라우드 DB 계획 연결 필요",
+                "온프레미스 MySQL은 cloud db 배포에 공유할 수 없다; 클라우드 DB 계획 연결 필요",
             )
         if database_deploy and any(
             s.tool == "build_image" and s.tier == "db" for s in plan.build.steps
         ):
             raise DdakToolError(
                 ErrorCode.PLAN_INVALID,
-                "온프렘 db는 공식 이미지 사용: O2 계획에서 build.db를 제외해야 한다",
+                "온프레미스 db는 공식 이미지 사용: O2 계획에서 build.db를 제외해야 한다",
             )
         if database_deploy and not (
             context.release_artifacts and "db" in context.release_artifacts.images

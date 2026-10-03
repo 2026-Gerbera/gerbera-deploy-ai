@@ -25,7 +25,7 @@
   .setup-feedback { margin-top: 12px; padding: 14px; border: 1px solid #ad4e28; background: #fff7ef; color: var(--ink); overflow-wrap: anywhere; }
   .setup-feedback[hidden] { display: none; }
 </style>
-<section class="page-heading"><div><p class="eyebrow">PROJECT SETUP</p><h1>초기 연결 설정</h1><p>AI, 온프렘 환경, 비밀값과 빌드 준비를 설정하고 실제 연결을 확인합니다.</p></div><a class="button secondary" href="/settings?project={{ project|urlencode }}">프로젝트 설정 →</a></section>
+<section class="page-heading"><div><p class="eyebrow">PROJECT SETUP</p><h1>초기 연결 설정</h1><p>AI, 온프레미스 환경, 비밀값과 빌드 준비를 설정하고 실제 연결을 확인합니다.</p></div><a class="button secondary" href="/settings?project={{ project|urlencode }}">프로젝트 설정 →</a></section>
 {% if transferred_watchers %}<div class="notice" role="status"><strong>자동 감시 주체 전환</strong><p>{{ transferred_watchers|join(', ') }}의 자동 감시를 끄고 {{ project }}에서 감시하도록 전환했습니다.</p></div>{% endif %}
 {% set settings = setup.settings %}
 {% set fixes = {'ai': '#setup-ai', 'inventory': '#setup-inventory', 'docker': '#setup-docker', 'build': '#setup-build', 'repository': '#setup-repository'} %}
@@ -82,7 +82,7 @@
 <form method="post" action="/setup/git-token-delete">{{ form_fields("setup-git-token-delete") }}{{ fields() }}<button class="button secondary" type="submit">토큰 삭제</button></form>{{ form_error("setup-git-token-delete") }}
 <p class="section-description">프로젝트 설정에서 저장소 URL을 먼저 저장하세요. 토큰은 다시 표시하지 않으며 저장소를 바꾸면 다시 등록해야 합니다. ai-prod·main·deployed/* 갱신 권한이 필요합니다.</p>
 </div></section>
-<section class="section form-section" id="setup-inventory"><div class="form-section-head"><div><h2>온프렘 인벤토리</h2><p>터미널 없이 공개 환경 설정 JSON을 편집합니다.</p></div></div><form class="form-body" method="post" action="/setup/inventory">{{ form_fields("setup-inventory") }}{{ fields() }}
+<section class="section form-section" id="setup-inventory"><div class="form-section-head"><div><h2>온프레미스 인벤토리</h2><p>터미널 없이 공개 환경 설정 JSON을 편집합니다.</p></div></div><form class="form-body" method="post" action="/setup/inventory">{{ form_fields("setup-inventory") }}{{ fields() }}
   <label><span>환경 설정 JSON</span><textarea class="setup-config" name="inventory" rows="18" required spellcheck="false">{% if 'inventory' in submitted %}{{ submitted.inventory }}{% else %}{{ (setup.inventory if setup.inventory is not none else {'mode': 'container', 'tiers': {}})|tojson(indent=2) }}{% endif %}</textarea>{{ source('inventory_path') }}</label>
   <p class="section-description">tiers에 web/was/db의 주소·포트·플랫폼을 설정하고 public_env에는 공개 설정만 넣으세요. VM은 ssh의 host, user, key_path, host_key_fingerprint가 필요합니다. key_path에는 기존 키 파일의 경로만 입력하며 개인키 본문이나 비밀번호를 넣지 마세요.</p>
   <button class="button secondary" type="submit">인벤토리 등록</button>
@@ -109,7 +109,7 @@
   <p class="section-description">설정 저장과 연결 검사는 이 준비 계획을 실행하지 않습니다. 계획이 바뀌면 새 내용을 확인하고 다시 승인해야 합니다.</p>
 </div></section>
 </div><aside class="settings-aside"><section class="section security-card"><h3>비밀값은 로컬에 보관</h3><p>키, 실행 환경 값과 Docker 토큰은 저장 후 표시하지 않습니다. 등록 여부와 실제 연결 상태는 따로 확인하세요.</p></section>
-<section class="section" id="setup-checks"><div class="section-header"><h2>실제 연결 검사</h2></div><div class="form-body">{% for kind, label in [('ai', '선택한 AI 역할'), ('inventory', '온프렘 환경'), ('repository', '앱 저장소 권한'), ('build', '빌드 도구'), ('docker', 'Docker Hub')] %}<form method="post" action="/setup/probe">{{ form_fields("setup-probe-" ~ kind) }}{{ fields() }}<input type="hidden" name="kind" value="{{ kind }}"><button class="button secondary full" type="submit">{{ label }} 검사</button></form>{{ form_error("setup-probe-" ~ kind) }}{% endfor %}</div></section>
+<section class="section" id="setup-checks"><div class="section-header"><h2>실제 연결 검사</h2></div><div class="form-body">{% for kind, label in [('ai', '선택한 AI 역할'), ('inventory', '온프레미스 환경'), ('repository', '앱 저장소 권한'), ('build', '빌드 도구'), ('docker', 'Docker Hub')] %}<form method="post" action="/setup/probe">{{ form_fields("setup-probe-" ~ kind) }}{{ fields() }}<input type="hidden" name="kind" value="{{ kind }}"><button class="button secondary full" type="submit">{{ label }} 검사</button></form>{{ form_error("setup-probe-" ~ kind) }}{% endfor %}</div></section>
 </aside></div>
 <script>
 document.querySelectorAll('select[data-role]').forEach(function (select) {
