@@ -23,7 +23,7 @@
   <main id="main">{% block content %}{% endblock %}
     {% set remaining_error = form_error_for(request) if form_error_for is defined and request.scope is defined else None %}{% if remaining_error %}{{ error_box(remaining_error) }}{% endif %}
   </main>
-  <template id="form-error-template">{{ error_box() }}</template>
+  <template id="form-error-template">{{ error_box(prototype=True) }}</template>
   <script src="/static/app.js?v=inline-errors-20261003" defer></script>
 </body>
 </html>
