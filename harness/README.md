@@ -8,6 +8,8 @@ SoftBank Hackathon 2026 Term1 팀 저장소입니다. 저장소 이름은 `gerbe
 
 > **현재 실행 위치는 저장소의 `harness/`입니다.** 구형 MCP 하네스는 삭제했습니다. 개발 기준은 [최신 개발자 문서](../single-app/dev-docs/README.md)와 [하네스 안내](docs/harness/README.md)입니다. 최신 결정은 [10/3 결정 따라잡기](docs/decisions/2026-10-03-decisions-catch-up.md)입니다.
 
+> **대회 배포 방식(10/3 14:35): 클라우드·온프렘 모두 rolling입니다.** 블루그린은 대회 뒤로 미루며 기존 코드는 휴면 상태로 보존합니다. [오전·14:20·14:35 결정 변경 이력](docs/decisions/2026-10-03-cloud-bluegreen.md)을 따릅니다.
+
 ## 어떻게 동작하나
 
 ```

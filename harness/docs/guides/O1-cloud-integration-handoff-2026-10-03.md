@@ -1,5 +1,7 @@
 # 클라우드 선별 통합 인계 — 2026-10-03
 
+> (10/3 14:35 결정으로 대체) 이 인계서의 블루그린 배포 방침은 10/4 대회에는 적용하지 않는다. 대회는 온프렘·클라우드 모두 롤링이며, 두 환경의 블루그린은 대회 뒤다.
+
 상태: **DONE** — 10/3 후속 지시 범위의 구현·검증·기록을 완료했다. 실제 AWS 배포와 새 main 재통합은 별도다.
 
 ## 위치와 기준
@@ -87,7 +89,7 @@
 - 수정 12: `src/ddak/core/registry.py`, `harness/contracts/schemas/tool_catalog.json`, `harness/docs/ai-usage/O1.md`.
 - registry에서 수정 12는 소유자 메타정보, 이번 작업은 timeout 두 값만 바꾼다. 결합 후 카탈로그는 다시 생성해야 한다. O1 기록은 서로의 append를 모두 보존한다.
 
-## C2·C3 후속 요청
+## C2·C3 후속 요청 (10/3 14:35 결정으로 대체)
 
 - C2: ServiceDeployment 단계로 완료 판정, 같은 이미지·env·secret의 중복 update 방지, 이월 tier 관측, 앱/마이그레이션 DB 계정과 secret 분리, provider 내부 plain/secret 주입, 단일 마이그레이션 태스크, StopServiceDeployment 우선 롤백 및 중복 롤백 방지.
 - C3: 현재 수입 프롬프트에는 rolling·TG 한 개가 남아 새 게이트와 맞지 않는다. TG 두 개, 운영 listener rule, action ignore_changes, BLUE_GREEN/bake 1, 고정 인프라 역할 ARN, app_database_url secret, 아래 TLS 정책과 최소 egress, `/aws/ecs/ddak-*` 로그 이름을 함께 맞춰야 한다. health는 가중치가 있는 운영 TG·신규 리비전·이월 digest를 읽도록 바꿔야 한다.
