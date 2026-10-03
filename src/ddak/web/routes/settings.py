@@ -3,7 +3,6 @@ from fastapi.responses import RedirectResponse
 
 from ddak.core.contracts.errors import DdakToolError
 from ddak.core.project_settings import ProjectSettings
-from ddak.core.redact import redact
 from ddak.web.dependencies import (
     deployment,
     project_settings,
@@ -12,10 +11,11 @@ from ddak.web.dependencies import (
     watch_warnings,
 )
 from ddak.web.domain import validate_domain_settings
+from ddak.web.form_errors import FormError, FormRoute
 from ddak.web.forms import parse_form
 from ddak.web.security import csrf_token, issue_csrf, require_safe_post
 
-router = APIRouter(prefix="/settings")
+router = APIRouter(prefix="/settings", route_class=FormRoute)
 
 
 @router.get("")
@@ -67,8 +67,10 @@ async def save_settings(request: Request):
             updated_by="local-operator",
             expected_version=expected,
         )
-    except (DdakToolError, ValueError) as exc:
-        raise HTTPException(status_code=400, detail=redact(str(exc))) from exc
+    except DdakToolError as exc:
+        raise FormError(exc, 400) from None
+    except ValueError:
+        raise HTTPException(status_code=400, detail="설정 입력 형식 오류") from None
     return RedirectResponse(f"/settings?project={project}&saved=1", status_code=303)
 
 
@@ -80,6 +82,8 @@ async def request_deploy(request: Request):
     project = selected_project(request, form.get("project", "").strip() or None)
     try:
         deployment(request).enqueue_deployment(project)
-    except (DdakToolError, ValueError) as exc:
-        raise HTTPException(status_code=409, detail=redact(str(exc))) from exc
+    except DdakToolError as exc:
+        raise FormError(exc, 409) from None
+    except ValueError:
+        raise HTTPException(status_code=409, detail="배포 요청 입력 형식 오류") from None
     return RedirectResponse(f"/?project={project}", status_code=303)

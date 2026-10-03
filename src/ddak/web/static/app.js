@@ -11,23 +11,103 @@
     cleanUrl.searchParams.delete("saved");
     window.history.replaceState({}, "", cleanUrl);
   }
-  document.querySelectorAll("[data-deploy-form]").forEach((form) => {
-    form.addEventListener("submit", () => {
-      const button = form.querySelector("button[type='submit']");
-      if (button) {
-        button.disabled = true;
-        button.setAttribute("aria-busy", "true");
-        button.textContent = "요청 중";
+  const pendingForms = new WeakSet();
+  const showFormError = (form, code, message) => {
+    let box = form.nextElementSibling;
+    if (!box?.matches("[data-form-error]")) {
+      box = document.getElementById("form-error-template").content.firstElementChild.cloneNode(true);
+      form.insertAdjacentElement("afterend", box);
+    }
+    box.classList.add("notice", "failure");
+    box.setAttribute("role", "alert");
+    box.querySelector("[data-error-code]").textContent = code;
+    box.querySelector("[data-error-message]").textContent = message;
+    box.hidden = false;
+  };
+  // 확인 전용 최소 VM도 지원하며 실제 POST 처리는 브라우저 API가 있을 때만 켠다.
+  const forms = hasWindow ? new Set([
+    ...document.querySelectorAll("form"),
+    ...document.querySelectorAll("[data-confirm], [data-approval-form]"),
+  ]) : [];
+  forms.forEach((form) => {
+    form.addEventListener("submit", async (event) => {
+      if (event.defaultPrevented) return;
+      if (pendingForms.has(form)) {
+        event.preventDefault();
+        return;
       }
-      const message = document.querySelector("[data-deploy-loading]");
-      if (message) message.hidden = false;
-    });
-  });
-  document.querySelectorAll("[data-confirm], [data-approval-form]").forEach((form) => {
-    form.addEventListener("submit", (event) => {
       const message = form.dataset.confirm || (event.submitter?.value === "denied"
         ? "이 배포를 거절할까요? 이 실행은 여기서 끝나고 서비스는 지금 버전을 유지합니다." : "");
-      if (message && hasWindow && !window.confirm(message)) event.preventDefault();
+      if (message && !window.confirm(message)) {
+        event.preventDefault();
+        return;
+      }
+      if (typeof window.fetch !== "function" || typeof window.FormData !== "function"
+        || typeof window.URLSearchParams !== "function" || typeof window.URL !== "function"
+        || form.method.toLowerCase() !== "post") return;
+      event.preventDefault();
+      pendingForms.add(form);
+      const buttons = Array.from(form.elements).filter((element) =>
+        ["submit", "image"].includes(element.type));
+      const buttonStates = buttons.map((button) => ({
+        button, disabled: button.disabled, busy: button.getAttribute("aria-busy"),
+      }));
+      const loading = form.hasAttribute("data-deploy-form")
+        ? document.querySelector("[data-deploy-loading]") : null;
+      const loadingHidden = loading?.hidden;
+      try {
+        const action = new window.URL(form.action, window.location.href);
+        if (action.origin !== window.location.origin) {
+          showFormError(form, "REQUEST_FAILED", "요청을 처리하지 못했습니다. 다시 시도해 주세요.");
+          return;
+        }
+        // 버튼을 잠그기 전에 직렬화하여 기존 필드와 클릭한 제출 버튼 값을 보존한다.
+        const body = new window.URLSearchParams(new window.FormData(form));
+        if (event.submitter?.name && !event.submitter.disabled) {
+          body.append(event.submitter.name, event.submitter.value);
+        }
+        buttons.forEach((button) => {
+          button.disabled = true;
+          button.setAttribute("aria-busy", "true");
+        });
+        if (loading) loading.hidden = false;
+        const box = form.nextElementSibling;
+        if (box?.matches("[data-form-error]")) box.hidden = true;
+        const response = await window.fetch(action.href, {
+          method: "POST", credentials: "same-origin",
+          headers: { "X-Ddak-Form": "1", "Accept": "text/html",
+            "Content-Type": "application/x-www-form-urlencoded" },
+          body,
+        });
+        if (!response.ok) {
+          let error;
+          try { error = (await response.json())?.error; } catch { /* 원문 응답은 표시하지 않는다. */ }
+          const valid = typeof error?.code === "string" && typeof error?.message === "string";
+          showFormError(form, valid ? error.code : "REQUEST_FAILED",
+            valid ? error.message : "요청을 처리하지 못했습니다. 다시 시도해 주세요.");
+          return;
+        }
+        if (response.redirected) {
+          const destination = new window.URL(response.url);
+          if (destination.origin !== window.location.origin) {
+            showFormError(form, "REQUEST_FAILED", "요청을 처리하지 못했습니다. 다시 시도해 주세요.");
+            return;
+          }
+          window.location.assign(destination.href);
+        } else {
+          window.location.reload();
+        }
+      } catch {
+        showFormError(form, "REQUEST_FAILED", "요청을 처리하지 못했습니다. 다시 시도해 주세요.");
+      } finally {
+        buttonStates.forEach(({ button, disabled, busy }) => {
+          button.disabled = disabled;
+          if (busy === null) button.removeAttribute("aria-busy");
+          else button.setAttribute("aria-busy", busy);
+        });
+        if (loading) loading.hidden = loadingHidden;
+        pendingForms.delete(form);
+      }
     });
   });
   const targetSelect = document.querySelector("select[name='default_targets']");

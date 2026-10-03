@@ -1,3 +1,4 @@
+{% from "_form_errors.html" import form_fields, form_error with context %}
 {% extends 'base.html' %}
 {% from '_status.html' import state, target, step_label %}
 {% block title %}배포 승인 · Gerbera{% endblock %}
@@ -60,9 +61,9 @@
 {% if approval.source_checks %}<section class="section"><h2>소스 검사</h2><p>예외로 허용한 항목 {{ approval.source_checks.ignored_count }}건</p><ul>{% for finding in approval.source_checks.findings %}<li>{{ '코드에 비밀값이 직접 적혀 있음' if finding.rule == 'hardcoded_secret' else finding.rule }} · {{ finding.path }} · {{ finding.count }}건</li>{% endfor %}</ul></section>{% endif %}
 <details><summary>실행 단계 보기</summary>{% if approval.plan %}<div class="table-wrap"><table><thead><tr><th scope="col">단계</th><th scope="col">환경</th><th scope="col">단계 ID</th><th scope="col">툴</th></tr></thead><tbody>{% for section in (approval.plan.build, approval.plan.deploy.local, approval.plan.deploy.cloud, approval.plan.verify) %}{% for step in section.steps %}<tr><td data-label="단계">{{ step_label(step.id) }}</td><td data-label="환경">{{ target(step.target or 'common') }}</td><td data-label="ID"><code>{{ step.id }}</code></td><td data-label="툴"><code>{{ step.tool }}</code></td></tr>{% endfor %}{% endfor %}</tbody></table></div>{% else %}<p>과거 실행의 계획 상세 기록이 없습니다.</p>{% endif %}</details>
 <details><summary>기술 정보</summary><dl class="detail-list"><div><dt>전체 커밋 SHA</dt><dd><code>{{ approval.source_sha or '기록 없음' }}</code></dd></div><div><dt>실행 ID</dt><dd><code>{{ approval.run_id }}</code></dd></div>{% for kind,digest in approval.subjects.items() %}<div><dt>{{ {'deploy':'배포 계획','infra':'인프라 변경','patch':'코드 수정'}.get(kind,kind) }} 승인 해시</dt><dd><code>{{ digest }}</code></dd></div>{% endfor %}</dl><p class="note">승인 해시는 실행 전에 코드가 다시 검증합니다.</p>{% if approval.patch_meta %}<h3>패치 메타</h3><pre>{{ approval.patch_meta|tojson(indent=2) }}</pre>{% endif %}{% if approval.infra_summary %}<h3>인프라 변경 원문</h3><pre>{{ approval.infra_summary|tojson(indent=2) }}</pre>{% endif %}{% if approval.source_checks %}<h3>소스 검사 원문</h3><pre>{{ approval.source_checks|tojson(indent=2) }}</pre>{% endif %}</details>
-<form class="approval-bar" method="post" action="/runs/{{ approval.run_id }}/approval" data-approval-form>
+<form class="approval-bar" method="post" action="/runs/{{ approval.run_id }}/approval" data-approval-form>{{ form_fields("approval") }}
   <div><h2>이 변경을 배포할까요?</h2><p>{% if local and cloud %}승인하면 온프렘과 클라우드에 각각 배포합니다.{% elif local %}승인하면 온프렘에 배포합니다. 클라우드는 바뀌지 않습니다.{% elif cloud %}승인하면 클라우드에 배포합니다. 온프렘은 바뀌지 않습니다.{% else %}승인하면 기록된 실행 계획을 시작합니다.{% endif %}{% if approval.infra_summary %} 인프라 변경도 함께 적용합니다.{% endif %}</p></div>
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="project" value="{{ project }}">
   <div class="heading-actions"><button class="button danger" name="decision" value="denied" type="submit">거절</button><button class="button" name="decision" value="approved" type="submit">승인하고 배포</button></div>
-</form>
+</form>{{ form_error("approval") }}
 {% endblock %}

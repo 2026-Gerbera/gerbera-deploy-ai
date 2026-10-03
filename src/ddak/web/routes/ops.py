@@ -3,14 +3,13 @@
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 
-from ddak.core.contracts.errors import DdakToolError
-from ddak.core.redact import redact
 from ddak.web.dependencies import deployment, run_link, selected_project, templates, watch_warnings
+from ddak.web.form_errors import FormRoute
 from ddak.web.forms import parse_form
 from ddak.web.routes.approvals import approval_page as canonical_approval_page
 from ddak.web.security import csrf_token, issue_csrf, require_safe_post
 
-router = APIRouter(prefix="/ops")
+router = APIRouter(prefix="/ops", route_class=FormRoute)
 
 
 def _render(request: Request, name: str, context: dict):
@@ -100,7 +99,5 @@ async def operate(request: Request, action: str):
             )
             return RedirectResponse(f"/ops?project={project}", status_code=303)
         raise HTTPException(404, "지원하지 않는 운영 요청")
-    except DdakToolError as exc:
-        raise HTTPException(409, redact(exc.message)) from exc
     except (ValueError, KeyError):
         raise HTTPException(400, "운영 입력 형식 오류") from None
