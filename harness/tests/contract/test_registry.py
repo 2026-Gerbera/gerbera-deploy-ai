@@ -23,6 +23,7 @@ AI_TOOLS = {
     "post_report",
     "generate_infra",  # AI Terraform 초안(✅ 장부 21). 제안만, apply는 apply_infra(코드)
     "generate_dockerfile",  # AI Dockerfile 초안(✅ 9/30, Dockerfile이 없을 때만). 검사는 코드
+    "answer_code_question",  # 운영용 코드 질문(40개 밖, step 아님). 답만 만든다
 }
 DESTRUCTIVE = {
     "apply_infra",
@@ -137,8 +138,15 @@ def test_module_values_are_package_paths() -> None:
 
 
 def test_ai_tools_snapshot() -> None:
-    # 채팅 의도 JSON을 AI 툴로 등록하면 10개가 된다(이름·위치 결정 필요). 그때 같은 PR에서 고친다.
+    # 채팅 의도 JSON을 AI 툴로 등록하면 11개가 된다(이름·위치 결정 필요). 그때 같은 PR에서 고친다.
     assert ai_tools() == AI_TOOLS
+
+
+def test_code_question_is_read_only_ops_tool_outside_plan() -> None:
+    spec = spec_for("answer_code_question")
+    assert spec.uses_ai and spec.read_only and not spec.destructive
+    assert spec.module is Module.PLAN and spec.stage is Stage.OPS and spec.layer is Layer.OUTSIDE
+    assert not spec.canonical and not spec.requires_lock and not spec.requires_approval
 
 
 def test_execution_path_has_no_ai() -> None:

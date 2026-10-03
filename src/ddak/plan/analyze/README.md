@@ -8,3 +8,4 @@
 
 - 스모크 그룹은 현재 배포 소스의 선언 tier 템플릿 표식으로 정한다. v2 표식이 사라진 v1 재배포는 추가 그룹이 빈 tuple이다. AI가 그룹을 정하지 않는다.
 - wrapper 추론은 같은 파일의 top-level 함수가 매개변수를 `environ[]`, `environ.get`, `getenv`로 읽고, 그 함수 호출에서 해당 인자에 문자열 literal을 주는 경우만 지원한다. os/from os 별칭과 positional/keyword 인자를 지원한다. 동적 이름·외부 모듈 wrapper·간접 wrapper chain은 추측하지 않는다. AI 질문에는 값 없는 정규화 사용 형태만 들어간다.
+- `code_question.py`: 운영용 코드 질문 `answer_code_question`(40개 밖, step 카탈로그에 없음, 읽기 전용). 고른 파일(코어 `ddak.core.code_context`가 비밀 경로 제외·redact·60KB 상한으로 선택)을 `call_ai` 데이터로만 넘긴다. 프로젝트 AI 설정은 조립부가 `code_question_session`으로 주입한다. 근거 경로는 넣은 파일 경로만 인정한다.

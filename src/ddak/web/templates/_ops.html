@@ -7,6 +7,7 @@
   <h2>직접 배포 준비</h2><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="project" value="{{ project }}">
   <label>브랜치 또는 버전 태그<input name="ref" placeholder="비우면 배포 브랜치의 최신 커밋"><small>버전 태그는 v로 시작합니다.</small></label><button class="button secondary" type="submit">지금 배포 준비</button>
 </form>{{ form_error("plan") }}</div>
+{% include '_code_qa.html' %}
 {% endif %}
 {% if ops_part is not defined or ops_part == "unlock" %}
 <div><form method="post" action="/ops/unlock" data-confirm="배포 잠금을 풀까요? 서버와 DB의 실제 상태를 확인한 경우에만 진행하세요.">{{ form_fields("unlock") }}

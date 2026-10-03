@@ -1,0 +1,14 @@
+{# 코드 질문(읽기 전용). '지금 배포 준비' 옆 버튼과 그 아래 입력칸. 배치·제출은 /static/code_qa.js.
+   질문·토큰 입력에는 name을 두지 않는다(스크립트가 꺼져 있어도 주소창에 실리지 않게). #}
+<div data-code-qa data-url="/code-qa/ask" data-project="{{ project }}" data-csrf="{{ csrf_token }}">
+  <button class="button secondary" type="button" style="margin-left:var(--s2)" data-code-qa-toggle aria-expanded="false" aria-controls="code-qa-panel">질문</button>
+  <div id="code-qa-panel" data-code-qa-panel hidden>
+    <form data-code-qa-form>
+      <label>코드 질문<textarea data-code-qa-input rows="3" maxlength="2000" required placeholder="예: 게시글 저장은 어느 파일에서 하나요?"></textarea>
+        <small>{{ settings.watch_branch or 'prod' }} 브랜치 최신 커밋의 소스를 읽고 답합니다. 배포·코드 수정은 하지 않습니다. Ctrl/⌘+Enter로 보냅니다.</small></label>
+      <button class="button secondary" type="submit" data-code-qa-submit>질문 보내기</button>
+    </form>
+    <div data-code-qa-answer aria-live="polite" hidden></div>
+  </div>
+  <script src="/static/code_qa.js" defer></script>
+</div>

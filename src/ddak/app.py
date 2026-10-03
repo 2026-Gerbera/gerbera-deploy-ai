@@ -1156,6 +1156,23 @@ def _demo_reset_service(service, settings):
     )
 
 
+def _code_question_service(service, settings):
+    """대시보드 코드 질문. 소스 읽기는 코어, AI 답은 등록 툴 answer_code_question이 만든다."""
+    from ddak.core.code_question import CodeQuestion
+    from ddak.core.contracts.tools.answer_code_question import AnswerCodeQuestionOutput
+    from ddak.core.registry import CODE_QUESTION
+    from ddak.plan.analyze import CodeQuestionSession, code_question_session
+
+    def answer(inp, ctx, effective):
+        registered = service.registry.get(CODE_QUESTION)
+        session = CodeQuestionSession(ctx.run_id, effective)
+        with code_question_session(session), tool_context(CODE_QUESTION, ctx.run_id):
+            output = registered.fn(inp, ctx)
+        return AnswerCodeQuestionOutput.model_validate(output)
+
+    return CodeQuestion(service, settings, answer=answer)
+
+
 def create(
     *, cli_host: str | None = None, onprem_profile: bool = False, settings: Settings | None = None
 ) -> FastAPI:
@@ -1179,6 +1196,7 @@ def create(
         service.onboarding = _setup_service(service, settings, cli_host)
         service.setup_actions = _setup_actions(service, settings)
         service.demo_reset = _demo_reset_service(service, settings)
+        service.code_question = _code_question_service(service, settings)
         if onprem_profile:
             _configure_onprem(service)
         return service
