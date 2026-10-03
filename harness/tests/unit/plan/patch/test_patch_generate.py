@@ -113,6 +113,57 @@ def test_no_targets_means_no_patch_and_no_ai_call(tmp_path: Path) -> None:
     assert out.status == "no_targets" and out.patch is None and out.attempts == 0
 
 
+def test_lines_that_already_read_env_are_not_targets(tmp_path: Path) -> None:
+    # 샘플 앱 prod(04d779d 이후)의 ProxyFix·설정 줄: 이미 환경변수로 읽으니 AI를 부르지 않는다
+    (tmp_path / "config.py").write_text(
+        'X = {"PROXY_FIX_X_FOR": env_int("PROXY_FIX_X_FOR", 0)}\n'
+        'Y = os.environ.get("SECRET_KEY")\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "app.py").write_text(
+        'x_for, x_proto = app.config["PROXY_FIX_X_FOR"], app.config["PROXY_FIX_X_PROTO"]\n'
+        "app.wsgi_app = ProxyFix(app.wsgi_app, x_for=x_for, x_proto=x_proto)\n",
+        encoding="utf-8",
+    )
+    assert find_targets(tmp_path) == {}
+    out = propose(tmp_path, FakeProvider())
+    assert out.status == "no_targets" and out.attempts == 0
+
+
+def test_hardcoded_numbers_and_strings_are_targets(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text(
+        "app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)\n"
+        'URL = f"http://localhost:{PORT}"\n',
+        encoding="utf-8",
+    )
+    assert find_targets(tmp_path) == {"app.py": ["local_address", "proxy_fix"]}
+
+
+def test_db_address_with_password_is_covered_by_patch_config(tmp_path: Path) -> None:
+    # patch_db_access 흡수: 코드에 박힌 DB 접속 주소도 local_address 대상이다.
+    # 비밀번호는 AI에 가려진다
+    fake_pw = "fake-" + "db-" + "pw-123"
+    original = f'DB_URL = "mysql+pymysql://app:{fake_pw}@localhost:3306/flaskr"\n'
+    (tmp_path / "db.py").write_text(original, encoding="utf-8")
+    assert find_targets(tmp_path) == {"db.py": ["local_address"]}
+    edits = [
+        {"path": "db.py", "start": 1, "end": 0, "lines": ["import os", ""]},
+        {"path": "db.py", "start": 1, "end": 1, "lines": ['DB_URL = os.environ["DATABASE_URL"]']},
+    ]
+    provider = FakeProvider(reply(edits, ["DATABASE_URL"]))
+    out = propose(tmp_path, provider)
+    assert fake_pw not in provider.seen[0].user and "[REDACTED]" in provider.seen[0].user
+    assert out.status == "proposed" and out.env_vars == ["DATABASE_URL"]
+    assert out.patch is not None and fake_pw in out.patch.decode()  # 지운 줄에만 있다
+    assert all(fake_pw not in line for line in out.patch.decode().splitlines() if line[:1] == "+")
+
+
+def test_ai_may_answer_that_nothing_needs_fixing(source: Path) -> None:
+    empty = json.dumps({"edits": [], "reason": "고칠 줄이 없다", "env_vars": []})
+    out = propose(source, FakeProvider(empty))
+    assert out.status == "no_targets" and out.patch is None and out.attempts == 1
+
+
 def test_ai_edits_become_a_checked_patch_for_the_executor(source: Path) -> None:
     provider = FakeProvider(
         reply(GOOD_EDITS, ["SECRET_KEY", "APP_BASE_URL", "lower", "UNUSED_KEY"])

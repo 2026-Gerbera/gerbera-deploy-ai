@@ -25,7 +25,7 @@ from ddak.verify.smoke.fake import FakeFlaskr, FakeSmokeAdapter
 from ddak.verify.smoke.logic import Response, run_smoke
 
 RUN = "run-smoke-1"
-BASE_IDS = ["S0.version", "S0.ready", "B1", "B2.create", "B2.empty"]
+BASE_IDS = ["S0.version", "S0.ready", "B1", "B2.create", "B2.empty", "B2.long"]
 # 결과에 나오면 안 되는 값. 비밀값 스캐너에 걸리지 않게 이어 붙여 만든다(AGENTS 4절)
 COOKIE_VALUE = "not-a-real-" + "cookie-value"
 
@@ -186,6 +186,9 @@ class _App(BaseHTTPRequestHandler):
         title = (form.get("title") or [""])[0]
         if not title:
             self._send(200, "<div>Title is required.</div>")
+            return
+        if len(title) > 200:
+            self._send(200, "<div>Title is too long.</div>")
             return
         type(self).titles.append(title)
         self._send(302, "", {"Location": "http://127.0.0.1/"})
@@ -437,3 +440,73 @@ def test_v2_box_needs_the_image_inside_the_box() -> None:
     v2 = _run_groups(NoImage(RUN), ["v2"]).scenarios[0]
     assert v2.ok is False
     assert v2.normalized == {"status": 200, "box": True, "image": False}
+
+
+# ---- S13 대체(긴 제목)·정규화 화면 지문 -------------------------------------------
+
+
+def test_long_title_without_app_validation_fails() -> None:
+    class NoLengthCheck(FakeFlaskr):
+        def request(
+            self, method: str, path: str, form: Mapping[str, str] | None, timeout: float
+        ) -> Response:
+            if method == "POST" and len((form or {}).get("title", "")) > 200:
+                return Response(302, (("Location", "/"),), "")  # 비엄격 DB에 잘린 채 저장
+            return super().request(method, path, form, timeout)
+
+    long = next(s for s in _run_groups(NoLengthCheck(RUN), ["base"]).scenarios if s.id == "B2.long")
+    assert long.ok is False
+    assert long.normalized == {"status": 302, "error_shown": False}
+
+
+class _EnvFlaskr(FakeFlaskr):
+    """환경별로 주소·날짜·글 id·기존 글이 다른 v1 화면."""
+
+    def __init__(self, run_id: str, origin: str, day: str, others: int) -> None:
+        super().__init__(run_id)
+        self._origin, self._day, self._others = origin, day, others
+
+    def request(
+        self, method: str, path: str, form: Mapping[str, str] | None, timeout: float
+    ) -> Response:
+        resp = super().request(method, path, form, timeout)
+        if method != "GET" or path != "/" or resp.status != 200:
+            return resp
+        head = (
+            f'<link rel="canonical" href="{self._origin}/"><nav><a href="/">Flaskr</a></nav>'
+            f'<header><h1>Posts</h1><a href="{self._origin}/create">New</a></header>'
+        )
+        posts = "".join(
+            f'<article class="post"><h1>{t}</h1><div class="about">on {self._day}</div>'
+            f'<a href="/{n + 7}/update">Edit</a></article><hr>'
+            for n, t in enumerate([*reversed(self._titles), *["old"] * self._others])
+        )
+        return Response(200, resp.headers, head + posts)
+
+
+def _create(out: SmokeTestOutput) -> Mapping[str, object]:
+    return next(s for s in out.scenarios if s.id == "B2.create").normalized
+
+
+def test_page_fingerprints_ignore_origin_date_id_and_other_posts() -> None:
+    local = _create(
+        _run_groups(_EnvFlaskr(RUN, "http://localhost:8080", "2026-10-03", 40), ["base"])
+    )
+    cloud = _create(_run_groups(_EnvFlaskr(RUN, "https://app.example", "2026-10-04", 0), ["base"]))
+    assert str(local["page.head"]).startswith("sha256:")
+    assert local["page.head"] == cloud["page.head"]
+    assert local["page.post"] == cloud["page.post"] is not None
+
+
+def test_page_fingerprint_catches_template_difference() -> None:
+    class OtherTemplate(_EnvFlaskr):
+        def request(
+            self, method: str, path: str, form: Mapping[str, str] | None, timeout: float
+        ) -> Response:
+            resp = super().request(method, path, form, timeout)
+            return Response(resp.status, resp.headers, resp.body.replace("New", "Write"))
+
+    a = _create(_run_groups(_EnvFlaskr(RUN, "http://a", "2026-10-03", 1), ["base"]))
+    b = _create(_run_groups(OtherTemplate(RUN, "http://a", "2026-10-03", 1), ["base"]))
+    assert a["page.head"] != b["page.head"]
+    assert a["page.post"] == b["page.post"]

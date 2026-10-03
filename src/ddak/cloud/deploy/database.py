@@ -7,10 +7,11 @@ AI import 금지.
 Terraform 출력 이름이 정해지면 run_migrations가 ctx에서 읽어 부른다(💭 확정 필요).
 
 - 태스크 정의는 새 WAS 이미지를 쓰는 리비전(ecs.register_revision)이다. 서비스 교체 전에 돈다.
-- 단계마다 태스크 하나: python -m flaskr.migrate {precheck,up,verify} --json.
-  command override만 쓴다(WAS 이미지에 ENTRYPOINT가 없다는 전제, 💭 샘플 앱 Dockerfile과 확인).
-- 결과는 컨테이너 로그(awslogs)의 `MIGRATE_RESULT <JSON>` 한 줄. 로그 그룹·스트림은 태스크 정의의
-  logConfiguration에서 읽는다. 다른 로그 줄은 결과·오류에 싣지 않는다.
+- 태스크 하나에서 precheck → up → verify를 차례로 돈다(`sh -c "… && … && …"`, 고정 문자열).
+  Fargate 기동이 1회라 prepare_db 제한 시간(180초) 안에 들어간다. 한 단계가 실패하면(exit 1) 멈춘다.
+  command override만 쓴다(WAS 이미지에 ENTRYPOINT가 없다. 앱 저장소 docker/was.Dockerfile 확인).
+- 결과는 컨테이너 로그(awslogs)의 `MIGRATE_RESULT <JSON>` 줄(단계마다 한 줄, 순서대로). 로그
+  그룹·스트림은 태스크 정의의 logConfiguration에서 읽는다. 다른 로그 줄은 결과·오류에 싣지 않는다.
 - 결과 필드는 온프렘(onprem/deploy/migrate.py)과 같은 C-09 후보. 툴 디렉토리끼리 import할 수
   없어서 모델을 여기 따로 둔다. 바꿀 때 양쪽을 같이 고친다.
 - 시간 초과면 태스크를 멈추고 ADAPTER_TIMEOUT(적용 여부 불확실).
@@ -31,6 +32,7 @@ from ddak.cloud.deploy._aws import call
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 
 PHASES = ("precheck", "up", "verify")
+_COMMAND = ["sh", "-c", " && ".join(f"python -m flaskr.migrate {p} --json" for p in PHASES)]
 _MIGRATION = r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$"
 _PREFIX = "MIGRATE_RESULT "
 _MAX_LOG_PAGES = 20
@@ -94,7 +96,7 @@ def run_migration_phases(
     migrations: Sequence[str],
     deadline: float,
     *,
-    poll_s: float = 5.0,
+    poll_s: float = 2.0,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
@@ -102,14 +104,19 @@ def run_migration_phases(
     if any(not re.fullmatch(_MIGRATION, m) for m in migrations):
         raise DdakToolError(ErrorCode.CONFIG_INVALID, "마이그레이션 ID 오류")
     group, prefix = _log_target(ecs, task)
+    task_id = _run(ecs, task)
+    failure = _wait_stopped(ecs, task, task_id, deadline, poll_s=poll_s, clock=clock, sleep=sleep)
+    stream = f"{prefix}/{task.container}/{task_id}"
+    if failure is not None:
+        done = _results_so_far(logs, group, stream)
+        raise DdakToolError(
+            ErrorCode.ADAPTER_FAILED, f"마이그레이션 프로세스 실패({failure}; {done})"
+        )
+    results = _read_results(logs, group, stream, deadline, clock=clock, sleep=sleep)
     phases: list[dict[str, Any]] = []
-    for phase in PHASES:
-        task_id = _run(ecs, task, phase)
-        _wait_stopped(ecs, task, task_id, deadline, poll_s=poll_s, clock=clock, sleep=sleep)
-        stream = f"{prefix}/{task.container}/{task_id}"
-        result = _read_result(logs, group, stream, deadline, clock=clock, sleep=sleep)
+    for phase, result in zip(PHASES, results, strict=True):
         if result.phase != phase or not result.ok:
-            raise DdakToolError(ErrorCode.ADAPTER_FAILED, "마이그레이션 단계 실패")
+            raise DdakToolError(ErrorCode.ADAPTER_FAILED, f"마이그레이션 단계 실패: {phase}")
         if phase == "verify" and (
             result.current != result.expected or (migrations and result.expected != migrations[-1])
         ):
@@ -138,7 +145,7 @@ def _log_target(ecs: EcsTaskClient, task: MigrationTask) -> tuple[str, str]:
     return group, prefix
 
 
-def _run(ecs: EcsTaskClient, task: MigrationTask, phase: str) -> str:
+def _run(ecs: EcsTaskClient, task: MigrationTask) -> str:
     response = call(
         "마이그레이션 태스크를 시작하지 못했다",
         lambda: ecs.run_task(
@@ -158,7 +165,7 @@ def _run(ecs: EcsTaskClient, task: MigrationTask, phase: str) -> str:
                 "containerOverrides": [
                     {
                         "name": task.container,
-                        "command": ["python", "-m", "flaskr.migrate", phase, "--json"],
+                        "command": list(_COMMAND),
                     }
                 ]
             },
@@ -179,7 +186,8 @@ def _wait_stopped(
     poll_s: float,
     clock: Callable[[], float],
     sleep: Callable[[float], None],
-) -> None:
+) -> str | None:
+    """멈출 때까지 기다린다. 정상 종료면 None, 아니면 중지 사유(식별자 가림)."""
     while True:
         tasks = (
             call(
@@ -195,8 +203,9 @@ def _wait_stopped(
                 c for c in tasks[0].get("containers") or [] if c.get("name") == task.container
             ]
             if len(containers) != 1 or containers[0].get("exitCode") != 0:
-                raise DdakToolError(ErrorCode.ADAPTER_FAILED, "마이그레이션 프로세스 실패")
-            return
+                # 컨테이너가 못 떴으면(시크릿·이미지 pull 실패 등) exitCode가 없고 사유만 있다
+                return _stopped_reason(tasks[0], containers)
+            return None
         remaining = deadline - clock()
         if remaining <= 0:
             with contextlib.suppress(Exception):  # 멈추기 실패해도 시간 초과가 우선이다
@@ -205,7 +214,37 @@ def _wait_stopped(
         sleep(min(poll_s, remaining))
 
 
-def _read_result(
+_ARN = re.compile(r"arn:aws[a-zA-Z-]*:[^\s,;)]+")
+_ACCOUNT = re.compile(r"\b\d{12}\b")
+
+
+def _stopped_reason(task: dict[str, Any], containers: list[dict[str, Any]]) -> str:
+    exit_code = containers[0].get("exitCode") if len(containers) == 1 else None
+    reason = str(task.get("stoppedReason") or "")
+    if len(containers) == 1 and containers[0].get("reason"):
+        reason += " / " + str(containers[0]["reason"])
+    reason = _ACCOUNT.sub("<계정>", _ARN.sub("<ARN>", reason))[:300]
+    return f"exit={exit_code}, 사유={reason or '없음'}"
+
+
+def _results_so_far(logs: LogsClient, group: str, stream: str) -> str:
+    """실패 직후 남은 단계 결과 요약. 단계·ok·버전만 싣는다(다른 로그 줄은 싣지 않는다)."""
+    try:
+        lines = [m[len(_PREFIX) :] for m in _messages(logs, group, stream) if m.startswith(_PREFIX)]
+    except DdakToolError:
+        return "결과 로그 없음"
+    parts = []
+    for line in lines[: len(PHASES)]:
+        try:
+            r = _MigrationResult.model_validate_json(line)
+        except ValidationError:
+            parts.append("형식 오류")
+            continue
+        parts.append(f"{r.phase} ok={r.ok} current={r.current} expected={r.expected}")
+    return ", ".join(parts) or "결과 줄 없음"
+
+
+def _read_results(
     logs: LogsClient,
     group: str,
     stream: str,
@@ -213,19 +252,19 @@ def _read_result(
     *,
     clock: Callable[[], float],
     sleep: Callable[[float], None],
-) -> _MigrationResult:
-    """로그에서 MIGRATE_RESULT 한 줄을 찾는다. 태스크가 끝난 직후엔 로그가 늦게 올 수 있다."""
+) -> list[_MigrationResult]:
+    """로그에서 단계별 MIGRATE_RESULT 줄을 모두 찾는다(태스크 종료 직후엔 로그가 늦을 수 있다)."""
     while True:
         lines = [
             line[len(_PREFIX) :]
             for line in _messages(logs, group, stream)
             if line.startswith(_PREFIX)
         ]
-        if len(lines) > 1:
+        if len(lines) > len(PHASES):
             raise DdakToolError(ErrorCode.ADAPTER_FAILED, "MIGRATE_RESULT 중복")
-        if lines:
+        if len(lines) == len(PHASES):
             try:
-                return _MigrationResult.model_validate_json(lines[0])
+                return [_MigrationResult.model_validate_json(line) for line in lines]
             except ValidationError:
                 raise DdakToolError(ErrorCode.ADAPTER_FAILED, "MIGRATE_RESULT 형식 오류") from None
         remaining = deadline - clock()

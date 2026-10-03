@@ -6,7 +6,8 @@ AI import 금지.
 - 앱 시크릿은 키마다 하나다. Terraform 앱 출력 `app_secret_arn_<KEY>`(core/contracts/infra_outputs,
   PR #8 기준)가 그 ARN이다. ECS는 valueFrom `<ARN>`으로 값 전체를 읽는다.
 - 내부 API(fill_secrets)는 {키: 시크릿 ARN}을 인자로 받는다. ctx 연결은 put_secret_values가 한다.
-- 온프렘 inject_config와 같은 규칙: SECRET_KEY만 코드가 만든다(token_hex(32), 있으면 재사용).
+- 온프렘 inject_config와 같은 규칙: SECRET_KEY는 코드가 만든다(token_hex(32), 있으면 재사용).
+  호출자가 generated_values로 만든 값을 준 키(예: DATABASE_URL)도 비어 있을 때만 쓴다.
   다른 키는 운영자가 미리 넣은 값(AWSCURRENT)이 있어야 한다. 없으면 아무것도 쓰지 않고 실패한다.
 - 운영자 키는 값을 읽지 않고 버전 존재만 본다. SECRET_KEY만 형식 확인을 위해 읽는다.
 - 값은 반환·로그·오류 메시지에 넣지 않는다. 결과는 키 이름만.
@@ -49,8 +50,12 @@ def fill_secrets(
     secret_ids: Mapping[str, str],
     *,
     token: Callable[[], str] = lambda: secrets.token_hex(32),
+    generated_values: Mapping[str, str] | None = None,
 ) -> SecretFilled:
-    """keys마다 시크릿에 현재 값이 있게 한다. 새로 만들 것은 SECRET_KEY뿐이다."""
+    """keys마다 시크릿에 현재 값이 있게 한다. 코드가 만드는 값은 SECRET_KEY와 generated_values다."""
+    made = dict(generated_values or {})
+    if GENERATED in made or any(not isinstance(v, str) or not v for v in made.values()):
+        raise DdakToolError(ErrorCode.CONFIG_INVALID, "생성 값 형식 오류")
     if not keys:
         raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "채울 키가 없다")
     if len(set(keys)) != len(keys) or any(not _KEY.fullmatch(k) for k in keys):
@@ -64,7 +69,7 @@ def fill_secrets(
 
     # 먼저 전부 확인하고, 운영자 키가 하나라도 비었으면 아무것도 쓰지 않는다.
     has_value = {k: _has_current(client, secret_ids[k]) for k in keys}
-    missing = [k for k in keys if k != GENERATED and not has_value[k]]
+    missing = [k for k in keys if k != GENERATED and k not in made and not has_value[k]]
     if missing:
         raise DdakToolError(
             ErrorCode.PRECONDITION_FAILED,
@@ -88,6 +93,17 @@ def fill_secrets(
                 lambda: client.put_secret_value(SecretId=secret_id, SecretString=value),
             )
             generated.append(GENERATED)
+    for key in keys:
+        if key not in made or has_value[key]:
+            continue
+        secret_id, value = secret_ids[key], made[key]
+        call(
+            "시크릿 값을 쓰지 못했다",
+            lambda secret_id=secret_id, value=value: client.put_secret_value(
+                SecretId=secret_id, SecretString=value
+            ),
+        )
+        generated.append(key)
     return SecretFilled(keys=list(keys), generated=generated, changed=bool(generated))
 
 

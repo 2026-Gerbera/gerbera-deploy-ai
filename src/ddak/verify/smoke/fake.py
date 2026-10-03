@@ -35,12 +35,16 @@ class FakeFlaskr:
             body = {"status": "ok", "db": "ok", "schema": {"current": "0001", "expected": "0001"}}
             return Response(200, (("Content-Type", "application/json"),), json.dumps(body))
         if method == "GET" and path == "/":
-            items = "".join(f"<h1>{t}</h1>" for t in reversed(self._titles))
-            return Response(200, (), f"<h1>Posts</h1>{items}")
+            items = "".join(
+                f'<article class="post"><h1>{t}</h1></article>' for t in reversed(self._titles)
+            )
+            return Response(200, (), f"<nav>Flaskr</nav><h1>Posts</h1>{items}")
         if method == "POST" and path == "/create":
             title = (form or {}).get("title", "").strip()
             if not title:
                 return Response(200, (), '<div class="error">Title is required.</div>')
+            if len(title) > 200:
+                return Response(200, (), '<div class="error">Title is too long.</div>')
             self._titles.append(title)
             return Response(302, (("Location", "/"),), "")
         return Response(404, (), "")
