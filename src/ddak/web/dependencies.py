@@ -25,7 +25,9 @@ ROOT = Path(__file__).resolve().parent
 def navigation_context(request: Request) -> dict:
     app = request.scope.get("app")
     service = getattr(getattr(app, "state", None), "deployment", None)
-    return {"sidebar_projects": service.list_projects() if service is not None else []}
+    # 프로젝트 목록을 주지 않는 서비스(테스트 대역)도 현재 프로젝트만으로 사이드바를 그린다.
+    reader = getattr(service, "list_projects", None)
+    return {"sidebar_projects": reader() if reader is not None else []}
 
 
 templates = Jinja2Templates(

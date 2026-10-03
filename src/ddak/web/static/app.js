@@ -133,6 +133,17 @@
             const valid = typeof error?.code === "string" && typeof error?.message === "string";
             showFormError(form, valid ? error.code : "REQUEST_FAILED",
               valid ? error.message : "요청을 처리하지 못했습니다. 다시 시도해 주세요.");
+            if (action.pathname === "/setup/docker") {
+              const check = document.querySelector('[data-check="docker"]');
+              const badge = check?.querySelector("[data-status]");
+              if (badge) {
+                badge.dataset.status = "red";
+                badge.className = "state failure";
+                badge.querySelector("span").textContent = "확인 필요";
+              }
+              const detail = check?.querySelector(".section-description");
+              if (detail) detail.textContent = valid ? error.message : "Docker Hub 연결 확인 실패";
+            }
             return;
           }
           if (response.redirected) {

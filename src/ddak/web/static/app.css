@@ -224,7 +224,7 @@ input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--ink); }
 .section-index { display: inline-block; min-width: 40px; font: 600 14px var(--font-mono); color: var(--muted); }
 .story-section > h2 { border-top: 2px solid var(--line); background: var(--section-bg); padding: 12px 16px; margin-bottom: 16px; }
 .story-section > h3 { margin-top: 20px; }
-.story-decision { margin: 20px 0; padding: 16px 0; }
+#deployment-approval > .approval-bar { margin: 20px 0; padding: 16px 0; }
 .story-patch { margin: 20px 0; }
 .story-patch h4 { margin: 8px 0 0; font-size: 14px; }
 .story-diff, .story-resources { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 16px; }
@@ -237,5 +237,4 @@ input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--ink); }
 .story-metrics { display: flex; gap: 40px; flex-wrap: wrap; margin: 20px 0; }
 .story-metrics strong { display: block; font-size: 24px; }
 .story-technical { margin-top: 32px; }
-.story-basis { max-height: 320px; overflow: auto; }
 @media(max-width:700px) { .story-diff, .story-resources, .story-timeline { grid-template-columns: minmax(0,1fr); } .story-lead { font-size: 18px; } }

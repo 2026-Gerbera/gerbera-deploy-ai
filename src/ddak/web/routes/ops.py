@@ -2,7 +2,9 @@
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse
+from starlette.concurrency import run_in_threadpool
 
+from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.redact import redact
 from ddak.web.dependencies import (
     deployment,
@@ -118,3 +120,31 @@ async def operate(request: Request, action: str):
         raise HTTPException(404, "지원하지 않는 운영 요청")
     except (ValueError, KeyError):
         raise HTTPException(400, "운영 입력 형식 오류") from None
+
+
+def _demo(request):
+    demo = getattr(deployment(request), "demo_reset", None)
+    if demo is None:
+        raise DdakToolError(
+            ErrorCode.PRECONDITION_FAILED, "시연 초기화 서비스가 연결되지 않았습니다"
+        )
+    return demo
+
+
+@router.get("/demo/status")
+async def demo_status(request: Request, project: str | None = None):
+    project = selected_project(request, project)
+    view = await run_in_threadpool(_demo(request).view, project)
+    return _render(request, "_demo_state.html", {"project": project, "demo": view})
+
+
+@router.post("/demo/{action}")
+async def demo_action(request: Request, action: str):
+    form = await parse_form(request)
+    require_safe_post(request, form.get("csrf_token", ""))
+    project = selected_project(request, form.get("project"))
+    result = await run_in_threadpool(_demo(request).create, project, action)
+    if action == "reset-v1" and result.get("already_source"):
+        # prod 트리만 v1인 경우에도 실제 배포는 별도로 승인받는다.
+        deployment(request).enqueue_deployment(project, ref="prod")
+    return RedirectResponse(f"/ops?project={project}", status_code=303)

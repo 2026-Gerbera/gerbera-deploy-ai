@@ -6,6 +6,7 @@
 {% if watch_warnings %}<section class="watch-warning"><h2>자동 감시 경고</h2><ul>{% for warning in watch_warnings %}<li>{{ warning }}</li>{% endfor %}</ul></section>{% endif %}
 <dl class="detail-list" data-ops-state><div><dt>배포가 멈춘 환경</dt><dd>{% for name in state.blocked_targets %}{{ target(name) }}{% if not loop.last %}, {% endif %}{% else %}없음{% endfor %}</dd></div><div><dt>진행 중인 실행</dt><dd>{% for id in state.active_runs %}<a href="/runs/{{ id }}/progress">{{ id }}</a>{% if not loop.last %}, {% endif %}{% else %}없음{% endfor %}</dd></div></dl>
 <p class="note">감시 설정은 <a href="/settings?project={{ project|urlencode }}">프로젝트 설정</a>에서 바꿉니다.</p>
+{% include "_demo_reset.html" %}
 <section class="section">{% set ops_part = "plan" %}{% include '_ops.html' %}</section>
 <div data-live-region data-live-version="{{ live_version }}">
 <section class="section"><div class="card-header"><h2>준비 요청 기록</h2><a href="/ops?project={{ project|urlencode }}">상태 새로고침</a></div>

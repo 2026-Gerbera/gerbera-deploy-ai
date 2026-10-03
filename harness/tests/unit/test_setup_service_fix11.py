@@ -41,6 +41,12 @@ class Builder:
         self.calls.append("stdin-login")
         return {"status": "green", "detail": "fixture authenticated"}
 
+    def probe_repository(self, repository):
+        # 로그인 직후 저장소 읽기 검사. 외부 호출 없이 선택한 저장소 이름만 기록한다.
+        assert repository
+        self.calls.append("repository-probe")
+        return {"status": "green", "detail": "fixture repository readable"}
+
 
 @pytest.fixture
 def rig(tmp_path):

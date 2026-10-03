@@ -94,7 +94,7 @@
   <p><a class="text-link" href="/setup/actions?project={{ project|urlencode }}">DB·계정 생성 또는 WEB/WAS 소유권 이전 계획 →</a></p>
 </div></section>
 <section class="section form-section" id="setup-docker"><div class="form-section-head"><div><h2>Docker Hub 인증</h2><p>로그인 결과와 이미지 저장소 권한은 실제 검사로 확인합니다.</p></div></div><form class="form-body" method="post" action="/setup/docker">{{ form_fields("setup-docker") }}{{ fields() }}
-  <div class="field-grid"><label><span>Docker Hub 사용자명</span><input name="username" value="{{ submitted.get('username', '') }}" required autocomplete="username"><small>출처: 직접 입력</small></label><label><span>Docker Hub 토큰</span><input type="password" name="token" required autocomplete="new-password"></label></div><button class="button secondary" type="submit">Docker Hub 로그인</button>
+  <div class="field-grid"><label><span>Docker Hub 사용자명</span><input name="username" value="{{ submitted.get('username', (settings.get('image_repository') or '').split('/')[0]) }}" required autocomplete="username"><small>기본값: 이미지 저장소 네임스페이스. 조직 저장소이면 토큰을 발급한 계정명으로 바꾸세요.</small></label><label><span>Docker Hub 토큰</span><input type="password" name="token" required autocomplete="new-password"></label></div><button class="button secondary" type="submit">Docker Hub 로그인</button>
 </form>{{ form_error("setup-docker") }}</section>
 <section class="section form-section" id="setup-build"><div class="form-section-head"><div><h2>빌드 환경 준비 계획</h2><p>버튼을 누를 때만 고정 버전 gitleaks와 제품 전용 빌더를 준비합니다.</p></div></div><div class="form-body">
   {% set plan = setup.build_plan or {} %}

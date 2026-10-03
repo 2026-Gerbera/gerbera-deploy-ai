@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/assets/black-cat.svg" width="100%" alt="README 위를 걸어가는 검은 고양이"></p>
+
 # Gerbera Deploy AI
 
 > **AI가 제안하고, 사람이 승인하며, 코드가 안전하게 실행하는 배포 Control Plane**

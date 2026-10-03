@@ -1384,6 +1384,27 @@ def _configure_patch_review(service: DeploymentService, settings: Settings) -> N
     )
 
 
+def _demo_reset_service(service, settings):
+    from ddak.core.demo_backend import DemoBackend
+    from ddak.core.demo_reset import DemoReset
+
+    def urls(project, saved):
+        result = {}
+        path = saved.get("inventory_path") or os.environ.get("DDAK_ONPREM_INVENTORY")
+        if path:
+            with contextlib.suppress(DdakToolError, OSError, ValueError):
+                result["local"] = load_inventory(Path(path)).get("public_url")
+        if saved.get("cloud_domain"):
+            result["cloud"] = "https://" + saved["cloud_domain"]
+        return result
+
+    return DemoReset(
+        service,
+        urls=urls,
+        backend=DemoBackend(service.root, enabled=settings.adapter_mode is AdapterMode.REAL),
+    )
+
+
 def create(
     *, cli_host: str | None = None, onprem_profile: bool = False, settings: Settings | None = None
 ) -> FastAPI:
@@ -1406,6 +1427,7 @@ def create(
         )
         service.onboarding = _setup_service(service, settings, cli_host)
         service.setup_actions = _setup_actions(service, settings)
+        service.demo_reset = _demo_reset_service(service, settings)
         if onprem_profile:
             _configure_onprem(service)
         _configure_patch_review(service, settings)

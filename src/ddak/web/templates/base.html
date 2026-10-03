@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="light">
   {% block head %}{% endblock %}
   <title>{% block title %}Gerbera 배포 관리{% endblock %}</title>
-  <link rel="stylesheet" href="/static/app.css?v=ledger-story-20261003">
+  <link rel="stylesheet" href="/static/app.css?v=story-inline-errors-20261003">
 </head>
 <body>
   <a class="skip-link" href="#main">본문으로 이동</a>
@@ -35,7 +35,7 @@
       {% set remaining_error = form_error_for(request) if form_error_for is defined and request.scope is defined else None %}{% if remaining_error %}{{ error_box(remaining_error) }}{% endif %}
     </main>
   </div>
-  <template id="form-error-template">{{ error_box() }}</template>
-  <script src="/static/app.js?v=ledger-story-20261003" defer></script>
+  <template id="form-error-template">{{ error_box(prototype=True) }}</template>
+  <script src="/static/app.js?v=story-inline-errors-20261003" defer></script>
 </body>
 </html>

@@ -96,6 +96,13 @@ let respond = async () => ({ok: false, status: 422, json: async () => ({error: {
   code: 'VALIDATION_ERROR', message: '<img src=x onerror=bad()> 서버 검증 실패',
 }})});
 const loading = new Node();
+const dockerBadge = new Node();
+dockerBadge.dataset = {status: 'gray'};
+const dockerLabel = new Node('미확인'), dockerDetail = new Node('실제 연결 확인 전');
+dockerBadge.querySelector = selector => selector === 'span' ? dockerLabel : null;
+const dockerCheck = {querySelector: selector => ({
+  '[data-status]': dockerBadge, '.section-description': dockerDetail,
+})[selector] ?? null};
 const template = {content: {firstElementChild: errorBox()}};
 const document = {
   querySelectorAll(selector) {
@@ -105,7 +112,9 @@ const document = {
     }
     return [];
   },
-  querySelector: selector => selector === '[data-deploy-loading]' ? loading : null,
+  querySelector: selector => ({
+    '[data-deploy-loading]': loading, '[data-check="docker"]': dockerCheck,
+  })[selector] ?? null,
   getElementById: id => id === 'form-error-template' ? template : null,
 };
 const window = {
@@ -234,6 +243,9 @@ async function run() {
       assert.equal(body.has('ignored'), false); assert.equal(body.has('unavailable'), false);
     }
     assert.equal(calls.length, forms.length); noNavigation();
+    assert.equal(dockerBadge.dataset.status, 'red');
+    assert.equal(dockerLabel.textContent, '확인 필요');
+    assert.equal(dockerDetail.textContent, '<img src=x onerror=bad()> 서버 검증 실패');
   } else if (scenario === 'named-action') {
     const patch = forms.at(-1);
     patch.action = {toString: () => '[object RadioNodeList]'};

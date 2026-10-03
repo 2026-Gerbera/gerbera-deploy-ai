@@ -14,6 +14,7 @@ import stat
 import subprocess
 import tarfile
 import time
+import urllib.error
 import urllib.request
 import zipfile
 from collections.abc import Mapping
@@ -21,11 +22,13 @@ from datetime import UTC, datetime
 from importlib.resources import files
 from pathlib import Path
 from typing import Protocol
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
 import yaml
 
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
+from ddak.core.contracts.infra_outputs import IMAGE_REPOSITORY_PATTERN
+from ddak.core.docker_auth import docker_hub_auth
 from ddak.core.private_values import (
     private_directory,
     read_private,
@@ -224,8 +227,7 @@ class DockerConfig:
         try:
             with private_directory(self.path) as fd:
                 data = json.loads(read_private(fd, "config.json"))
-                auth = data.get("auths", {}).get("https://index.docker.io/v1/", {}).get("auth")
-                configured = isinstance(auth, str) and bool(auth)
+                configured = bool(docker_hub_auth(data))
                 if data.get("credsStore") or data.get("credHelpers"):
                     raise _error("제품 Docker 설정에 외부 자격증명 helper를 허용하지 않는다")
         except FileNotFoundError:
@@ -248,6 +250,8 @@ class DockerConfig:
                 write_private(fd, "config.json", json.dumps(data).encode())
 
     def login(self, username: str, token: str) -> dict:
+        if not isinstance(username, str) or not username.strip():
+            raise _error("설정 필요: Docker Hub 사용자명을 입력하세요")
         if (
             not isinstance(username, str)
             or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", username)
@@ -261,8 +265,7 @@ class DockerConfig:
             self._initialize()
             with private_directory(self.path) as fd:
                 self.status()  # helper·링크·권한을 CLI 실행 전에 거부한다.
-                _call(
-                    self._runner,
+                result = self._runner(
                     [
                         "docker",
                         "--config",
@@ -281,6 +284,21 @@ class DockerConfig:
                     input=token + "\n",
                     timeout=30,
                 )
+                if result.returncode:
+                    output = (result.stderr or "").lower()
+                    if any(
+                        word in output
+                        for word in ("unauthorized", "denied", "incorrect", "authentication")
+                    ):
+                        raise _error("Docker Hub 인증 실패: 사용자명과 토큰 권한을 확인하세요")
+                    if any(
+                        word in output
+                        for word in ("timeout", "connection", "dial tcp", "no such host", "tls")
+                    ):
+                        raise _error("Docker Hub 네트워크 연결 실패: 연결 상태를 확인하세요")
+                    raise _error(
+                        "Docker Hub 로그인 실패: 사용자명·토큰 또는 연결 상태를 확인하세요"
+                    )
                 # CLI가 만든 파일도 링크를 따라가지 않고 0600으로 제한한다.
                 stream = os.open(
                     "config.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd
@@ -306,6 +324,8 @@ class DockerConfig:
                     )
                 except (ValueError, TypeError):
                     confirmed = False
+                if not confirmed:
+                    raise _error("설정 필요: Docker Hub 로그인 저장 결과를 확인할 수 없습니다")
                 return {
                     **status,
                     "status": "green" if confirmed else "gray",
@@ -314,8 +334,71 @@ class DockerConfig:
                     if confirmed
                     else "제품 Docker 로그인 저장 결과 미확인",
                 }
+        except DdakToolError:
+            raise
+        except (subprocess.TimeoutExpired, TimeoutError, ConnectionError):
+            raise _error("Docker Hub 네트워크 연결 시간 초과: 연결 상태를 확인하세요") from None
         except Exception:
             raise _error("Docker 로그인 실패; 자격증명과 원문 출력은 숨김") from None
+
+    def probe_repository(self, repository: str) -> dict:
+        """태그 존재를 가정하지 않고 Registry V2 tags 읽기만 확인한다. push 검사는 아니다."""
+        if not isinstance(repository, str) or not re.fullmatch(
+            IMAGE_REPOSITORY_PATTERN, repository
+        ):
+            raise _error("설정 필요: Docker Hub 이미지 저장소")
+        if not self.status()["configured"]:
+            raise _error("설정 필요: Docker Hub 로그인")
+        with private_directory(self.path) as fd:
+            auth = docker_hub_auth(json.loads(read_private(fd, "config.json")))
+
+        class NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                return None
+
+        try:
+            opener = urllib.request.build_opener(NoRedirect())
+            bearer = auth.get("identitytoken")
+            if not bearer:
+                query = urlencode(
+                    {"service": "registry.docker.io", "scope": f"repository:{repository}:pull"}
+                )
+                request = urllib.request.Request(
+                    "https://auth.docker.io/token?" + query,
+                    headers={"Authorization": "Basic " + auth["auth"]},
+                )
+                with opener.open(request, timeout=10) as response:
+                    data = json.loads(response.read(65536))
+                bearer = data.get("token") or data.get("access_token")
+                if not isinstance(bearer, str) or not bearer:
+                    raise _error("Docker Hub 인증 응답을 확인할 수 없습니다")
+            request = urllib.request.Request(
+                f"https://registry-1.docker.io/v2/{repository}/tags/list?n=1",
+                headers={"Authorization": "Bearer " + bearer},
+            )
+            with opener.open(request, timeout=10) as response:
+                if response.status != 200:
+                    raise _error("Docker Hub 저장소 읽기 검사 실패")
+            return {
+                "status": "green",
+                "detail": "Docker Hub 저장소 읽기 확인됨; push 권한은 빌드 시 확인",
+            }
+        except urllib.error.HTTPError as exc:
+            if exc.code in (401, 403):
+                raise _error(
+                    "Docker Hub 저장소 인증·읽기 권한 실패: 사용자명과 토큰 권한을 확인하세요"
+                ) from None
+            if exc.code == 404:
+                raise _error(
+                    "Docker Hub 이미지 저장소를 찾을 수 없습니다. 저장소 이름을 확인하세요"
+                ) from None
+            raise _error("Docker Hub 저장소 연결 실패: 잠시 후 다시 확인하세요") from None
+        except DdakToolError:
+            raise
+        except Exception:
+            raise _error(
+                "Docker Hub 네트워크 또는 응답 확인 실패: 연결 상태를 확인하세요"
+            ) from None
 
 
 class BuildSetup:
@@ -443,6 +526,9 @@ class BuildSetup:
 
     def login(self, username: str, token: str) -> dict:
         return DockerConfig(self.docker_config, runner=self._runner).login(username, token)
+
+    def probe_repository(self, repository: str) -> dict:
+        return DockerConfig(self.docker_config, runner=self._runner).probe_repository(repository)
 
     def _installation(self) -> dict | None:
         """공개 가능한 정형 메타데이터만 반환한다. 원문/추가 필드는 반환하지 않는다."""
