@@ -29,6 +29,19 @@ CASES = [
     pytest.param(["/aws/ecs/{project}*:other"], False, id="nonterminal-wildcard"),
     pytest.param(["/aws/ecs/{project}?"], False, id="question-wildcard"),
     pytest.param(["/aws/codebuild/ddak-*:*"], True, id="codebuild-preserved"),
+    pytest.param(
+        [
+            "/aws/codebuild/ddak-{project}-build",
+            "/aws/codebuild/ddak-{project}-build:log-stream:*",
+        ],
+        True,
+        id="codebuild-group-and-streams",
+    ),
+    pytest.param(["/aws/ecs/{project}:log-stream:*"], True, id="project-log-stream"),
+    pytest.param(["/aws/ecs/other-project:log-stream:*"], False, id="other-log-stream"),
+    pytest.param(["*:log-stream:*"], False, id="any-group-log-stream"),
+    pytest.param(["/aws/ecs/{project}:log-stream:web"], False, id="named-log-stream"),
+    pytest.param(["/aws/ecs/{project}*:log-stream:*"], False, id="prefix-log-stream"),
 ]
 
 
@@ -103,7 +116,8 @@ def test_resolved_plan_log_scope_including_noop(paths, allowed, action, project)
 @pytest.mark.parametrize("scalar", [False, True])
 @pytest.mark.parametrize("wrong", ["account", "region", "account-wildcard", "region-wildcard"])
 @pytest.mark.parametrize("stage", ["hcl", "create", "no-op"])
-def test_log_scope_rejects_wrong_account_or_region(scalar, wrong, stage):
+@pytest.mark.parametrize("suffix", [":*", ":log-stream:*"])
+def test_log_scope_rejects_wrong_account_or_region(scalar, wrong, stage, suffix):
     account = "${var.account_id}" if stage == "hcl" else f.ACCOUNT
     project = "${var.project}" if stage == "hcl" else f.SETTINGS.project
     region = "ap-northeast-2"
@@ -115,7 +129,7 @@ def test_log_scope_rejects_wrong_account_or_region(scalar, wrong, stage):
         region = "us-east-1"
     else:
         region = "*"
-    arn = f"arn:aws:logs:{region}:{account}:log-group:/aws/ecs/{project}:*"
+    arn = f"arn:aws:logs:{region}:{account}:log-group:/aws/ecs/{project}{suffix}"
     refs = arn if scalar else [arn]
     if stage == "hcl":
         assert_hcl_scope(refs, False)

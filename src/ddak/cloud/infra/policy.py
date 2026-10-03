@@ -165,18 +165,22 @@ def inspect_policy(
                     "IAM_LOG_SCOPE",
                 )
                 prefix = re.escape(f"arn:aws:logs:ap-northeast-2:{account}:log-group:")
+                # 이름이 정해진 그룹은 그룹 전체(:*)보다 좁은 스트림 ARN(:log-stream:*)도 허용한다.
+                suffix = r"(?::\*|\*|:log-stream:\*)?"
                 ddak_group = (
                     r"ddak-\*(?::\*)?"
-                    r"|ddak-[A-Za-z0-9_./#-]+(?::\*|\*)?"
+                    r"|ddak-[A-Za-z0-9_./#-]+"
+                    + suffix
                     + r"|ddak-"
                     + re.escape(project)
-                    + r"[A-Za-z0-9_./#-]*(?::\*|\*)?"
+                    + r"[A-Za-z0-9_./#-]*"
+                    + suffix
                 )
                 scope = (
                     prefix
                     + r"(?:/aws/ecs/"
                     + re.escape(project)
-                    + r"(?::\*|\*)?"
+                    + suffix
                     + r"|/aws/(?:ecs|codebuild)/(?:"
                     + ddak_group
                     + r"))"
