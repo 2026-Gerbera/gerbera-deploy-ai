@@ -22,7 +22,7 @@ Sha256Digest = Annotated[str, Field(pattern=r"^sha256:[0-9a-f]{64}$")]
 RelPath = Annotated[str, Field(min_length=1, max_length=200)]
 EnvName = Annotated[str, Field(pattern=r"^[A-Z][A-Z0-9_]{1,63}$")]
 PatternName = Literal["secret_key", "local_address", "cookie_secure", "proxy_fix"]
-PatchStatus = Literal["proposed", "reused", "no_targets", "rejected"]
+PatchStatus = Literal["proposed", "reused", "no_targets", "rejected", "patch_lost"]
 
 
 class ApprovedPatch(ContractModel):
@@ -61,6 +61,11 @@ class PatchConfigOutput(ContractModel):
     - no_targets: 패치 없음(고칠 줄이 없거나 AI가 없다고 답함). prod 그대로 진행한다.
     - rejected: 두 번 다 검사 불합격. patch는 마지막 제안(승인 화면 참고용), passed=False.
       prepare에 넘기지 않는다.
+    - patch_lost(10/3 결정 12): 이전 승인 패치가 지운 값 줄이 새 결과에 다시 나타난다(원본이 바뀌어
+      재적용하지 못했고 토글 OFF이거나 AI도 고치지 못함). passed=False, violations에 code
+      "patch_lost"와 파일. 호출한 쪽은 승인 전에 run을 멈춘다.
+      이전 패치를 조용히 빼고 배포하지 않는다.
+    토글 OFF여도 이전 패치(previous)가 있으면 AI 없이 파일 단위 재적용만 한다(reused/patch_lost).
     """
 
     run_id: RunId

@@ -122,3 +122,17 @@ def test_source_dir_must_be_an_existing_relative_snapshot(root: Path, source_dir
 
 def test_patch_config_is_registered() -> None:
     assert "patch_config" in load_tools().registered()
+
+
+def test_patch_lost_output_is_not_passed_and_names_the_file(root: Path) -> None:
+    first = run(root, FakeProvider(reply(EDITS)))
+    assert first.patch is not None
+    (root / "snap" / CONFIG).write_text(ORIGINAL + "# v3\n", encoding="utf-8")  # 원본이 바뀜
+    inp = PatchConfigInput(
+        run_id="run-1",
+        source_dir="snap",
+        previous=ApprovedPatch(patch=first.patch, reason="이전 승인"),
+    )
+    out = patch_config(inp, RunContext("run-1"), root=root, provider=FakeProvider())  # 토글 OFF
+    assert out.status == "patch_lost" and out.passed is False and out.patch is None
+    assert [(v.code, v.file) for v in out.violations] == [("patch_lost", CONFIG)]

@@ -16,7 +16,7 @@ from ddak.core.runtime import tool_context
 from ddak.executor.approval_meta import encode_meta
 from ddak.plan.patch import PatchEdit, PreviousPatch, find_targets, propose_config_patch
 from ddak.plan.patch.check import build_patch
-from ddak.plan.patch.generate import apply_edits
+from ddak.plan.patch.generate import _previous_files, apply_edits
 
 APP = "flaskr/__init__.py"
 ORIGINAL = """from flask import Flask
@@ -39,8 +39,7 @@ GOOD_EDITS = [
         "start": 8,
         "end": 8,
         "lines": [
-            "        SESSION_COOKIE_SECURE="
-            'os.environ.get("SESSION_COOKIE_SECURE", "false") == "true",'
+            '        SESSION_COOKIE_SECURE=os.environ["SESSION_COOKIE_SECURE"].lower() == "true",'
         ],
     },
     {
@@ -97,7 +96,7 @@ def propose(source: Path, provider: FakeProvider, **kw: object):
         return propose_config_patch(source, ON, provider=provider, settings=CFG, **kw)  # type: ignore[arg-type]
 
 
-def test_toggle_off_is_refused_before_anything(source: Path) -> None:
+def test_toggle_off_without_previous_patch_is_refused(source: Path) -> None:
     with pytest.raises(DdakToolError) as caught:
         propose_config_patch(source, RunContext("run-1"), provider=FakeProvider())
     assert caught.value.code is ErrorCode.TOGGLE_OFF
@@ -175,7 +174,8 @@ def test_ai_edits_become_a_checked_patch_for_the_executor(source: Path) -> None:
     assert b"+import os\n" in out.patch and b'-        SECRET_KEY="dev",\n' in out.patch
     assert out.meta == {"reason": REASON, "reuse": False, "source": "replay"}
     encode_meta(out.meta)  # 실행기 prepare(patch_meta=)가 받는 모양이다
-    assert out.env_vars == ["APP_BASE_URL", "SECRET_KEY"]  # 패치가 실제로 읽는 이름만
+    # 추가한 줄이 실제로 읽는 이름(AI가 빠뜨린 SESSION_COOKIE_SECURE 포함, lower·UNUSED_KEY 제외)
+    assert out.env_vars == ["APP_BASE_URL", "SECRET_KEY", "SESSION_COOKIE_SECURE"]
     assert set(out.target_hashes) == {APP} and out.target_hashes[APP].startswith("sha256:")
     assert out.attempts == 1
     data = provider.seen[0].user
@@ -306,3 +306,120 @@ def test_apply_edits_rejects_bad_ranges(edits: list[PatchEdit]) -> None:
 def test_draft_lines_must_be_single_lines() -> None:
     with pytest.raises(ValueError):
         PatchEdit(path="a.py", start=1, end=1, lines=["a\nb"])
+
+
+# ---- 10/3 결정 12: 파일 단위 재적용, 패치 손실 관문, 토글 OFF -------------------------
+
+SETTINGS = "flaskr/settings.py"
+SETTINGS_ORIGINAL = 'HOST = "localhost"\n'
+SETTINGS_EDITS = [
+    {"path": SETTINGS, "start": 1, "end": 0, "lines": ["import os", ""]},
+    {"path": SETTINGS, "start": 1, "end": 1, "lines": ['HOST = os.environ["APP_HOST"]']},
+]
+OFF = RunContext("run-1")
+
+
+def first_patch(source: Path) -> PreviousPatch:
+    out = propose(source, FakeProvider(reply(GOOD_EDITS)))
+    assert out.status == "proposed" and out.patch is not None
+    return PreviousPatch(patch=out.patch, reason=REASON, source=Source.LIVE)
+
+
+def propose_off(source: Path, previous: PreviousPatch):  # type: ignore[no-untyped-def]
+    # 토글 OFF는 AI를 부르지 않으므로 tool_context 없이도 돈다(AI 호출 시 AI_NOT_ALLOWED로 드러남)
+    return propose_config_patch(source, OFF, previous=previous, provider=FakeProvider())
+
+
+def test_previous_files_round_trip_keeps_crlf_and_missing_newline() -> None:
+    old = "a = 1\r\nb = 'localhost'"
+    new = 'import os\r\na = 1\r\nb = os.environ["B"]'
+    files = _previous_files(build_patch({"a.py": (old, new)}))
+    assert set(files) == {"a.py"}
+    assert (files["a.py"].old, files["a.py"].new) == (old, new)
+    assert files["a.py"].removed == ("b = 'localhost'",)
+
+
+def test_reapply_is_per_file_and_ai_sees_only_the_changed_file(source: Path) -> None:
+    (source / SETTINGS).write_text(SETTINGS_ORIGINAL, encoding="utf-8")
+    both = propose(source, FakeProvider(reply([*GOOD_EDITS, *SETTINGS_EDITS])))
+    assert both.status == "proposed" and both.patch is not None
+    previous = PreviousPatch(patch=both.patch, reason=REASON)
+    # 새 prod: settings.py만 바뀌었다. __init__.py는 그대로라 AI 없이 재적용한다
+    (source / SETTINGS).write_text('# v3\nHOST = "localhost"\n', encoding="utf-8")
+    edits = [
+        {"path": SETTINGS, "start": 1, "end": 0, "lines": ["import os"]},
+        {"path": SETTINGS, "start": 2, "end": 2, "lines": ['HOST = os.environ["APP_HOST"]']},
+    ]
+    provider = FakeProvider(reply(edits, ["APP_HOST"]))
+    out = propose(source, provider, previous=previous)
+    assert out.status == "proposed" and out.reapplied == [APP] and out.lost == []
+    sent = provider.seen[0].user
+    assert SETTINGS in sent and APP not in sent  # 바뀐 파일만 AI에 간다
+    assert out.patch is not None and out.check is not None and out.check.passed
+    assert b"--- a/flaskr/__init__.py" in out.patch and b"--- a/flaskr/settings.py" in out.patch
+
+
+def test_toggle_off_reapplies_previous_patch_without_ai(source: Path) -> None:
+    previous = first_patch(source)
+    out = propose_off(source, previous)
+    assert out.status == "reused" and out.patch == previous.patch and out.attempts == 0
+    assert out.meta == {"reason": REASON, "reuse": True, "source": "live"}
+    assert out.env_vars == ["APP_BASE_URL", "SECRET_KEY", "SESSION_COOKIE_SECURE"]
+
+
+def test_toggle_off_with_changed_file_is_patch_lost_not_silent_removal(source: Path) -> None:
+    previous = first_patch(source)
+    (source / APP).write_text(ORIGINAL.replace("return app", "return app  # v3"), encoding="utf-8")
+    out = propose_off(source, previous)  # AI를 부르면 FakeProvider가 AssertionError
+    assert out.status == "patch_lost" and out.lost == [APP] and out.attempts == 0
+
+
+def test_ai_that_leaves_a_removed_value_is_patch_lost(source: Path) -> None:
+    previous = first_patch(source)
+    (source / APP).write_text(ORIGINAL.replace("return app", "return app  # v3"), encoding="utf-8")
+    keeps_dev = [e for e in GOOD_EDITS if e["start"] != 7]  # SECRET_KEY="dev" 줄을 그대로 둔다
+    out = propose(source, FakeProvider(reply(keeps_dev)), previous=previous)
+    assert out.status == "patch_lost" and out.lost == [APP] and out.attempts == 1
+
+
+def test_ai_saying_nothing_to_fix_cannot_drop_the_previous_patch(source: Path) -> None:
+    previous = first_patch(source)
+    (source / APP).write_text(ORIGINAL.replace("return app", "return app  # v3"), encoding="utf-8")
+    empty = json.dumps({"edits": [], "reason": "고칠 줄이 없다", "env_vars": []})
+    out = propose(source, FakeProvider(empty), previous=previous)
+    assert out.status == "patch_lost" and out.lost == [APP]
+
+
+def test_value_fixed_by_developer_is_not_a_loss(source: Path) -> None:
+    previous = first_patch(source)
+    # 개발자가 prod에서 직접 환경변수로 바꿨다: 값 줄이 없으니 대상도, 손실도 없다
+    (source / APP).write_text(
+        "import os\n\nfrom flask import Flask\n\n\ndef create_app():\n"
+        "    app = Flask(__name__)\n"
+        '    app.config["SECRET_KEY"] = os.environ["SECRET_KEY"]\n'
+        "    return app\n",
+        encoding="utf-8",
+    )
+    out = propose(source, FakeProvider(), previous=previous)
+    assert out.status == "no_targets" and out.lost == [] and out.attempts == 0
+
+
+def _old_rule_patch() -> PreviousPatch:
+    # 결정 12 전 규칙으로 승인된 패치: 비밀이 아닌 키에 개발용 기본값(localhost)을 남겼다
+    new = ORIGINAL.replace(
+        '    app.config["APP_BASE_URL"] = "http://localhost:5000"',
+        '    app.config["APP_BASE_URL"] = os.environ.get("APP_BASE_URL", "http://localhost:5000")',
+    ).replace("from flask import Flask\n", "import os\n\nfrom flask import Flask\n")
+    return PreviousPatch(patch=build_patch({APP: (ORIGINAL, new)}), reason=REASON)
+
+
+def test_old_rule_patch_is_proposed_again_when_toggle_on(source: Path) -> None:
+    provider = FakeProvider(reply(GOOD_EDITS))
+    out = propose(source, provider, previous=_old_rule_patch())
+    assert out.status == "proposed" and out.reapplied == [] and len(provider.seen) == 1
+    assert out.patch is not None and b"os.environ.get" not in out.patch
+
+
+def test_old_rule_patch_is_patch_lost_when_toggle_off(source: Path) -> None:
+    out = propose_off(source, _old_rule_patch())
+    assert out.status == "patch_lost" and out.lost == [APP]

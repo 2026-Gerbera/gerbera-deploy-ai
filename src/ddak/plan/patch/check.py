@@ -15,6 +15,10 @@ AI가 만든 unified diff는 신뢰하지 않는 입력이다. 사람 승인 화
 4. 비밀값 리터럴: 추가한 줄에 비밀 이름(SECRET·PASSWORD·TOKEN·API_KEY…)이 있으면 그 줄의 문자열은
    키 자리(환경변수 키, 첨자 키, 딕셔너리 키)만 허용한다(대문자 값도 거부).
    개발값 기본값도 남기지 않는다
+   추가한 줄의 환경변수 읽기는 기본값 없는 필수 읽기(`os.environ["KEY"]`, 앱의 `require_env`)만
+   허용한다. `os.environ.get`·`getenv`·`env_bool`·`env_int`는 키가 없을 때 개발값으로 조용히
+   넘어가므로
+   거부한다(10/3 결정 12의 4, code "env_optional"). 원본에 이미 있던 줄은 따지지 않는다
 5. 적용·문법: O1과 같은 core.snapshots.apply_diff로 임시 사본에 적용하고, 바뀐 .py를 ast로 파싱
 6. 적용 후 AST 비교(문자열 이어붙이기·여러 줄 나누기로 줄 검사를 피하는 경우): 원본에 없던 호출은
    허용 목록(환경변수 읽기, ProxyFix, 형 변환)만, 원본에 없던 import는 os·ProxyFix·앱 자체 모듈만
@@ -50,6 +54,8 @@ PATTERNS: dict[str, re.Pattern[str]] = {
     "proxy_fix": re.compile(r"\bProxyFix\b|\bx_for\b|\bx_proto\b|PROXY_FIX_"),
 }
 _ENV_READ = re.compile(r"\bos\.environ\b|\bgetenv\s*\(|\brequire_env\s*\(|\benv_(?:bool|int)\s*\(")
+# 키가 없어도 값을 돌려주는(기본값·None) 환경변수 읽기. 패치가 새로 쓰면 거부한다(결정 12의 4)
+_OPTIONAL_ENV = re.compile(r"\benviron\s*\.\s*get\s*\(|\bgetenv\s*\(|\benv_(?:bool|int)\s*\(")
 _IMPORT = re.compile(r"^\s*(?:import\s+[\w.]+(?:\s*,\s*[\w.]+)*|from\s+[\w.]+\s+import\s+.+)\s*$")
 _SECRET_NAME = re.compile(r"SECRET|PASSW|PASSWD|TOKEN|API_?KEY|PRIVATE_?KEY|CREDENTIAL", re.I)
 _STRING = re.compile(r"""(?P<q>["'])(?P<s>(?:\\.|(?!(?P=q)).)*)(?P=q)""")
@@ -81,6 +87,8 @@ ENV_CALLS = frozenset(
     {"os.environ.get", "environ.get", "os.getenv", "getenv", "require_env", "env_bool", "env_int"}
 )
 ALLOWED_CALLS = ENV_CALLS | {"ProxyFix", "int", "bool", "str", "float", "*.lower", "*.strip"}
+# ENV_CALLS 중 키가 없어도 값을 돌려주는 것. 새로 생기면 env_optional(필수 읽기만 허용, 결정 12의 4)
+OPTIONAL_ENV_CALLS = ENV_CALLS - {"require_env"}
 ALLOWED_IMPORTS = frozenset({"os", "werkzeug.middleware.proxy_fix"})
 # 허용 호출이 기대는 이름. 패치가 여기에 새로 값을 묶으면(별칭 import, 대입, 인자 등)
 # getenv()가 다른 함수를 부를 수 있으므로 아래 정식 import만 허용한다
@@ -352,6 +360,10 @@ def _check_lines(diff: _FileDiff) -> tuple[list[Violation], set[str]]:
             problems.append(Violation("comment", diff.path, number, "추가한 줄에 주석이 있다"))
         if _DANGEROUS.search(line):
             problems.append(Violation("dangerous", diff.path, number, "허용되지 않는 호출이 있다"))
+        if _OPTIONAL_ENV.search(code):
+            problems.append(
+                Violation("env_optional", diff.path, number, "필수 환경변수 읽기가 아니다")
+            )
         if _is_blank_or_comment(line) or _IMPORT.match(line) or reads_env or found:
             continue
         problems.append(Violation("pattern", diff.path, number, "대상 패턴이 아닌 줄을 추가했다"))
@@ -600,7 +612,11 @@ def _ast_diff(source: Path, root: Path, paths: Iterable[str]) -> list[Violation]
             return [(_call_name(n), n) for n in ast.walk(tree) if isinstance(n, ast.Call)]
 
         for name, node in _increased((k for k, _ in calls(old)), calls(new)):
-            if name not in ALLOWED_CALLS:
+            if name in OPTIONAL_ENV_CALLS:
+                problems.append(
+                    Violation("env_optional", path, _line(node), "필수 환경변수 읽기가 아니다")
+                )
+            elif name not in ALLOWED_CALLS:
                 problems.append(
                     Violation("dangerous", path, _line(node), "허용되지 않는 호출이 생겼다")
                 )
@@ -665,7 +681,9 @@ def check_patch(source: Path, patch: bytes, policy: PatchPolicy | None = None) -
     result.patterns = sorted(touched)
     if diffs and not touched:
         result.violations.append(Violation("pattern", message="대상 패턴을 다루지 않는다"))
-    if result.violations:
+    # env_optional만 있으면 적용은 안전하다. AST 비교까지 계속해
+    # 우회(별칭·비밀값)도 함께 보고한다
+    if any(v.code != "env_optional" for v in result.violations):
         return result
 
     with tempfile.TemporaryDirectory(prefix="ddak-patch-check-") as temp:
@@ -676,8 +694,14 @@ def check_patch(source: Path, patch: bytes, policy: PatchPolicy | None = None) -
         except (ValueError, OSError, subprocess.SubprocessError) as error:  # apply_diff 고정 문구
             result.violations.append(Violation("apply", message=str(error)[:200]))
             return result
-        result.violations += _syntax(root, result.files)
-        if not result.violations:
+        syntax = _syntax(root, result.files)
+        result.violations += syntax
+        if not syntax:
             result.violations += _ast_diff(source, root, result.files)
+    # 줄 검사와 AST 비교가 같은 줄을 같은 이유로 두 번 보고하지 않게 한다
+    unique: dict[tuple[str, str, int | None], Violation] = {}
+    for v in result.violations:
+        unique.setdefault((v.code, v.file, v.line), v)
+    result.violations = list(unique.values())
     result.passed = not result.violations
     return result
