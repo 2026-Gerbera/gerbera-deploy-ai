@@ -304,7 +304,7 @@ class DeploymentService:
                 project_settings={
                     **{
                         key: context.project_settings[key]
-                        for key in ("aws_expected_account_id", "git_auth_source")
+                        for key in ("aws_expected_account_id", "git_auth_source", "_infra_storage")
                         if key in context.project_settings
                     },
                     **validated.model_dump(mode="json", exclude_unset=True),

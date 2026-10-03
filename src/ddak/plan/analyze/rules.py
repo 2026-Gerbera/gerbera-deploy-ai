@@ -10,6 +10,7 @@ from typing import Literal
 from ddak.core.contracts.deploy_config import DeployConfig
 from ddak.core.patch_patterns import MAX_SCAN_BYTES, iter_source_texts
 from ddak.core.smoke import V2_BOX_MARK
+from ddak.core.storage import STORAGE_ENV_KEY
 
 _NAME = r"[A-Z][A-Z0-9_]{0,63}"
 _EXAMPLE_LINE = re.compile(rf"^\s*(?:export\s+)?({_NAME})\s*=")  # 값 쪽은 캡처하지 않는다
@@ -23,7 +24,7 @@ Verdict = Literal["secret", "plain"] | None
 
 def classify(name: str) -> Verdict:
     """secret 패턴이 plain 패턴보다 먼저다. None이면 애매(Jev에게 묻는다)."""
-    if name in {"RELEASE_ID", "SOURCE_SHA"}:
+    if name in {"RELEASE_ID", "SOURCE_SHA", STORAGE_ENV_KEY}:
         return "plain"
     if _SECRET.search(name):
         return "secret"

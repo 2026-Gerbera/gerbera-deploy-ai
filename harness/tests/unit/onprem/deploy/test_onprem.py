@@ -362,7 +362,9 @@ def test_env_secret_reused_without_exposure_and_permission_fixed(runtime) -> Non
     _, provider, ctx = runtime
     path = Path(ctx.platform["onprem"]["tiers"]["was"]["env_file"])
     original = path.read_text()
-    secret = original.strip().split("=", 1)[1]
+    values = dict(line.split("=", 1) for line in original.splitlines())
+    secret = values["SECRET_KEY"]
+    assert values["IMG_DIR"] == "img"
     assert len(secret) == 64
     assert all(char in "0123456789abcdef" for char in secret)
     result = provider.inject_config(["SECRET_KEY"], ctx)

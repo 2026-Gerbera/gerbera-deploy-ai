@@ -75,6 +75,7 @@ _SCALAR_VALUE = re.compile(r"[=:]\s*(?:-?\d+|True|False)\b")
 _EXAMPLE_NAME = re.compile(r"^\s*(?:export\s+)?([A-Z][A-Z0-9_]{0,63})\s*=")
 _DEFAULT_INTENT_KEYS = frozenset(
     {
+        "IMG_DIR",
         "SECRET_KEY",
         "APP_BASE_URL",
         "DATABASE_URL",
@@ -384,6 +385,7 @@ def _allowed_intent_keys(source: Path, ctx: RunContext) -> frozenset[str]:
 
 def _checked_reason(checked: PatchCheck) -> str:
     labels = {
+        "local_storage_dir": "이미지 저장 경로",
         "secret_key": "서명 키",
         "local_address": "개발 주소",
         "cookie_secure": "쿠키 Secure",

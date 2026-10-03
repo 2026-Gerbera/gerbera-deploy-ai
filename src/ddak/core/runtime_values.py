@@ -11,6 +11,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
+from ddak.core.storage import STORAGE_ENV_KEY
 
 _KEY = re.compile(r"[A-Z][A-Z0-9_]{0,63}\Z")
 _GENERATED = re.compile(r"(?:[A-Z0-9_]+_)?SECRET_KEY\Z")
@@ -49,7 +50,7 @@ def key_names(path: Path) -> set[str]:
 
 
 def derived_public(inventory: Mapping[str, Any], keys: Sequence[str]) -> dict[str, str]:
-    known = {}
+    known = {STORAGE_ENV_KEY: "img"}
     url = inventory.get("public_url")
     if url:
         known["APP_BASE_URL"] = url

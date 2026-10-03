@@ -7,6 +7,8 @@ from collections.abc import Mapping
 from types import MappingProxyType
 from typing import Any
 
+from ddak.core.storage import OUTPUT_KEY, UPLOAD_BUCKET_PATTERN
+
 IMAGE_REPOSITORY_PATTERN = r"[a-z0-9]+(?:[._-][a-z0-9]+)*/[a-z0-9]+(?:[._-][a-z0-9]+)*"
 
 PLATFORM_OUTPUTS = MappingProxyType(
@@ -40,7 +42,7 @@ PLATFORM_OUTPUTS = MappingProxyType(
 )
 APP_OUTPUTS = MappingProxyType(
     {
-        "upload_bucket": "string",
+        OUTPUT_KEY: "string",
         "task_execution_role_arn": "string",
         "task_role_arn": "string",
         "dbinit_execution_role_arn": "string",
@@ -71,6 +73,8 @@ def checked_outputs(values: Mapping[str, Any], layer: str) -> dict[str, Any]:
         if kind == "string":
             if not isinstance(value, str) or not value or any(c in value for c in "\r\n\0"):
                 raise ValueError("인프라 출력 타입 오류")
+            if name == OUTPUT_KEY and not re.fullmatch(UPLOAD_BUCKET_PATTERN, value):
+                raise ValueError("업로드 버킷 출력 형식 오류")
             if name == "image_repository" and not re.fullmatch(IMAGE_REPOSITORY_PATTERN, value):
                 raise ValueError("이미지 저장소 출력 형식 오류")
             if (name.endswith("_arn") or APP_SECRET_OUTPUT.fullmatch(name)) and not re.fullmatch(

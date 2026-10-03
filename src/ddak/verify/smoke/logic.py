@@ -12,15 +12,19 @@
 
 from __future__ import annotations
 
+import base64
 import contextlib
+import hashlib
 import http.client
 import json
+import re
 import socket
 import ssl
 import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from html.parser import HTMLParser
 from http.cookies import SimpleCookie
 from typing import Any, Literal, Protocol
 from urllib.parse import urlencode, urlsplit
@@ -35,6 +39,7 @@ from ddak.core.contracts.tools.smoke_test import (
     SmokeTestOutput,
 )
 from ddak.core.smoke import V2_BOX_MARK
+from ddak.core.storage import STORAGE_SMOKE_GROUP
 from ddak.verify.smoke.normalize import own_post, page_head
 
 MAX_BODY = 256 * 1024
@@ -52,6 +57,7 @@ class Response:
     status: int
     headers: tuple[tuple[str, str], ...]
     body: str
+    raw_body: bytes | None = None
 
     def header(self, name: str) -> str | None:
         values = self.all(name)
@@ -61,10 +67,20 @@ class Response:
         return [v for k, v in self.headers if k.lower() == name.lower()]
 
 
+@dataclass(frozen=True)
+class ImageUpload:
+    data: bytes
+
+
+Form = Mapping[str, str] | ImageUpload
+
+UPLOAD_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgaPj/HwAEggJ/59habAAAAABJRU5ErkJggg=="
+)
+
+
 class HttpClient(Protocol):
-    def request(
-        self, method: str, path: str, form: Mapping[str, str] | None, timeout: float
-    ) -> Response: ...
+    def request(self, method: str, path: str, form: Form | None, timeout: float) -> Response: ...
 
 
 class SmokeAdapter(TargetAdapter, Protocol):
@@ -92,9 +108,7 @@ class UrlClient:
         self._prefix = parts.path.rstrip("/")
         self.host = parts.hostname.lower()  # 리다이렉트 호스트 비교용
 
-    def request(
-        self, method: str, path: str, form: Mapping[str, str] | None, timeout: float
-    ) -> Response:
+    def request(self, method: str, path: str, form: Form | None, timeout: float) -> Response:
         """timeout은 요청 전체(연결·전송·응답 헤더·본문) 시간이다.
 
         소켓 timeout은 연산 한 번마다라서 1바이트씩 천천히 보내는 응답은 끝없이 길어질 수 있다.
@@ -109,7 +123,19 @@ class UrlClient:
             conn = http.client.HTTPConnection(self._host, self._port, timeout=timeout)
         headers = {"User-Agent": "ddak-smoke/1", "Accept": "*/*"}
         body = None
-        if form is not None:
+        if isinstance(form, ImageUpload):
+            boundary = "ddak-smoke-image-boundary"
+            body = (
+                (
+                    f"--{boundary}\r\n"
+                    'Content-Disposition: form-data; name="image"; filename="smoke.png"\r\n'
+                    "Content-Type: image/png\r\n\r\n"
+                ).encode()
+                + form.data
+                + f"\r\n--{boundary}--\r\n".encode()
+            )
+            headers["Content-Type"] = f"multipart/form-data; boundary={boundary}"
+        elif form is not None:
             body = urlencode(form).encode()
             headers["Content-Type"] = "application/x-www-form-urlencoded"
         expired = threading.Event()
@@ -147,7 +173,9 @@ class UrlClient:
             conn.close()
         if expired.is_set():  # 소켓을 닫으면 read가 잘린 본문을 오류 없이 돌려줄 수 있다
             raise TimeoutError("요청 전체 시간 초과")
-        return Response(resp.status, tuple(resp.getheaders()), data.decode("utf-8", "replace"))
+        return Response(
+            resp.status, tuple(resp.getheaders()), data.decode("utf-8", "replace"), data
+        )
 
 
 # ---- 시나리오 -----------------------------------------------------------------
@@ -393,6 +421,48 @@ def v2_box(p: Probe) -> SmokeScenario:
     )
 
 
+class _UploadImages(HTMLParser):
+    def __init__(self, text: str):
+        super().__init__()
+        self.paths: set[str] = set()
+        self.feed(text)
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "img":
+            src = dict(attrs).get("src") or ""
+            if re.fullmatch(r"/uploads/[0-9]+\.(?:png|jpg|gif)", src):
+                self.paths.add(src)
+
+
+def storage_upload(p: Probe) -> SmokeScenario:
+    before = p.get("/uploads")
+    if before.status != 200:
+        return _scenario("V3.upload", False, before, "업로드 목록 조회 실패", {})
+    uploaded = p.client.request("POST", "/upload", ImageUpload(UPLOAD_PNG), p.timeout())
+    if uploaded.status != 302 or _location_path(uploaded, p.host) != "/uploads":
+        return _scenario("V3.upload", False, uploaded, "이미지 업로드 또는 이동 경로 실패", {})
+    after = p.get("/uploads")
+    created = _UploadImages(after.body).paths - _UploadImages(before.body).paths
+    if after.status != 200 or len(created) != 1:
+        return _scenario("V3.upload", False, after, "새 업로드 파일 한 개를 확인할 수 없다", {})
+    path = next(iter(created))
+    expected = hashlib.sha256(UPLOAD_PNG).hexdigest()
+    responses = [p.get(path) for _ in range(6)]
+    matched = sum(
+        r.status == 200
+        and r.raw_body is not None
+        and hashlib.sha256(r.raw_body).hexdigest() == expected
+        for r in responses
+    )
+    return _scenario(
+        "V3.upload",
+        matched == 6,
+        uploaded,
+        f"업로드 조회 해시 일치 {matched}/6",
+        {"reads": 6, "matched": matched, "sha256": expected},
+    )
+
+
 # 시나리오 묶음. plan step params의 scenarios가 이 이름을 고른다. (id, 검사) 순서대로 실행한다.
 # base = v1 익명 게시판(B2는 익명 글쓰기가 되는 동안만 유효). v2 = 이미지·박스(base에 더해 고른다:
 # ["base", "v2"]). v1으로 되돌린 run은 base만 고른다.
@@ -406,6 +476,7 @@ GROUPS: dict[str, tuple[tuple[str, Check], ...]] = {
         ("B2.long", b2_long_title),
     ),
     "v2": (("V2.box", v2_box),),
+    STORAGE_SMOKE_GROUP: (("V3.upload", storage_upload),),
 }
 
 
