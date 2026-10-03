@@ -1,5 +1,5 @@
 # verify/smoke (담당: 장민영)
-- 할 일: 스모크 테스트(smoke_test). 배포한 앱에 같은 시나리오를 환경마다 독립적으로 보낸다. 테스트 데이터(`[smoke <run_id>]` 글)만 쓴다
+- 할 일: 스모크 테스트(smoke_test). 배포한 앱에 같은 시나리오를 환경마다 독립적으로 보낸다. 테스트 데이터만 쓴다: B2.create 글 하나. 게시판에 쌓이므로 실제 글처럼 보이게 `logic.py`의 넌센스 퀴즈 풀(한국어·일본어)에서 sha256(run_id)로 고른다. 제목 `<질문> · 익명 <tag>`(일본어는 `· 匿名 <tag>`, tag는 run_id 해시 6자리), 본문 `정답: …`·`答え: …` 또는 맞장구. 같은 run_id면 두 환경이 같은 글을 쓴다
 - 입출력 계약: `src/ddak/core/contracts/tools/smoke_test.py`(C-10 초안: `passed`, `elapsed_s`, `scenarios[]`, `source`)
 - 구성: `logic.py`(HTTP·시나리오·판정), `local.py`(인벤토리 `public_url` 또는 tier `APP_BASE_URL`), `cloud.py`(`https://<cloud_domain>`, 인증서 검증), `fake.py`(v1 응답 흉내, `source=fixture`), `tool.py`(등록)
 - 시나리오 묶음(`scenarios` params): `base` = S0.version(release_id = run_id, DB mysql), S0.ready(HTTP 200이고 status가 ok·ready이거나 ready가 true, 클라우드 health_check와 같은 기준), B1 목록, B2.create 익명 글쓰기(302 → `/`, 목록 반영), B2.empty 빈 제목 오류, B2.long 201자 제목 오류(S13 대체: 로그인이 없어 아이디 대신 글 제목, `post.title`은 VARCHAR(200)). `v2` = V2.box(목록 페이지에 박스 `class="release-box"`와 그 안의 SVG 이미지, 앱 태그 v2). v2 배포 run은 `["base", "v2"]`, v1으로 되돌린 run은 `["base"]`를 고른다. Fake 어댑터는 v1 응답이라 v2 묶음은 실패한다
