@@ -109,9 +109,10 @@ def initialize(directory: Path, layout: str, base_url: str, platform: str) -> di
             "replicas": 3,
             "ports": [],
             "ready": {"timeout_s": 30},
-            "volumes": [{"name": project + "-sqlite", "target": "/data"}]
-            if layout == "was"
-            else [],
+            "volumes": [
+                {"name": project + "-uploads", "target": "/app/img"},
+                *([{"name": project + "-sqlite", "target": "/data"}] if layout == "was" else []),
+            ],
             "traefik_labels": {
                 "traefik.enable": "true",
                 f"traefik.http.routers.{service}.rule": "PathPrefix(`/`)",

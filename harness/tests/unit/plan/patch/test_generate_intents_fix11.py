@@ -40,6 +40,7 @@ DEFAULT_KEYS = frozenset(
         "SECRET_KEY",
         "APP_BASE_URL",
         "DATABASE_URL",
+        "IMG_DIR",
         "SESSION_COOKIE_SECURE",
         "PROXY_FIX_X_FOR",
         "PROXY_FIX_X_PROTO",

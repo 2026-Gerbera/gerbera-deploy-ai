@@ -48,6 +48,7 @@ from ddak.cloud.deploy.ecs import scale_to_zero as _scale_to_zero
 from ddak.cloud.deploy.secrets import fill_secrets
 from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
+from ddak.core.contracts.infra_outputs import checked_outputs
 from ddak.core.contracts.release import (
     CarriedImageSource,
     ImageArtifact,
@@ -56,6 +57,7 @@ from ddak.core.contracts.release import (
 )
 from ddak.core.env_keys import check_runtime_keys
 from ddak.core.project_settings import cloud_platform_name
+from ddak.core.storage import OUTPUT_KEY, STORAGE_ENV_KEY
 
 PROVIDER = ProviderName.AWS.value
 RELEASE_ID = "RELEASE_ID"
@@ -63,7 +65,7 @@ WAS_UPSTREAM = "127.0.0.1:8000"  # awsvpc: 같은 태스크 컨테이너는 loca
 # 배포 층이 태스크 정의 env로 넣는 공개 설정 키(was). inject_config는 이 키들을 건너뛴다.
 RUNTIME_ENV_KEYS = frozenset(
     {"APP_BASE_URL", "APP_ENV", "MIGRATE_MODE", "PROXY_FIX_X_FOR", "PROXY_FIX_X_PROTO",
-     "SESSION_COOKIE_SECURE", RELEASE_ID, "SOURCE_SHA"}
+     "SESSION_COOKIE_SECURE", RELEASE_ID, "SOURCE_SHA", STORAGE_ENV_KEY}
 )  # fmt: skip
 DATABASE_URL = "DATABASE_URL"
 SECRET_KEY = "SECRET_KEY"  # noqa: S105 (키 이름, 비밀값 아님)
@@ -221,6 +223,13 @@ def _runtime_environment(
         RELEASE_ID: release_id,
         "SOURCE_SHA": source_sha or "unknown",
     }
+    upload_bucket = ctx.platform.get("cloud", {}).get(OUTPUT_KEY)
+    if upload_bucket:
+        try:
+            checked_outputs({OUTPUT_KEY: upload_bucket}, "app")
+        except ValueError:
+            raise DdakToolError(ErrorCode.CONFIG_INVALID, "업로드 버킷 출력 형식 오류") from None
+        was[STORAGE_ENV_KEY] = f"s3://{upload_bucket}/img"
     return {
         _platform.container("was"): was,
         _platform.container("web"): {"WAS_UPSTREAM": WAS_UPSTREAM},

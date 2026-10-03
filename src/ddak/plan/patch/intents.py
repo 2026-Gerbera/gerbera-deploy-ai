@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from ddak.core.contracts.plan_facts import EnvKey, PatchTarget
 from ddak.core.patch_patterns import DATABASE_SETTINGS, PATTERNS, address_env_key, environment_reads
 from ddak.core.snapshots import file_manifest
+from ddak.core.storage import STORAGE_ENV_KEY
 from ddak.plan.patch.check import build_patch
 
 __all__ = ["EditIntent", "render_intents"]
@@ -144,6 +145,8 @@ def _sites(tree: ast.Module) -> list[_Site]:
             continue
         if (text := _string(value)) is not None and _dev_database(name, text):
             development.add(value)
+        if name == STORAGE_ENV_KEY and _string(value) and "://" not in _string(value):
+            sites.append(_Site(value, "local_storage_dir", STORAGE_ENV_KEY))
         if name.lower() == "secret_key" and _string(value) is not None:
             sites.append(_Site(value, "secret_key", "SECRET_KEY"))
         elif (

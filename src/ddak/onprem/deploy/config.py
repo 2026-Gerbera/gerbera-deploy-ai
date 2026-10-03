@@ -19,6 +19,7 @@ from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.errors import ErrorCode
 from ddak.core.env_keys import check_runtime_keys
 from ddak.core.runtime_values import generated_secret
+from ddak.core.storage import STORAGE_ENV_KEY
 from ddak.onprem.deploy.containers import fail
 
 if TYPE_CHECKING:
@@ -128,7 +129,8 @@ def inject_config(provider: OnPremProvider, keys: Sequence[str], ctx: RunContext
         raise fail("SOURCE_SHA를 공급할 후보 커밋이 없다", ErrorCode.PRECONDITION_FAILED)
     # 이 두 값은 컨테이너 생성 시 실행기가 공급한다. 사용자 env 파일의 필수 키가 아니다.
     host_keys = [key for key in wanted if key not in {"RELEASE_ID", "SOURCE_SHA"}]
-    changed = _private_env(Path(config.env_file), host_keys, config.public_env)
+    public_env = {**config.public_env, STORAGE_ENV_KEY: "img"}
+    changed = _private_env(Path(config.env_file), host_keys, public_env)
     host.check_deadline()
     return ProviderResult(
         provider=provider.name,

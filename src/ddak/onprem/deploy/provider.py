@@ -160,6 +160,7 @@ class _Tier(_Config):
     @classmethod
     def valid_public_env(cls, values: dict[str, str]) -> dict[str, str]:
         allowed = {
+            "IMG_DIR",
             "APP_BASE_URL",
             "APP_ENV",
             "PROXY_FIX_X_FOR",
@@ -381,7 +382,8 @@ class OnPremProvider:
                 check_runtime_keys(env_key_names(Path(config.env_file)))
                 check_runtime_keys(config.public_env)
             args.extend(["--env-file", config.env_file])
-        for key, value in config.public_env.items():
+        public_env = {**config.public_env, "IMG_DIR": "img"} if tier == "was" else config.public_env
+        for key, value in public_env.items():
             args.extend(["-e", f"{key}={value}"])
         for volume in config.volumes:
             value = f"type=volume,src={volume.name},dst={volume.target}"
