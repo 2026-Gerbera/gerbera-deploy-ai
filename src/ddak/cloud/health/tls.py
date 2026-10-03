@@ -112,7 +112,7 @@ def verify_tls(inp: VerifyTlsInput, ctx: RunContext) -> VerifyTlsOutput:
         raise DdakToolError(ErrorCode.CONFIG_INVALID, "cloud_domain이 설정되지 않았다")
     started = time.monotonic()
     platform = cloud_platform(ctx)
-    region = required(platform, "region")
+    region = str(platform.get("region") or "ap-northeast-2")
     alb_dns = required(platform, "alb_dns_name")
     alb_arn = required(platform, "alb_arn")
     certificate_arn = required(platform, "certificate_arn")

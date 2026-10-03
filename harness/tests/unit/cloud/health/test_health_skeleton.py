@@ -4,16 +4,129 @@ from __future__ import annotations
 
 import pytest
 
+import ddak.cloud.health.health as health
 import ddak.cloud.health.tls as tls
 from ddak.cloud.health import health_check
 from ddak.cloud.health.fake import fake_verify_tls
 from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.errors import DdakToolError
+from ddak.core.contracts.release import ImageArtifact, ReleaseArtifacts, SnapshotBinding
+
+_A = "a" * 64
+_B = "b" * 64
+_C = "c" * 64
+_D = "d" * 64
 
 
-def test_health_requires_cloud_domain_before_aws_call() -> None:
-    with pytest.raises(DdakToolError, match="cloud_domain"):
-        health_check(RunContext("run-1"))
+def _artifact(name: str, index: str, amd: str, arm: str) -> ImageArtifact:
+    return ImageArtifact(
+        ref=f"example/{name}@sha256:{index}",
+        index_digest=f"sha256:{index}",
+        platform_digests={"linux/amd64": f"sha256:{amd}", "linux/arm64": f"sha256:{arm}"},
+    )
+
+
+@pytest.mark.parametrize("domain", [None, "localhost", "https://app.example.com", "bad domain"])
+def test_health_requires_valid_cloud_domain_before_aws_call(domain: str | None) -> None:
+    with pytest.raises(DdakToolError, match="클라우드 도메인"):
+        health_check(RunContext("run-1", cloud_domain=domain))
+
+
+def test_expected_digests_include_current_and_carried_artifacts() -> None:
+    snapshot = SnapshotBinding(
+        source_snapshot_hash=f"sha256:{_A}", build_snapshot_hash=f"sha256:{_A}"
+    )
+    current = _artifact("was", _A, _B, _C)
+    carried = _artifact("web", _B, _C, _D)
+    ctx = RunContext(
+        "run-1",
+        release_artifacts=ReleaseArtifacts(snapshot=snapshot, images={"was": current}),
+        previous_release={
+            "cloud": {
+                "artifacts": {
+                    "snapshot": snapshot.model_dump(),
+                    "images": {"web": carried.model_dump()},
+                }
+            }
+        },
+    )
+
+    assert health._expected_image_digests(ctx) == {
+        current.index_digest,
+        *current.platform_digests.values(),
+        carried.index_digest,
+        *carried.platform_digests.values(),
+    }
+
+
+def test_health_uses_active_revision_and_retries_transient_alb(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifact = _artifact("was", _A, _B, _C)
+    snapshot = SnapshotBinding(
+        source_snapshot_hash=f"sha256:{_A}", build_snapshot_hash=f"sha256:{_A}"
+    )
+    ctx = RunContext(
+        "run-1",
+        cloud_domain="app.example.com",
+        platform={
+            "cloud": {
+                "region": "ap-northeast-2",
+                "cluster_name": "cluster",
+                "ecs_service_name": "service",
+                "target_group_arn": "target-group",
+            }
+        },
+        release_artifacts=ReleaseArtifacts(snapshot=snapshot, images={"was": artifact}),
+    )
+
+    class Ecs:
+        @staticmethod
+        def describe_services(**kwargs):
+            return {"services": [{"taskDefinition": "task:new"}]}
+
+        @staticmethod
+        def list_tasks(**kwargs):
+            return {"taskArns": ["old", "new"]}
+
+        @staticmethod
+        def describe_tasks(**kwargs):
+            return {
+                "tasks": [
+                    {
+                        "taskDefinitionArn": "task:old",
+                        "containers": [{"imageDigest": f"sha256:{_D}"}],
+                    },
+                    {
+                        "taskDefinitionArn": "task:new",
+                        "containers": [{"imageDigest": f"sha256:{_B}"}],
+                    },
+                ]
+            }
+
+    class Elb:
+        calls = 0
+
+        def describe_target_health(self, **kwargs):
+            self.calls += 1
+            state = "initial" if self.calls == 1 else "healthy"
+            return {"TargetHealthDescriptions": [{"TargetHealth": {"State": state}}]}
+
+    ecs, elb = Ecs(), Elb()
+    monkeypatch.setattr(health, "client", lambda service, *_: ecs if service == "ecs" else elb)
+    monkeypatch.setattr(
+        health,
+        "_json_get",
+        lambda _domain, path, _timeout: (
+            {"status": "ok"} if path == "/health/ready" else {"release_id": "run-1"}
+        ),
+    )
+    monkeypatch.setattr(health.time, "sleep", lambda _seconds: None)
+
+    result = health.health_check(ctx)
+
+    assert result.passed is True
+    assert elb.calls == 2
 
 
 def test_fake_tls_is_deterministic_and_complete() -> None:
