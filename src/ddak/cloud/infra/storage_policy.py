@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Collection, Iterator, Mapping
 from typing import Any
 
 from ddak.core.storage import valid_bucket
 
-from .policy import policy_json, require, statements, strings
+from .policy import PolicyViolation, policy_json, require, statements, strings
 
 STORAGE_ADDRESSES = frozenset(
     {
@@ -24,6 +24,34 @@ _PUBLIC_BLOCK = {
     "ignore_public_acls",
     "restrict_public_buckets",
 }
+# plan에서 값이 확정돼야 하는 최상위 속성. configuration에서 설정한 속성도 같은 기준을 따른다.
+_KNOWN_REQUIRED = {
+    "aws_s3_bucket": frozenset({"bucket", "force_destroy"}),
+    "aws_s3_bucket_public_access_block": frozenset({"bucket", *_PUBLIC_BLOCK}),
+    "aws_s3_bucket_server_side_encryption_configuration": frozenset({"bucket", "rule"}),
+    "aws_iam_role_policy": frozenset({"name", "role", "policy"}),
+}
+# provider가 계산해 unknown일 수 있는 경로.
+# 종속 리소스의 bucket은 configuration 참조로 따로 확인한다.
+_UNKNOWN_ALLOWED = {
+    "aws_s3_bucket_public_access_block": frozenset({"bucket"}),
+    "aws_s3_bucket_server_side_encryption_configuration": frozenset(
+        {
+            "bucket",
+            "rule[].bucket_key_enabled",
+            "rule[].apply_server_side_encryption_by_default[].kms_master_key_id",
+        }
+    ),
+}
+
+
+# 중첩 블록에서 plan 값이 확정돼야 하는 leaf. 나머지 leaf는 provider 계산 값으로 본다
+# (provider 버전마다 bucket_key_enabled·blocked_encryption_types 같은 계산 필드가 늘어난다).
+_NESTED_REQUIRED = {
+    "aws_s3_bucket_server_side_encryption_configuration": {
+        "rule": frozenset({"rule[].apply_server_side_encryption_by_default[].sse_algorithm"}),
+    },
+}
 
 
 def _reserved_bucket(project: str, name: str | None) -> bool:
@@ -32,6 +60,52 @@ def _reserved_bucket(project: str, name: str | None) -> bool:
 
 def storage_resource(kind: str, address: str) -> bool:
     return kind.startswith("aws_s3_bucket") or address in STORAGE_ADDRESSES
+
+
+def _flagged_paths(value: Any, path: tuple[str | int, ...] = ()) -> Iterator[tuple[str | int, ...]]:
+    """after_unknown·*_sensitive에서 표시된 leaf 경로만 낸다.
+
+    빈 dict·list와 false는 표시가 아니다.
+    """
+    if isinstance(value, dict):
+        for key, item in value.items():
+            yield from _flagged_paths(item, (*path, str(key)))
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            yield from _flagged_paths(item, (*path, index))
+    elif value is not False and value is not None:
+        yield path
+
+
+def _path_text(path: tuple[str | int, ...], *, pattern: bool = False) -> str:
+    text = ""
+    for part in path:
+        if isinstance(part, int):
+            text += "[]" if pattern else f"[{part}]"
+        else:
+            # map 키가 섞여도 값처럼 보이는 문자를 상세에 싣지 않는다.
+            text += "." + re.sub(r"[^A-Za-z0-9_]", "?", part)[:64]
+    return text.removeprefix(".")
+
+
+def _require_known(
+    kind: str, address: str, field: str, flags: Any, configured: Collection[str]
+) -> None:
+    require(isinstance(flags, dict), f"STORAGE_RESOURCE_UNKNOWN: {address} ({field})")
+    where = "" if field == "after_unknown" else f" ({field})"
+    allowed = _UNKNOWN_ALLOWED.get(kind, frozenset()) if field == "after_unknown" else frozenset()
+    guarded = _KNOWN_REQUIRED[kind] | set(configured)
+    nested = _NESTED_REQUIRED.get(kind, {}) if field == "after_unknown" else {}
+    for path in _flagged_paths(flags):
+        pattern = _path_text(path, pattern=True)
+        if pattern in allowed:
+            continue
+        if len(path) > 1 and path[0] in nested and pattern not in nested[path[0]]:
+            continue
+        # 설정하지 않은 provider 계산 속성이 통째로 미확정인 경우만 넘긴다.
+        if len(path) == 1 and path[0] not in guarded:
+            continue
+        raise PolicyViolation(f"STORAGE_RESOURCE_UNKNOWN: {address}.{_path_text(path)}{where}")
 
 
 def external_task_role(
@@ -212,8 +286,13 @@ def inspect_storage_plan(
     external_roles: Mapping[str, Any] | None,
     configured_buckets: dict[str, str],
     storage_bucket: str | None = None,
+    configured_keys: Mapping[str, Collection[str]] | None = None,
 ) -> set[str]:
-    """삭제 예외를 부여하기 전에 네 리소스의 before까지 검증한다."""
+    """삭제 예외를 부여하기 전에 네 리소스의 before까지 검증한다.
+
+    configured_keys는 plan configuration의 리소스별 expressions 키다. 설정한 속성은
+    provider 계산 속성처럼 unknown을 넘기지 않는다.
+    """
     require(intent in (None, "create", "remove"), "STORAGE_INTENT")
     if intent is not None:
         require(_reserved_bucket(project, storage_bucket), "STORAGE_NAME_SCOPE")
@@ -247,31 +326,9 @@ def inspect_storage_plan(
                 change.get("actions") in (["create"], ["update"], ["no-op"]), "UPDATE_DESTRUCTIVE"
             )
             require(isinstance(change.get("after"), dict), "STORAGE_RESOURCE_UNKNOWN")
-        keys = {
-            "bucket",
-            "name",
-            "name_prefix",
-            "role",
-            "policy",
-            "force_destroy",
-            "rule",
-            "acl",
-            *_PUBLIC_BLOCK,
-        }
+        configured = (configured_keys or {}).get(address, ())
         for field in ("after_unknown", "after_sensitive", "before_sensitive"):
-            flags = change.get(field) or {}
-            checked_keys = (
-                keys - {"bucket"}
-                if (
-                    field == "after_unknown"
-                    and kind not in ("aws_s3_bucket", "aws_iam_role_policy")
-                )
-                else keys
-            )
-            require(
-                isinstance(flags, dict) and not any(flags.get(key) for key in checked_keys),
-                "STORAGE_RESOURCE_UNKNOWN",
-            )
+            _require_known(kind, address, field, change.get(field) or {}, configured)
         for field in ("before", "after"):
             body = change.get(field)
             if body is None:

@@ -305,7 +305,12 @@ class DeploymentService:
                 project_settings={
                     **{
                         key: context.project_settings[key]
-                        for key in ("aws_expected_account_id", "git_auth_source", "_infra_storage")
+                        for key in (
+                            "aws_expected_account_id",
+                            "git_auth_source",
+                            "_infra_storage",
+                            "_infra_mapping_suggestions",
+                        )
                         if key in context.project_settings
                     },
                     **validated.model_dump(mode="json", exclude_unset=True),
@@ -1281,6 +1286,11 @@ class DeploymentService:
             "decision_basis": self._decision_basis(run_id, p.plan.model_dump(mode="json")),
             "patch_meta": json.loads(p.patch_meta_json),
             "infra_summary": json.loads(p.infra_summary_json),
+            "infra": {
+                "mapping_suggestions": p.context.project_settings.get(
+                    "_infra_mapping_suggestions", []
+                ),
+            },
         }
 
     @staticmethod

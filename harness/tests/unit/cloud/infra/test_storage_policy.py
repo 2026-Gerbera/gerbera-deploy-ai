@@ -482,7 +482,207 @@ def test_unknown_bucket_requires_exact_configuration_reference():
 def test_unknown_policy_fields_rejected(field):
     raw = plan()
     raw["resource_changes"][-1]["change"]["after_unknown"][field] = True
-    with pytest.raises(PolicyViolation, match="STORAGE_RESOURCE_UNKNOWN"):
+    with pytest.raises(PolicyViolation, match="STORAGE_RESOURCE_UNKNOWN") as exc:
+        summarize(raw)
+    assert str(exc.value) == f"STORAGE_RESOURCE_UNKNOWN: aws_iam_role_policy.uploads.{field}"
+
+
+BUCKET_REF = {"references": ["aws_s3_bucket.uploads.id", "aws_s3_bucket.uploads"]}
+PUBLIC_BLOCK = (
+    "block_public_acls",
+    "block_public_policy",
+    "ignore_public_acls",
+    "restrict_public_buckets",
+)
+SSE = "aws_s3_bucket_server_side_encryption_configuration.uploads"
+PAB = "aws_s3_bucket_public_access_block.uploads"
+
+
+def provider_plan():
+    """storage.tf를 provider가 plan한 모양: 계산 속성 unknown, 중첩 블록의 빈 표시."""
+    raw = plan()
+    rows = {row["address"]: row["change"] for row in raw["resource_changes"]}
+    rows["aws_s3_bucket.uploads"]["after_unknown"] = {
+        key: True
+        for key in (
+            "id",
+            "arn",
+            "acl",
+            "policy",
+            "grant",
+            "bucket_prefix",
+            "bucket_domain_name",
+            "bucket_regional_domain_name",
+            "hosted_zone_id",
+            "object_lock_enabled",
+            "versioning",
+            "server_side_encryption_configuration",
+            "lifecycle_rule",
+        )
+    } | {"tags_all": {}}
+    rows["aws_s3_bucket.uploads"]["after_sensitive"] = {"tags_all": {}}
+    for address in (
+        "aws_s3_bucket_public_access_block.uploads",
+        "aws_s3_bucket_server_side_encryption_configuration.uploads",
+    ):
+        del rows[address]["after"]["bucket"]
+        rows[address]["after_unknown"] = {"id": True, "bucket": True}
+    sse = rows["aws_s3_bucket_server_side_encryption_configuration.uploads"]
+    sse["after_unknown"]["rule"] = [
+        {"bucket_key_enabled": True, "apply_server_side_encryption_by_default": [{}]}
+    ]
+    sse["after_sensitive"] = {"rule": [{"apply_server_side_encryption_by_default": [{}]}]}
+    rows["aws_iam_role_policy.uploads"]["after_unknown"] = {"id": True}
+    raw["configuration"] = {
+        "root_module": {
+            "resources": [
+                {
+                    "type": "aws_s3_bucket",
+                    "address": "aws_s3_bucket.uploads",
+                    "expressions": {
+                        "bucket": {"references": ["var.upload_bucket"]},
+                        "force_destroy": {"constant_value": True},
+                    },
+                },
+                {
+                    "type": "aws_s3_bucket_public_access_block",
+                    "address": "aws_s3_bucket_public_access_block.uploads",
+                    "expressions": {
+                        "bucket": BUCKET_REF,
+                        **{key: {"constant_value": True} for key in sorted(PUBLIC_BLOCK)},
+                    },
+                },
+                {
+                    "type": "aws_s3_bucket_server_side_encryption_configuration",
+                    "address": "aws_s3_bucket_server_side_encryption_configuration.uploads",
+                    "expressions": {
+                        "bucket": BUCKET_REF,
+                        "rule": [
+                            {
+                                "apply_server_side_encryption_by_default": [
+                                    {"sse_algorithm": {"constant_value": "AES256"}}
+                                ]
+                            }
+                        ],
+                    },
+                },
+                {
+                    "type": "aws_iam_role_policy",
+                    "address": "aws_iam_role_policy.uploads",
+                    "expressions": {
+                        "name": {"constant_value": "uploads"},
+                        "role": {"constant_value": "flaskr-task"},
+                        "policy": {"references": ["var.upload_bucket"]},
+                    },
+                },
+            ]
+        }
+    }
+    return raw, rows
+
+
+def test_provider_computed_unknowns_pass():
+    raw, rows = provider_plan()
+    rows[SSE]["after_unknown"]["rule"][0]["apply_server_side_encryption_by_default"][0][
+        "kms_master_key_id"
+    ] = True
+    assert summarize(raw)["counts"]["create"] == 4
+
+
+def test_new_provider_computed_rule_fields_pass():
+    raw, rows = provider_plan()
+    rows[SSE]["after_unknown"]["rule"][0]["blocked_encryption_types"] = True
+    assert summarize(raw)["counts"]["create"] == 4
+
+
+def test_remove_with_provider_sensitive_shape_passes():
+    raw = plan(["delete"])
+    sse = next(row for row in raw["resource_changes"] if row["address"] == SSE)
+    sse["change"]["before_sensitive"] = {
+        "rule": [{"apply_server_side_encryption_by_default": [{}]}]
+    }
+    sse["change"]["after_sensitive"] = False
+    assert summarize(raw, storage_intent="remove")["counts"]["delete"] == 4
+
+
+@pytest.mark.parametrize(
+    "address,mutate,detail",
+    [
+        (
+            SSE,
+            lambda c: c["after_unknown"]["rule"][0]["apply_server_side_encryption_by_default"][
+                0
+            ].update(sse_algorithm=True),
+            f"{SSE}.rule[0].apply_server_side_encryption_by_default[0].sse_algorithm",
+        ),
+        (SSE, lambda c: c["after_unknown"].update(rule=True), f"{SSE}.rule"),
+        (
+            SSE,
+            lambda c: c["after_sensitive"]["rule"][0]["apply_server_side_encryption_by_default"][
+                0
+            ].update(sse_algorithm=True),
+            f"{SSE}.rule[0].apply_server_side_encryption_by_default[0].sse_algorithm"
+            " (after_sensitive)",
+        ),
+        *[
+            (PAB, lambda c, key=key: c["after_unknown"].update({key: True}), f"{PAB}.{key}")
+            for key in PUBLIC_BLOCK
+        ],
+        (
+            "aws_s3_bucket.uploads",
+            lambda c: c["after_unknown"].update(bucket=True),
+            "aws_s3_bucket.uploads.bucket",
+        ),
+        (
+            "aws_s3_bucket.uploads",
+            lambda c: c["after_unknown"].update(force_destroy=True),
+            "aws_s3_bucket.uploads.force_destroy",
+        ),
+        (
+            "aws_s3_bucket.uploads",
+            lambda c: c["after_unknown"].update(tags_all={"Name": True}),
+            "aws_s3_bucket.uploads.tags_all.Name",
+        ),
+        (
+            "aws_iam_role_policy.uploads",
+            lambda c: c["after_unknown"].update(policy=True),
+            "aws_iam_role_policy.uploads.policy",
+        ),
+        (
+            "aws_iam_role_policy.uploads",
+            lambda c: c.update(after_sensitive={"policy": True}),
+            "aws_iam_role_policy.uploads.policy (after_sensitive)",
+        ),
+        (
+            "aws_iam_role_policy.uploads",
+            lambda c: c.update(after_unknown=True),
+            "aws_iam_role_policy.uploads (after_unknown)",
+        ),
+    ],
+)
+def test_guaranteed_values_must_be_known(address, mutate, detail):
+    raw, rows = provider_plan()
+    mutate(rows[address])
+    with pytest.raises(PolicyViolation) as exc:
+        summarize(raw)
+    assert str(exc.value) == f"STORAGE_RESOURCE_UNKNOWN: {detail}"
+
+
+def test_configured_attribute_cannot_hide_as_provider_computed():
+    raw, _ = provider_plan()
+    bucket = raw["configuration"]["root_module"]["resources"][0]
+    bucket["expressions"]["acl"] = {"references": ["aws_s3_bucket.other.acl"]}
+    with pytest.raises(PolicyViolation) as exc:
+        summarize(raw)
+    assert str(exc.value) == "STORAGE_RESOURCE_UNKNOWN: aws_s3_bucket.uploads.acl"
+
+
+def test_unknown_bucket_without_configuration_reference_still_rejected():
+    raw, _ = provider_plan()
+    raw["configuration"]["root_module"]["resources"][1]["expressions"]["bucket"] = {
+        "references": ["aws_s3_bucket.other.id"]
+    }
+    with pytest.raises(PolicyViolation, match="STORAGE_NAME_SCOPE"):
         summarize(raw)
 
 

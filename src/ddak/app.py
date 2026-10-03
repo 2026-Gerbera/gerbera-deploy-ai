@@ -664,11 +664,11 @@ async def _prepare_commit_inner(
             platform=platform,
             project_settings={
                 **context.project_settings,
-                **(
-                    {"_infra_storage": bundle.context.project_settings["_infra_storage"]}
-                    if "_infra_storage" in bundle.context.project_settings
-                    else {}
-                ),
+                **{
+                    key: bundle.context.project_settings[key]
+                    for key in ("_infra_storage", "_infra_mapping_suggestions")
+                    if key in bundle.context.project_settings
+                },
             },
             cloud_domain=context.cloud_domain,
             build_backend=context.build_backend,
