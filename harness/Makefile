@@ -105,3 +105,17 @@ tf-plan: ## terraform fmt/validate/plan (apply 타깃 없음)
 
 clean: ## 개발 캐시만 삭제(실행 기록·잠금 보존)
 	$(DEV) clean
+
+# 시연 반복: 앱 저장소 prod를 v1으로 되돌리는 PR·시연용 v2 PR 준비(merge는 사람이 GitHub에서 한다).
+# 변수: REPO(기본 2026-Gerbera/gerbera-application), DRY=1(push·PR 없이 미리보기). 대본: docs/guides/demo-runbook.md
+.PHONY: demo-status demo-reset-v1 demo-prepare-v2
+DEMO_CYCLE := uv run python scripts/demo_cycle.py $(if $(REPO),--repo $(REPO),) $(if $(DRY),--dry-run,)
+
+demo-status: ## 앱 저장소 prod 트리·열린 demo PR 확인(PR 준비: demo-reset-v1, demo-prepare-v2)
+	$(DEMO_CYCLE) status
+
+demo-reset-v1: ## prod를 v1 트리로 되돌리는 PR 열기(DRY=1 미리보기)
+	$(DEMO_CYCLE) reset-v1
+
+demo-prepare-v2: ## 시연용 v2 PR 열기(DRY=1 미리보기)
+	$(DEMO_CYCLE) prepare-v2
