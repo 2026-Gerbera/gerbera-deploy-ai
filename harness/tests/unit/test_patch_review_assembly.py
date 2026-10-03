@@ -27,8 +27,8 @@ from ddak.plan.patch import pipeline
 from ddak.plan.patch import tool as patch_tool
 from tests.unit import test_deployment_service as support
 from tests.unit.test_approval_meta import HASH, summary
-from tests.unit.test_ui_integration_fix10 import client_for, post
-from tests.unit.test_ui_patch_review import COOKIE, ORIGINAL, begin, wait_review
+from tests.unit.test_ui_integration_fix10 import client_for
+from tests.unit.test_ui_patch_review import COOKIE, ORIGINAL, begin, post, wait_review
 
 rig = support.rig
 

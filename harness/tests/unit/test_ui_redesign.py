@@ -409,9 +409,13 @@ def test_review_error_keeps_required_selection_and_user_prompt(review_ui):
             f"/runs/{rid}/patch-review",
             action="revise:config-file",
             revision="3",
+            _form_id="patch-review",
+            _return_to=f"/runs/{rid}/patch-review",
             **{"apply_config-file": "on", "prompt_config-file": "수정 요청 <확인>"},
         )
-        assert response.status_code == 409
+        assert response.status_code == 303
+        response = client.get(response.headers["location"])
+        assert "PRECONDITION_FAILED" in response.text
         assert "다시 확인" in response.text and "수정 요청 &lt;확인&gt;" in response.text
         assert "2개 중 2개 선택" in response.text
         assert "checked" in ReviewControls(response.text).named("apply_retained")[0]

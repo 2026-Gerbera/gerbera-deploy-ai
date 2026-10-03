@@ -1,2 +1,3 @@
 <p class="live-refresh"><span data-refresh-state role="status">3초마다 최신 상태를 확인합니다.</span> <a href="{{ request.url.path }}{% if project %}?project={{ project|urlencode }}{% endif %}">지금 새로고침</a></p>
 <noscript><p>자동 갱신에는 JavaScript가 필요합니다. ‘지금 새로고침’으로 상태를 확인하세요.</p></noscript>
+<div data-refresh-errors></div>

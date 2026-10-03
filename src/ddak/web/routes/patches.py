@@ -1,13 +1,16 @@
+import re
+
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse, Response
 
-from ddak.core.contracts.errors import DdakToolError
+from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.redact import redact
 from ddak.web.dependencies import deployment, templates
+from ddak.web.form_errors import FormRoute, form_context
 from ddak.web.forms import parse_form
 from ddak.web.security import csrf_token, issue_csrf, require_safe_post
 
-router = APIRouter(prefix="/runs")
+router = APIRouter(prefix="/runs", route_class=FormRoute)
 
 
 def _reviews(request: Request):
@@ -42,6 +45,13 @@ def _review_response(
         review = _reviews(request).view(run_id)
     except DdakToolError as exc:
         blocked, status, error = True, 409, redact(exc.message)
+    post_error = form_context(request)["post_error"]
+    if post_error and post_error["form_id"] == "patch-review":
+        submitted = post_error.get("submitted", {})
+    if submitted and (not review or submitted.get("revision") != str(review["revision"])):
+        submitted = {}
+    if post_error and submitted and review and review["state"] == "ready" and not blocked:
+        post_error["inputs_restored"] = True
     selection = list(review.get("selected", [])) if review else []
     if review and submitted and submitted.get("revision") == str(review["revision"]):
         selection = [
@@ -81,8 +91,6 @@ async def patch_review_page(request: Request, run_id: str):
         return _review_response(request, run_id)
     except KeyError as exc:
         raise HTTPException(404, "실행을 찾을 수 없습니다") from exc
-    except DdakToolError as exc:
-        raise HTTPException(409, redact(exc.message)) from exc
 
 
 @router.post("/{run_id}/patch-review")
@@ -91,12 +99,19 @@ async def patch_review_action(request: Request, run_id: str):
     require_safe_post(request, form.get("csrf_token", ""))
     reviews = _reviews(request)
     try:
+        # 새 생성이 목록을 비운 때에도 이전 탭의 초안을 복구한다.
+        # 적용 가능 여부는 아래 reviews.request가 현재 제안·revision으로 검사한다.
+        request.state.retained_form = {
+            key: redact(value[:2000], max_len=None)
+            for key, value in form.items()
+            if key == "revision" or re.fullmatch(r"(?:apply|prompt)_[a-z0-9_-]{1,64}", key)
+        }
         action = form.get("action", "")
         if action == "begin":
             reviews.begin(run_id)
         else:
             if not form.get("revision", "").isascii() or not form.get("revision", "").isdigit():
-                raise ValueError("revision")
+                raise DdakToolError(ErrorCode.CONFIG_INVALID, "검토 버전 형식이 잘못됐습니다")
             selected = [
                 key.removeprefix("apply_")
                 for key, value in form.items()
@@ -120,13 +135,6 @@ async def patch_review_action(request: Request, run_id: str):
                 return RedirectResponse(f"/runs/{run_id}/approval", status_code=303)
     except KeyError as exc:
         raise HTTPException(404, "실행을 찾을 수 없습니다") from exc
-    except (DdakToolError, ValueError) as exc:
-        detail = (
-            redact(exc.message)
-            if isinstance(exc, DdakToolError)
-            else "검토 버전 형식이 잘못됐습니다"
-        )
-        return _review_response(request, run_id, error=detail, status=409, submitted=form)
     return RedirectResponse(f"/runs/{run_id}/patch-review", status_code=303)
 
 

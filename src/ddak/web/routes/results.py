@@ -6,8 +6,9 @@ from fastapi.responses import RedirectResponse
 from ddak.core.contracts.errors import DdakToolError
 from ddak.core.redact import redact, redact_obj
 from ddak.web.dependencies import TERMINAL_STATUSES, deployment, public_links, run_link, templates
+from ddak.web.form_errors import FormRoute
 
-router = APIRouter(prefix="/runs")
+router = APIRouter(prefix="/runs", route_class=FormRoute)
 
 
 @router.get("/{run_id}/result")

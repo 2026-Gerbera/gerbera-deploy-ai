@@ -13,11 +13,20 @@ from ddak.core.snapshots import digest_bytes, materialize
 from ddak.executor.patch_review import PatchReviews
 from ddak.plan.patch import combine_review, proposal_diff
 from tests.unit import test_deployment_service as support
-from tests.unit.test_ui_integration_fix10 import client_for, post
+from tests.unit.test_ui_integration_fix10 import BASE, client_for
 
 rig = support.rig
 ORIGINAL = 'import os\nSECRET_KEY = "dev"\n'
 COOKIE = "import os\nSESSION_COOKIE_SECURE = False\n"
+
+
+def post(client, path, **data):
+    return client.post(
+        path,
+        data={"csrf_token": client.cookies.get("ddak_csrf"), **data},
+        headers={"origin": BASE, "accept": "text/html", "X-Ddak-Form": "1"},
+        follow_redirects=False,
+    )
 
 
 def proposal(identity, line, code, env, path="app.py"):
@@ -285,8 +294,10 @@ def test_csrf_busy_unknown_selection_and_source_change(review_rig):
             revision=recovered["revision"],
         )
         assert failed.status_code == 409
-        assert "승인 자료를 다시 준비해야 합니다" in failed.text
-        assert "선택한 수정으로 승인 자료 준비</button>" not in failed.text
+        assert failed.json()["error"]["code"] == "PRECONDITION_FAILED"
+        blocked = client.get("/runs/review-parent/patch-review").text
+        assert "승인 자료를 다시 준비해야 합니다" in blocked
+        assert "선택한 수정으로 승인 자료 준비</button>" not in blocked
         with pytest.raises(DdakToolError, match="원본 코드"):
             reviews.request("review-parent", recovered["revision"], "finalize", [])
 

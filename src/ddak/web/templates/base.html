@@ -16,6 +16,7 @@
     <span class="project-label"{% if project %} title="{{ project }}"{% endif %}>{{ project or '전체 프로젝트' }}</span>
   </header>
   <div hidden>{% block breadcrumb %}{% endblock %}</div>
+  {% from '_status.html' import error_box %}
   <div class="app-shell" data-sidebar-open="true">
     <aside id="sidebar" class="sidebar" aria-label="탐색 메뉴">
       <nav aria-label="전체 탐색"><a class="sidebar-home" href="/"{% if request.url.path == '/' and not project %} aria-current="page"{% endif %}>전체 프로젝트</a></nav>
@@ -30,8 +31,11 @@
         <a href="/settings?project={{ project|urlencode }}"{% if request.url.path == '/settings' %} aria-current="page"{% endif %}>프로젝트 설정</a>
       </nav>{% endif %}
     </aside>
-    <main id="main">{% block content %}{% endblock %}</main>
+    <main id="main">{% block content %}{% endblock %}
+      {% set remaining_error = form_error_for(request) if form_error_for is defined and request.scope is defined else None %}{% if remaining_error %}{{ error_box(remaining_error) }}{% endif %}
+    </main>
   </div>
-  <script src="/static/app.js?v=ledger-patch-review-20261003" defer></script>
+  <template id="form-error-template">{{ error_box() }}</template>
+  <script src="/static/app.js?v=ledger-form-errors-20261003" defer></script>
 </body>
 </html>

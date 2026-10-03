@@ -119,3 +119,61 @@ gitleaks git --redact --no-banner --report-format json \
 독립 PRE는 REVISED, 최종 집중 POST는 **PASS**, 남은 차단 지적은 없다. 외부 Claude는 사용자 금지에 따라 실행하지 않았다. 경고 가림·중복 제거·HTML 이스케이프·재검토 이후 보존도 fake 검토로 확인했다. `d12-review-final.json`.
 
 최종 45파일을 `git add`했고 충돌 0개, unstaged tracked 변경 0개다. HEAD는 2befb3c, MERGE_HEAD는 dfe9996으로 유지되며 **병합 커밋은 아직 만들지 않았다**. 변경 파일 45개 사본의 gitleaks dir도 발견 0건이며 테스트 사본은 `.py.evidence.txt`다(`d12-changed-files.json`, `d12-gitleaks-changed.log/json`). 기존 `.venv` 링크는 untracked 상태로 보존했다.
+
+## #32 관리 폼 오류 표시 병합 — 2026-10-03
+
+기준은 사용자 커밋 `4018a539d7e122025f5fadef25a919c39e54bc3b`다. 같은 worktree에서 `git fetch origin` 후 `git merge --no-commit --no-ff origin/main`을 실행했다. 병합 대상은 `be528396a0d409febf00cbf5b1c659623f419a08`(#32)이며, 충돌한 8개 파일을 양쪽 동작에 맞춰 합쳤다. O1 기록은 두 부모의 비어 있지 않은 모든 줄이 원래 순서대로 남는지 검사했다.
+
+### 오류 응답과 검토 흐름
+
+- 패치 검토의 begin/save/revise/adopt/keep/finalize/cancel도 `FormRoute`를 쓴다. fetch 실패는 JSON 오류 코드·가린 원인을 같은 폼 아래 표시한다. 실패 후 버튼을 복구하며 기존 선택·프롬프트를 유지한다. `name="action"` 버튼이 브라우저의 `form.action`을 가리는 문제는 HTML 속성을 읽도록 고쳤다.
+- no-JS는 303으로 복귀한다. 패치 선택·프롬프트, 운영 브랜치·해제 사유만 CSRF 확인 뒤 선별·가림 처리하여 기존 세션/화면/프로젝트별 일회성 캐시에 보관한다. 키·토큰 등 setup의 비밀 입력을 보관하지 않는 #32 정책은 유지한다.
+- 검토 버전이 같을 때만 입력을 현재 폼에 복원한다. 오래된 버전, 후속 승인 화면, 작업 진행 중에는 별도 읽기 전용 초안으로 표시한다. 최신 제안에 자동 적용하지 않는다. 실패 초안을 보여 주는 진행 화면은 자동 새로고침을 멈추고, 복사 후 상태를 확인할 링크를 제공한다.
+- 비동기 생성·재검토·조합 실패와 재시작 중단도 폼 아래 코드·원인으로 표시한다. `patch_lost`는 별도 중단 상태를 유지하며 위치만 표시하고 값은 가린다. 기존 승인 관문·후보 명시 채택·재검증·대상별 해시는 유지한다.
+- 승인 저장 뒤 실행 시작이 실패하면 같은 승인 화면에 시작 재시도를 제공한다. 기존 승인 ID와 해시를 그대로 쓰며 승인 기록을 새로 만들지 않는다. 저장소의 실행 잠금·실행 전 승인 검증은 계속 적용한다.
+- 대시보드 운영 폼의 no-JS 오류는 해당 details를 펼쳐 표시한다. 자동 갱신은 요청 중이거나 입력 중인 폼을 보호한다. 제출 오류만으로 상태 갱신을 멈추지는 않으며, 폼이 남으면 오류를 폼 아래 옮기고 폼이 사라지면 상태 영역 아래에 보존한다.
+- B안 탐색·토큰·`_status.html`, `/ops` 승인 별칭의 canonical 화면, window 없는 스크립트 실행 및 step 이벤트별 `[data-phase]` 1회 조회를 유지했다. 공개 계약·스키마 변경은 없다.
+
+### 검증 증거
+
+모든 이번 증거는 `harness/var/validation/ui-patch-review-20261003/setup32/`에 있다. 이 디렉토리는 ignore 대상이므로 인계 때 로그·캡처도 별도로 보존한다.
+
+- 집중 통합 회귀: `focused-final.log` 148 passed. 브라우저의 named-action 충돌 보완 후 `browser-fix-tests.log` 42 passed. 독립 검토 보완 후 `post-fixes.log` 146 passed, 후속 초안 보존까지 포함한 `draft-followup.log` 147 passed.
+- 첫 CI(`ci.log`)는 실행 중 JS와 VM fixture가 바뀐 2개 실패를 포함하므로 완료 근거가 아니다. `before-post-ci-verified.log`는 0 failed지만 입력 해시가 달라 제외했다. `before-draft-ci-verified.log`는 4018 passed, 0 failed, 입력 577개 해시 동일이며 후속 초안 보완 전 기준이다. 최종 완료 수치는 아래 최종 검증 기록을 따른다.
+- Git 이력 검사 `gitleaks-git.log/json`: 215 commits, 발견 0건, exit 0. 변경 파일 사본과 최종 stage 검사는 최종 기록에 추가한다. 테스트 사본은 `.py.evidence.txt`로 저장한다.
+- 외부 Claude 호출 없이 독립 PRE·POST와 집중 재검토를 진행했다. 정적 지적은 실제 HTTP·Node VM·브라우저 반례로 보완했다.
+
+### 브라우저 검증
+
+127.0.0.1의 실제 템플릿·라우터·저장소와 로컬 fixture 생성/재계획을 연결했다. AWS·VM·Docker·Claude는 호출하지 않았다. JS가 있는 화면에서 수정 요청 실패→입력 유지→저장 재시도→새 후보 비교·채택→새 승인 화면을 확인했다. 최종 승인 버튼은 하나다.
+
+| 화면 | 캡처·측정 파일(setup32 기준) |
+|---|---|
+| 비동기 실패, 선택·프롬프트 유지 | `patch-error-1440.png`, `patch-error-1280.png`, `patch-error-390.png`, `browser-checks.json` |
+| 즉시 입력 오류 | `inline-error-1280.png` |
+| 새 후보 비교 | `candidate-1280.png` |
+| 재검증 후 새 승인 | `approval-1440.png`, `approval-1280.png`, `approval-390.png`, `browser-approval.json` |
+| no-JS 오래된 초안 복구 | `nojs-stale-draft-1280.png` |
+| no-JS 시작 실패·기존 승인으로 재시도 | `nojs-start-retry-1280.png`, `nojs-start-retry-detail-1280.png` |
+| no-JS 운영 오류 펼침·브랜치 v2 보존 | `nojs-dashboard-error-1280.png`, `nojs-dashboard-check.json` |
+
+오류 검토 화면과 새 승인 화면은 1440·1280·390px에서 문서 폭과 화면 폭이 일치했다. 가로 넘침은 없었다. 추가 no-JS 확인은 노트북 폭 1280px에서 했다. no-JS fixture는 HTML에서 앱 스크립트만 제외했고 DOM의 외부 스크립트 0개를 확인했다. 운영 라우터도 실제 앱 조립과 같이 등록했다. 서버는 모두 `quit` 입력으로 정상 종료했다.
+
+남은 운영 확인은 실서비스 연결과 실제 인프라 배포다. 이번 결과로 실환경 성공이나 제공자 응답 품질을 보증하지 않는다. 시작 전부터 있던 `.venv -> ../../.venv` 링크는 그대로 두고 stage에서 제외한다.
+
+### 초안 복구 후속 검토
+
+후속 승인 화면과 진행 중인 화면에서도 복구 입력을 보여 주도록 공통 오류 상자에 읽기 전용 초안을 연결했다. 검토를 닫고 재생성하여 현재 proposals가 비어 있어도 이전 입력은 잃지 않는다. 복구 필드는 `revision` 및 제안 ID 형식의 `apply_*`·`prompt_*`로 제한하고 가림 처리한다. 실제 적용은 기존 revision·현재 제안 검사가 결정하므로, 보관한 초안으로 승인 관문을 우회하지 못한다.
+
+`recovery-final.log`: **71 passed, 13.30초**. 생성 중 빈 목록에서 이전 초안·선택 보존, 새 저장 상태 불변, 자동 새로고침 중단, token/value 미보관을 검사했다. 최종 집중 독립 검토는 **PASS**, 지적 범위의 잔여 차단 결함은 없다. 리뷰는 읽기 전용이며 실행 증거는 별도 테스트 로그다. `before-regeneration-ci-verified.log`의 4019 passed는 마지막 두 파일 변경 전 실행이므로 최종 증거에서 제외한다.
+
+### 속도 우선 지시 적용 및 인계 완료
+
+2026-10-03 추가 지시에 따라 전체 CI·독립 검토·gitleaks를 더 실행하지 않는다. 앞의 최종 전체 CI 대기 조건은 이 지시로 대체한다. 지시 도착 전에 시작한 전체 CI는 종료 명령 없이 두고, 결과를 기다리거나 완료 근거로 삼지 않는다.
+
+최종 코드의 직접 관련 테스트는 `test_patch_review_form_errors.py`, `test_form_errors.py`, `test_form_submit_js.py`이며 **71 passed, 13.30초**다(`setup32/recovery-final.log`). 선택·수정 요청·후보 채택·재검증·승인 오류, CSRF, no-JS 복귀와 입력·초안 보존, 폼 제출·자동 갱신을 확인했다. 40개 변경 파일은 stage 상태이며 충돌을 해소했다. 사용자 HEAD 4018a53과 MERGE_HEAD be52839를 유지하고 커밋은 만들지 않았다.
+
+### 후속 작업
+
+- 정준우가 push 전에 샌드박스 밖에서 전체 CI와 gitleaks를 실행한다.
+- 실제 AWS·VM·Docker·모델 연결을 사용하는 배포는 이번 로컬 fixture 검증과 별도로 확인한다.

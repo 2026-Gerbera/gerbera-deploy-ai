@@ -355,6 +355,7 @@ class Store:
                     data.update(
                         state="ready",
                         error="서비스가 재시작돼 요청이 중단됐습니다. 기존 제안을 유지했습니다.",
+                        error_code=ErrorCode.INTERNAL.value,
                         revision=row[1] + 1,
                     )
                     db.execute(

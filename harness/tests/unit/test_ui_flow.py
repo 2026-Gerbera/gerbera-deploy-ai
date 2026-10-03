@@ -194,9 +194,11 @@ def test_polling_refresh_retry_and_teardown_without_post():
     (async()=>{
       const timeouts=new Map(), intervals=new Map(), events={};let id=0,requests=0,replaced=0;
       const status={textContent:''};
-      let region={dataset:{liveVersion:'one'},contains:()=>false,replaceWith(next){
+      let region={dataset:{liveVersion:'one'},contains:()=>false,
+        querySelectorAll:()=>[],replaceWith(next){
         replaced++;region=next}};
-      const next={dataset:{liveVersion:'two'},contains:()=>false,replaceWith:region.replaceWith};
+      const next={dataset:{liveVersion:'two'},contains:()=>false,
+        querySelectorAll:()=>[],replaceWith:region.replaceWith};
       const document={hidden:false,activeElement:null,
         querySelector:s=>s==='[data-live-region]'?region:
           s==='[data-refresh-state]'?status:null,querySelectorAll:()=>[],importNode:n=>n};

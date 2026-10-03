@@ -283,15 +283,20 @@ class PatchReviews:
                     if isinstance(exc, DdakToolError)
                     else "검토 요청에 실패했습니다. 기존 제안을 유지했습니다."
                 )
-                self._failed(run_id, current, detail)
+                code = (
+                    exc.code.value if isinstance(exc, DdakToolError) else ErrorCode.INTERNAL.value
+                )
+                self._failed(run_id, current, detail, code=code)
 
         self.tasks[run_id] = asyncio.create_task(work(), name=f"patch-review-{run_id}")
 
-    def _failed(self, run_id: str, current: dict, detail: str) -> None:
+    def _failed(
+        self, run_id: str, current: dict, detail: str, *, code: str = ErrorCode.INTERNAL.value
+    ) -> None:
         self.service.store.abort_patch_review_children(run_id, current["revision"])
         # 승인 거절·새 소스·다른 revision을 이전 작업이 덮어쓰지 않는다.
         with contextlib.suppress(KeyError, DdakToolError):
-            self._save(run_id, current, state="ready", error=detail[:1000])
+            self._save(run_id, current, state="ready", error=detail[:1000], error_code=code)
 
     def view(self, run_id: str) -> dict | None:
         data = self.get(run_id)

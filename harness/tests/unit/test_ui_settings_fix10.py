@@ -314,7 +314,10 @@ async def test_service_errors_are_redacted(
         await handler(request(service, path, {}))
     assert error.value.status_code == status
     assert secret not in error.value.detail
-    assert "[REDACTED]" in error.value.detail
+    if exception is DdakToolError:
+        assert "[REDACTED]" in error.value.detail
+    else:
+        assert "입력 형식 오류" in error.value.detail
 
 
 @pytest.mark.parametrize(
