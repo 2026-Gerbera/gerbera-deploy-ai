@@ -288,18 +288,21 @@ def test_platform_buildspec_is_package_file() -> None:
     assert "version: 0.2" in text
 
 
+def test_docker_hub_repo_from_infra_output() -> None:
+    assert docker_hub_repo("gerbera/flaskr") == "docker.io/gerbera/flaskr"
+
+
 @pytest.mark.parametrize(
-    ("value", "expected"),
+    "value",
     [
-        ("gerbera/flaskr", "docker.io/gerbera/flaskr"),  # 인프라 출력 형식
-        ("docker.io/gerbera/flaskr", "docker.io/gerbera/flaskr"),
+        "flaskr",
+        "gerbera/flaskr:latest",  # 태그
+        "ghcr.io/g/f",
+        "docker.io/gerbera/flaskr",  # registry hostname(공통 패턴은 namespace/repository만)
+        "gerbera/flaskr/extra",  # 여분 경로
+        "Gerbera/f",
     ],
 )
-def test_docker_hub_repo_from_infra_output(value: str, expected: str) -> None:
-    assert docker_hub_repo(value) == expected
-
-
-@pytest.mark.parametrize("value", ["flaskr", "gerbera/flaskr:latest", "ghcr.io/g/f", "Gerbera/f"])
 def test_docker_hub_repo_rejects_bad_output(value: str) -> None:
     with pytest.raises(DdakToolError):
         docker_hub_repo(value)
