@@ -46,6 +46,7 @@ def deploy_service(tier: str, ctx: RunContext) -> ProviderResult:
         desired_count=_platform.DESIRED_COUNT,
         environment=_runtime_environment(ctx),
         secrets=_runtime_secrets(ctx),
+        web_environment={"WAS_UPSTREAM": "127.0.0.1:8000"},
     )
     running = running_image(ecs, target, name, revision.task_definition)
     artifact = ctx.release_artifacts.images.get(tier) if ctx.release_artifacts else None

@@ -43,7 +43,7 @@ For a platform layer, create the complete first-deployment platform and use thes
   DB ingress is only from the app security group to TCP 3306. If using separate rule resources,
   name the public HTTP rule aws_vpc_security_group_ingress_rule.alb_http. Never create or manage an
   aws_default_security_group resource.
-- aws_lb.main, aws_lb_target_group.app, aws_lb_listener.http (301 HTTPS redirect),
+- aws_lb.main, aws_lb_target_group.app (deregistration_delay = 30), aws_lb_listener.http (301 HTTPS redirect),
   aws_lb_listener.https (TLS 1.2+ and forwarding).
 - aws_acm_certificate.main, aws_route53_record.certificate_validation,
   aws_acm_certificate_validation.main, and aws_route53_record.app. Use the provided domain and

@@ -181,7 +181,9 @@ async def _generate_infra_binding(
     request = GenerateInfraInput(
         run_id=ctx.run_id,
         directory=str(directory),
-        layer="platform" if ctx.mode is RunMode.BOOTSTRAP else "app",
+        # 현재 generate_infra 계약은 검증된 전체 platform 번들을 생성한다. 업데이트도 같은
+        # 기준본으로 plan을 계산하고, 앱 시크릿 값은 sync_env_to_cloud가 별도로 갱신한다.
+        layer="platform",
     )
     feedback_settings = dict(ctx.project_settings)
     if validation_feedback:

@@ -87,6 +87,7 @@ def register_revision(
     *,
     environment: Mapping[str, str] | None = None,
     secrets: Mapping[str, str] | None = None,
+    web_environment: Mapping[str, str] | None = None,
     only_containers: frozenset[str] | None = None,
 ) -> Revision:
     """서비스의 현재 태스크 정의를 복사해 images({컨테이너: 참조})만 바꾼 새 리비전을 등록한다.
@@ -134,6 +135,11 @@ def register_revision(
             was["secrets"] = [
                 {"name": name, "valueFrom": value} for name, value in sorted(secrets.items())
             ]
+    web = by_name.get("web")
+    if web is not None and web_environment is not None:
+        web["environment"] = [
+            {"name": name, "value": value} for name, value in sorted(web_environment.items())
+        ]
     if only_containers is not None:
         containers = [c for c in containers if c.get("name") in only_containers]
         for container in containers:
@@ -159,12 +165,20 @@ def replace_images(
     desired_count: int,
     environment: Mapping[str, str] | None = None,
     secrets: Mapping[str, str] | None = None,
+    web_environment: Mapping[str, str] | None = None,
     poll_s: float = 10.0,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
 ) -> Revision:
     """images로 새 리비전을 배포하고 완료까지 기다린다. 서비스가 0개면 desired_count로 올린다."""
-    revision = register_revision(client, target, images, environment=environment, secrets=secrets)
+    revision = register_revision(
+        client,
+        target,
+        images,
+        environment=environment,
+        secrets=secrets,
+        web_environment=web_environment,
+    )
     stopped = _service(client, target).get("desiredCount", 0) == 0
     if not revision.changed and not stopped:
         return revision
