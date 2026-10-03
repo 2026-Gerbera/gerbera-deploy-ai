@@ -1,4 +1,6 @@
-# cloud/infra — 정준우 실행부 / 김준석 generate_infra
+# cloud/infra — 정준우 실행부 / 양서윤 generate_infra
+
+> 10/3 정정: `tools/generate_infra` 실제 구현은 양서윤이고 PR #17로 통합됐다(이전 표기 "김준석"은 실제와 달랐다). 근거: [10/3 결정 따라잡기](../../../../harness/docs/decisions/2026-10-03-decisions-catch-up.md) 결정 17.
 
 10/2 야간: 내부 API와 `validate_infra`·`plan_infra`·`apply_infra` 레지스트리 연결을 구현했다. 실제 AWS 리허설은 하지 않았다. 최신 범위는 [C1 가이드](../../../../harness/docs/guides/C1.md)를 따른다.
 
