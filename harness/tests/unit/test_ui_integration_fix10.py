@@ -226,9 +226,14 @@ def test_progress_js_uses_server_terminal_states_and_ignores_stepless_events():
       close() { closed = true; }
     }
     const document = {
-      querySelector: () => ({ dataset: {runId:'fixture', status:'RUNNING',
-        terminalStates: JSON.stringify(['SUCCEEDED','FAILED_VERIFY','SUPERSEDED'])}}),
-      querySelectorAll: () => { activations++; return []; },
+      querySelector: (selector) => selector === '[data-run-id]'
+        ? { dataset: {runId:'fixture', status:'RUNNING',
+          terminalStates: JSON.stringify(['SUCCEEDED','FAILED_VERIFY','SUPERSEDED'])}}
+        : null,
+      querySelectorAll: (selector) => {
+        if (selector === '[data-phase]') activations++;
+        return [];
+      },
       createElement: () => ({}),
       getElementById: (id) => id === 'result-link'
         ? {classList:{remove:()=>{visible=true;}}} : list,

@@ -263,6 +263,46 @@ input:focus, select:focus { border-color: var(--blue); box-shadow: 0 0 0 4px rgb
 .event-placeholder { border-style: dashed; color: var(--muted-2); }
 .hidden { display: none !important; }
 
+/* Feedback and deployment preparation */
+.toast { position: fixed; top: 82px; right: 28px; width: min(380px, calc(100vw - 36px)); display: flex; align-items: center; gap: 12px; padding: 15px 16px; border: 1px solid rgba(85, 211, 158, .3); border-radius: 16px; background: rgba(35, 46, 61, .96); box-shadow: 0 22px 60px rgba(2, 8, 18, .34); backdrop-filter: blur(18px); z-index: 40; animation: toast-in .34s cubic-bezier(.2,.8,.2,1); }
+.toast-icon { width: 34px; height: 34px; display: grid; place-items: center; flex: 0 0 auto; border-radius: 11px; background: rgba(85, 211, 158, .14); color: var(--success); font-size: 15px; font-weight: 900; box-shadow: 0 0 18px rgba(85, 211, 158, .12); }
+.toast > div { min-width: 0; flex: 1; }
+.toast strong { color: var(--text); font-size: 12px; }
+.toast p { margin: 2px 0 0; color: var(--muted); font-size: 10px; }
+.toast button { width: 28px; height: 28px; border: 0; border-radius: 9px; background: transparent; color: var(--muted); cursor: pointer; font-size: 18px; }
+.toast button:hover { background: rgba(255,255,255,.06); color: var(--text); }
+.toast-leaving { animation: toast-out .26s ease forwards; }
+@keyframes toast-in { from { opacity: 0; transform: translateY(-12px) scale(.97); } }
+@keyframes toast-out { to { opacity: 0; transform: translateY(-8px) scale(.98); } }
+
+.modal-open { overflow: hidden; }
+.deploy-loading[hidden] { display: none; }
+.deploy-loading { position: fixed; inset: 0; display: grid; place-items: center; padding: 24px; background: rgba(11, 16, 25, .7); backdrop-filter: blur(12px); z-index: 60; animation: loading-backdrop-in .24s ease-out; }
+.deploy-loading-card { width: min(520px, 100%); padding: 42px 42px 36px; border: 1px solid rgba(114, 165, 255, .2); border-radius: 28px; background: linear-gradient(145deg, #2b3648, #222b3a); box-shadow: 0 35px 100px rgba(0, 6, 16, .5), inset 0 1px 0 rgba(255,255,255,.04); text-align: center; animation: loading-card-in .38s cubic-bezier(.2,.85,.25,1); }
+.loading-orbit { position: relative; width: 82px; height: 82px; display: grid; place-items: center; margin: 0 auto 26px; }
+.loading-orbit span { width: 54px; height: 54px; display: grid; place-items: center; border-radius: 18px; background: linear-gradient(145deg, #5689df, #315b9e); color: #fff; font-size: 20px; font-weight: 900; box-shadow: 0 12px 32px rgba(49, 91, 158, .4), 0 0 34px rgba(114, 165, 255, .16); }
+.loading-orbit i, .loading-orbit b { position: absolute; inset: 0; border: 1px solid rgba(114, 165, 255, .28); border-radius: 28px; animation: orbit-spin 2.6s linear infinite; }
+.loading-orbit i::after, .loading-orbit b::after { content: ""; position: absolute; top: 6px; left: 7px; width: 8px; height: 8px; border-radius: 50%; background: #78a9ff; box-shadow: 0 0 14px #78a9ff; }
+.loading-orbit b { inset: 8px; border-color: rgba(99, 209, 200, .2); animation-direction: reverse; animation-duration: 2s; }
+.loading-orbit b::after { top: auto; right: 2px; bottom: 7px; left: auto; width: 6px; height: 6px; background: #63d1c8; box-shadow: 0 0 13px #63d1c8; }
+.deploy-loading-card .eyebrow { justify-content: center; }
+.deploy-loading-card h2 { margin: 8px 0 9px; color: var(--text); font-size: 23px; }
+.deploy-loading-card > p:not(.eyebrow) { min-height: 20px; margin: 0; color: var(--muted); font-size: 12px; }
+.deploy-loading-card > small { display: block; margin-top: 20px; color: var(--muted-2); font-size: 9px; }
+.loading-progress { height: 4px; margin: 28px 0 19px; overflow: hidden; border-radius: 999px; background: #354052; }
+.loading-progress i { display: block; width: 34%; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #5689df, #63d1c8); box-shadow: 0 0 15px rgba(99, 209, 200, .42); animation: loading-travel 1.45s ease-in-out infinite; }
+.loading-stages { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.loading-stages span { color: #657187; font-size: 9px; font-weight: 750; transition: color .3s ease; }
+.loading-stages span::before { content: ""; width: 6px; height: 6px; display: block; margin: 0 auto 7px; border-radius: 50%; background: #465267; transition: .3s ease; }
+.loading-stages span.active { color: #bcd3fb; }
+.loading-stages span.active::before { background: #72a5ff; box-shadow: 0 0 12px rgba(114, 165, 255, .7); }
+.button:disabled { cursor: wait; opacity: .76; transform: none; }
+.button-spinner { width: 13px; height: 13px; display: inline-block; border: 2px solid rgba(255,255,255,.35); border-top-color: #fff; border-radius: 50%; animation: orbit-spin .75s linear infinite; }
+@keyframes loading-backdrop-in { from { opacity: 0; } }
+@keyframes loading-card-in { from { opacity: 0; transform: translateY(14px) scale(.97); } }
+@keyframes orbit-spin { to { transform: rotate(360deg); } }
+@keyframes loading-travel { 0% { transform: translateX(-110%); } 55%, 100% { transform: translateX(295%); } }
+
 /* Result */
 .result-hero { display: flex; align-items: center; gap: 18px; margin-bottom: 22px; padding: 26px; border: 1px solid var(--line); border-radius: 22px; background: linear-gradient(120deg, #fff, #f7fbff); box-shadow: var(--shadow); }
 .result-hero .result-symbol { position: relative; width: 56px; height: 56px; display: grid; place-items: center; flex: 0 0 auto; border-radius: 19px; background: var(--success-soft); color: var(--success); font-size: 24px; box-shadow: 0 8px 20px rgba(27, 156, 104, .1); }
@@ -408,6 +448,9 @@ input:hover, select:hover { border-color: #526077; }
   .approval-bar { position: static; align-items: stretch; flex-direction: column; }
   .approval-bar > div:last-child, .approval-bar button { width: 100%; }
   th, td { padding: 13px 15px; }
+  .toast { top: 70px; right: 18px; }
+  .deploy-loading-card { padding: 34px 22px 30px; }
+  .loading-stages { grid-template-columns: repeat(2, 1fr); row-gap: 14px; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }

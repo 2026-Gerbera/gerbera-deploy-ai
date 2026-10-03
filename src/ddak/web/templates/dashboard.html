@@ -6,8 +6,22 @@
 {% if preparations|selectattr('status', 'equalto', 'PREPARING')|list %}<meta http-equiv="refresh" content="2">{% endif %}
 <section class="page-heading">
   <div><p class="eyebrow">DEPLOYMENT OVERVIEW</p><h1>{{ project }}</h1><p>코드 변경부터 배포 검증까지 하나의 안전한 배포 흐름으로 관리합니다.</p></div>
-  <div class="heading-actions"><a class="button secondary" href="/settings?project={{ project|urlencode }}">프로젝트 설정</a>{% if settings and settings.repo_url %}<form method="post" action="/settings/deploy"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="project" value="{{ project }}"><button class="button" type="submit"><span>＋</span> 새 배포</button></form>{% endif %}</div>
+  <div class="heading-actions"><a class="button secondary" href="/settings?project={{ project|urlencode }}">프로젝트 설정</a>{% if settings and settings.repo_url %}<form method="post" action="/settings/deploy" data-deploy-form><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="project" value="{{ project }}"><button class="button" type="submit"><span>＋</span> 새 배포</button></form>{% endif %}</div>
 </section>
+
+<div class="deploy-loading" role="dialog" aria-modal="true" aria-labelledby="deploy-loading-title" aria-describedby="deploy-loading-description" data-deploy-loading hidden>
+  <div class="deploy-loading-card">
+    <div class="loading-orbit" aria-hidden="true"><span>G</span><i></i><b></b></div>
+    <p class="eyebrow live"><i></i>PREPARING DEPLOYMENT</p>
+    <h2 id="deploy-loading-title">새 배포를 준비하고 있어요</h2>
+    <p id="deploy-loading-description" data-loading-message>저장소의 최신 코드를 확인하고 있습니다.</p>
+    <div class="loading-progress" aria-hidden="true"><i></i></div>
+    <div class="loading-stages" aria-hidden="true">
+      <span class="active">소스 확인</span><span>변경 분석</span><span>계획 생성</span><span>승인 준비</span>
+    </div>
+    <small>요청이 접수되면 대시보드에 준비 상태가 표시됩니다. 준비가 끝나면 승인 링크가 나타납니다.</small>
+  </div>
+</div>
 
 {% include "_ops.html" %}
 {% include "_public_links.html" %}
