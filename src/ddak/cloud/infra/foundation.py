@@ -163,7 +163,7 @@ def apply_foundation(
     check_approval(
         approvals(),
         run_id=run_id,
-        project=settings.project,
+        project=settings.run_project,
         kind="infra" if infra_subject else "foundation",
         bound_to=infra_subject or subject,
     )

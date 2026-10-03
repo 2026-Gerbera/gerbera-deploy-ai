@@ -14,6 +14,7 @@ from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.contracts.tools.apply_infra import ApplyInfraInput, ApplyInfraOutput
 from ddak.core.contracts.tools.plan_infra import PlanInfraInput, PlanInfraOutput
 from ddak.core.contracts.tools.validate_infra import ValidateInfraInput, ValidateInfraOutput
+from ddak.core.project_settings import cloud_platform_name
 
 from .runtime import CommandRunner, InfraRuntime, SessionKeys
 
@@ -58,7 +59,9 @@ def _binding(run_id: str, ctx: RunContext) -> InfraBinding:
         binding is None
         or run_id != ctx.run_id
         or binding.mode is not ctx.adapter_mode
-        or binding.runtime.settings.project != ctx.project
+        or binding.runtime.settings.project
+        != cloud_platform_name(ctx.project, ctx.project_settings)
+        or binding.runtime.settings.run_project != ctx.project
     ):
         raise DdakToolError(ErrorCode.INFRA_MISSING, "해당 실행의 인프라 세션 연결이 필요하다")
     return binding

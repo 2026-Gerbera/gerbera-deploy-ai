@@ -60,7 +60,12 @@ from ddak.core.contracts.plan import Plan, PlanStep
 from ddak.core.contracts.plan_facts import FileMeta
 from ddak.core.contracts.tools.generate_infra import GenerateInfraInput, GenerateInfraOutput
 from ddak.core.contracts.tools.patch_config import PatchConfigInput, PatchConfigOutput
-from ddak.core.defaults import load_aws_defaults, load_defaults, project_values
+from ddak.core.defaults import (
+    cloud_platform_default,
+    load_aws_defaults,
+    load_defaults,
+    project_values,
+)
 from ddak.core.logging import get_logger
 from ddak.core.project_settings import ProjectSettings, watch_source
 from ddak.core.redact import redact_obj
@@ -427,6 +432,9 @@ async def _prepare_commit_inner(
             saved.get("aws_profile") or settings.aws_profile or load_defaults()["aws_profile"]
         )
         saved = {**saved, **project_values(saved)}
+        if saved.get("cloud_platform") is None:
+            # 관리 페이지 값이 없으면 기본 파일의 프로젝트별 플랫폼 이름을 스냅샷에 고정한다.
+            saved["cloud_platform"] = cloud_platform_default(target.project)
         saved.update(
             generation_provider=settings.selected_provider("generation"),
             generation_model=settings.llm_model,

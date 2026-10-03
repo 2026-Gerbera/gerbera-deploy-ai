@@ -216,6 +216,7 @@ def check_approval(
 
 @dataclass(frozen=True)
 class AwsSettings:
+    # 클라우드 플랫폼 이름(state key·var.project·태그·경계). 기본은 프로젝트 이름.
     project: str
     account_id: str
     state_bucket: str
@@ -224,8 +225,18 @@ class AwsSettings:
     outputs: Mapping[str, tuple[str, str]]
     alb_security_group_addresses: tuple[str, ...] = ()
     rds_master_secret_arn: str | None = None
+    # 승인 기록의 프로젝트 이름(관리 페이지 프로젝트). 없으면 project와 같다.
+    approval_project: str | None = None
+
+    @property
+    def run_project(self) -> str:
+        return self.approval_project or self.project
 
     def __post_init__(self) -> None:
+        if self.approval_project is not None and not re.fullmatch(
+            r"[a-z][a-z0-9_-]{0,63}", self.approval_project
+        ):
+            raise DdakToolError(ErrorCode.CONFIG_INVALID, "승인 프로젝트 이름 형식 오류")
         if self.rds_master_secret_arn is not None and (
             not self.rds_master_secret_arn.startswith(
                 f"arn:aws:secretsmanager:{REGION}:{self.account_id}:secret:rds!"
@@ -744,6 +755,9 @@ class InfraRuntime:
                 analyzer=analyzer,
                 checkov=checked,
             )
+            if self.settings.run_project != self.settings.project:
+                # 프로젝트와 다른 기존 플랫폼을 쓰는 계획임을 승인 화면에 드러낸다.
+                summary["headline"] += f" · 클라우드 플랫폼 {self.settings.project}"
             if self._waived:
                 summary["headline"] += " · 코드 지정 ALB 공개 HTTP 예외: " + ", ".join(
                     sorted(self._waived)
@@ -843,7 +857,7 @@ class InfraRuntime:
         check_approval(
             self._approval_reader(),
             run_id=self.run_id,
-            project=self.settings.project,
+            project=self.settings.run_project,
             kind="infra",
             bound_to=self._planned,
         )
@@ -907,7 +921,7 @@ class InfraRuntime:
                 check_approval(
                     self._approval_reader(),
                     run_id=self.run_id,
-                    project=self.settings.project,
+                    project=self.settings.run_project,
                     kind="infra",
                     bound_to=self._planned,
                 )

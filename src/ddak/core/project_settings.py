@@ -4,14 +4,19 @@ from __future__ import annotations
 
 import ipaddress
 import re
-from typing import Literal, Self
+from collections.abc import Mapping
+from typing import Any, Literal, Self
 from urllib.parse import urlsplit
 
 from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from ddak.core.contracts.base import ContractModel
 from ddak.core.contracts.deploy_request import RepoUrl
+from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.contracts.infra_outputs import IMAGE_REPOSITORY_PATTERN
+
+# 클라우드 쪽 프로젝트 이름 규칙(AwsSettings·IAM 경계와 같다). 소문자·숫자·하이픈만.
+CLOUD_PLATFORM_PATTERN = r"^[a-z][a-z0-9-]{0,39}$"
 
 
 class ProjectSettings(ContractModel):
@@ -39,6 +44,8 @@ class ProjectSettings(ContractModel):
     aws_profile: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.@-]{0,127}$")
     dns_mode: Literal["route53", "external"] = "external"
     hosted_zone_id: str | None = Field(default=None, pattern=r"^Z[A-Z0-9]{5,31}$")
+    # 클라우드 state·리소스 이름. 비우면 프로젝트 이름(기존 동작). 온프렘·실행 기록은 프로젝트 이름.
+    cloud_platform: str | None = Field(default=None, pattern=CLOUD_PLATFORM_PATTERN)
 
     @field_validator("git_author_name", "git_author_email")
     @classmethod
@@ -141,3 +148,13 @@ def watch_source(repo_url: str, branch: str = "prod") -> tuple[str, str]:
     if host == "github.com":
         path = path.lower()
     return f"{url.scheme.lower()}://{authority}{path}", branch.removeprefix("refs/heads/")
+
+
+def cloud_platform_name(project: str, settings: Mapping[str, Any]) -> str:
+    """클라우드 state bucket·key·생성 입력·리소스 이름에 쓰는 이름. 미지정이면 프로젝트 이름."""
+    value = settings.get("cloud_platform")
+    if value is None:
+        return project
+    if not isinstance(value, str) or not re.fullmatch(CLOUD_PLATFORM_PATTERN, value):
+        raise DdakToolError(ErrorCode.CONFIG_INVALID, "클라우드 플랫폼 이름 형식 오류")
+    return value

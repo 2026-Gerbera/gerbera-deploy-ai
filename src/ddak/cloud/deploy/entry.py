@@ -55,6 +55,7 @@ from ddak.core.contracts.release import (
     Platform,
 )
 from ddak.core.env_keys import check_runtime_keys
+from ddak.core.project_settings import cloud_platform_name
 
 PROVIDER = ProviderName.AWS.value
 RELEASE_ID = "RELEASE_ID"
@@ -242,7 +243,7 @@ def _database_url(client: Any, ctx: RunContext) -> str:
     """RDS 관리 master 자격증명으로 앱 DATABASE_URL을 만든다. 값은 반환만 하고 남기지 않는다.
 
     💭 데모 단순화: 앱이 master 계정을 쓴다(온프렘은 앱·마이그레이터 계정 분리). DB 이름은
-    프로젝트 이름(generate_infra가 RDS db_name = var.project로 만든다).
+    클라우드 플랫폼 이름(generate_infra가 RDS db_name = var.project로 만든다. 기본은 프로젝트 이름).
     """
     master_arn, endpoint = _platform.rds(ctx)
     payload = _aws.call(
@@ -257,7 +258,7 @@ def _database_url(client: Any, ctx: RunContext) -> str:
         raise DdakToolError(ErrorCode.CONFIG_INVALID, "RDS 자격증명 형식 오류") from None
     if not ctx.project:
         raise DdakToolError(ErrorCode.CONFIG_INVALID, "프로젝트 이름(DB 이름)이 없다")
-    database = quote(ctx.project, safe="")
+    database = quote(cloud_platform_name(ctx.project, ctx.project_settings), safe="")
     return f"mysql+pymysql://{username}:{password}@{endpoint}/{database}{_DB_URL_QUERY}"
 
 
