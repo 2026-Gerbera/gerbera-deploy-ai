@@ -12,9 +12,10 @@ from ddak.web.dependencies import (
     templates,
     watch_warnings,
 )
+from ddak.web.form_errors import FormRoute
 from ddak.web.security import csrf_token, issue_csrf
 
-router = APIRouter()
+router = APIRouter(route_class=FormRoute)
 
 
 @router.get("/")

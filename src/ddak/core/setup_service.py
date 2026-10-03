@@ -16,7 +16,7 @@ from urllib.parse import urlsplit
 
 from ddak.core.config import AdapterMode, Settings
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
-from ddak.core.defaults import load_defaults, project_values
+from ddak.core.defaults import load_aws_defaults, load_defaults, project_values
 from ddak.core.env_keys import check_runtime_keys
 from ddak.core.private_values import SecretVault, private_directory, read_private, write_private
 from ddak.core.project_settings import ProjectSettings
@@ -33,6 +33,7 @@ _CHOICE_FIELDS = {
     "buildx_builder",
     "git_author_name",
     "git_author_email",
+    "aws_profile",
 }
 
 
@@ -119,6 +120,7 @@ class SetupService:
             "ai_timeout_s": cfg.ai_timeout_s,
             "build_backend": cfg.build_backend,
             "image_repository": cfg.image_repository,
+            "aws_profile": cfg.aws_profile or project_values(saved)["aws_profile"],
         }
 
     def _records(self, project: str) -> dict[str, Any]:
@@ -203,6 +205,8 @@ class SetupService:
         }
         sources.update({key: "관리 페이지" for key, value in saved.items() if value is not None})
         sources.update(cfg.setting_sources)
+        if cfg.aws_profile is None:
+            sources["aws_profile"] = "관리 페이지" if saved.get("aws_profile") else "기본 파일"
         identity_error = None
         if cfg.adapter_mode is AdapterMode.REAL:
             from ddak.core.git_credentials import configured_identity
@@ -287,6 +291,7 @@ class SetupService:
             "build_plan": builder.plan(),
             "build_state": self._state(project, "build"),
             "git_token_configured": self.vault.configured(project, "git_push_token"),
+            "aws_expected_account_id": load_aws_defaults()["expected_account_id"],
             "configuration_notes": self._configuration_notes(project, saved, inventory)
             + [error for error in (identity_error, display_error) if error],
         }
@@ -556,6 +561,14 @@ class SetupService:
 
     def require_ready(self, project: str, targets: str | None = None) -> None:
         view = self.view(project)
+        if (
+            any(s["id"] == "repository" and s["status"] == "red" for s in view["checklist"])
+            and self.effective(project, self._saved(project), self.vault).adapter_mode
+            is AdapterMode.REAL
+        ):
+            # 머신 helper 로그인 변경은 제품 설정 버전에 반영되지 않는다.
+            self.probe(project, "repository")
+            view = self.view(project)
         skipped = {"inventory"} if targets == "cloud" else set()
         if view["settings"].get("build_backend") != "local":
             skipped |= {"build", "docker"}

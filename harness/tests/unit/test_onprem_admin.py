@@ -1,5 +1,6 @@
 """관리 페이지에서 설정한 값의 실행 경계. 외부 서비스는 가짜만 사용한다."""
 
+import json
 from dataclasses import replace
 
 import pytest
@@ -60,7 +61,7 @@ def test_token_bound_to_project_repository_and_private_storage(tmp_path):
     assert respond(root, "flaskr", URL, "store", good) == ""
 
 
-def test_real_factory_blocks_before_clone_and_uses_saved_identity(tmp_path, monkeypatch):
+def test_real_factory_requires_identity_and_allows_machine_credentials(tmp_path, monkeypatch):
     import subprocess
 
     def missing_machine_identity(argv, **kwargs):
@@ -77,9 +78,8 @@ def test_real_factory_blocks_before_clone_and_uses_saved_identity(tmp_path, monk
         factory(ctx)
     cfg = {"git_author_name": "Operator", "git_author_email": "op@example.test"}
     ctx = replace(ctx, project_settings=cfg)
-    with pytest.raises(DdakToolError, match="push 토큰"):
-        factory(ctx)
-    assert not calls
+    factory(ctx)
+    assert len(calls) == 1
     save_token(tmp_path / "private", "flaskr", URL, PRIVATE)
     factory(ctx)
     assert calls[0][1]["author"] == ("Operator", "op@example.test")
@@ -106,6 +106,9 @@ def test_git_options_only_commit_commands_and_never_token_in_env_argv(tmp_path, 
     monkeypatch.setenv("GIT_AUTHOR_NAME", "inherited")
     monkeypatch.setenv("GIT_COMMITTER_EMAIL", "inherited@example.test")
     monkeypatch.setenv("GIT_TRACE_CURL", "1")
+    monkeypatch.setattr(
+        SecretVault, "get", lambda *args: json.dumps({"url": URL, "token": PRIVATE})
+    )
     repo = AppRepository(
         tmp_path,
         author=("Operator", "op@example.test"),
@@ -370,6 +373,7 @@ def test_intake_and_watcher_policy_use_same_url_bound_vault(tmp_path, rig, monke
     service, setup, _ = rig
     selected = app._project_fetch_policy(service, FetchPolicy(), "flaskr", URL)
     assert selected.credentials == (setup.vault.path, "flaskr", URL) and selected.token is None
+    save_token(setup.vault.path, "flaskr", URL, PRIVATE)
     env = _env(selected, URL)
     assert "credential.helper=" not in env.values()
     assert env["GIT_CONFIG_KEY_0"] == "credential.helper" and env["GIT_CONFIG_VALUE_0"] == ""
@@ -404,6 +408,7 @@ def test_included_or_worktree_auth_header_rejected(tmp_path, scope):
             '[http "https://github.com/fixture/app.git"]\nextraHeader = fixture-header\n'
         )
     configured = config.read_bytes()
+    save_token(tmp_path / "private", "flaskr", URL, PRIVATE)
     repo = AppRepository(root, credentials=(tmp_path / "private", "flaskr", URL))
     with pytest.raises(DdakToolError, match="별도 HTTP 인증 헤더"):
         repo.require_origin(URL)

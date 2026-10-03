@@ -49,7 +49,7 @@ class FixtureProvider:
 
     def complete(self, request: AIRequest) -> AIResponse:
         assert request.purpose == "patch_config"
-        assert request.prompt_version == "patch_config-intents-v2"
+        assert request.prompt_version == "patch_config-intents-v3"
         data = json.loads(
             request.user.split("<untrusted_data>", 1)[1].split("</untrusted_data>")[0]
         )
@@ -355,6 +355,24 @@ async def test_ai_patch_approval_git_release_off_reuse_and_source_reproposal(rig
         blocked_run = rig.service.get_run(blocked)
         assert blocked_run["status"] == "FAILED_BEFORE_DEPLOY", blocked_run
         assert "PRECONDITION_FAILED" in str(blocked_run["result"]), blocked_run
+        assert "patch_lost" in blocked_run["result"]["detail"]
+        assert f"{APP_FILE}:3" in blocked_run["result"]["detail"]
+        assert "dev" not in blocked_run["result"]["detail"]
+        assert rig.service.store.approvals(blocked) == []
+        from httpx2 import ASGITransport, AsyncClient
+
+        from ddak.web.app import create_app
+
+        web = create_app(settings=rig.settings)
+        web.state.deployment = rig.service
+        async with AsyncClient(
+            transport=ASGITransport(app=web), base_url="http://127.0.0.1:8765"
+        ) as client:
+            page = await client.get(f"/runs/{blocked}/result")
+            assert page.status_code == 200
+            assert "patch_lost" in page.text and f"{APP_FILE}:3" in page.text
+            assert "SECRET_KEY =" not in page.text
+
         assert len(rig.provider.requests) == 1
         assert not any(ctx.run_id == blocked for _, ctx in rig.calls)
         assert rig.service.store.environments("demo")["local"]["current"]["release_id"] == reused
@@ -547,4 +565,24 @@ async def test_admin_only_setup_reaches_patch_build_and_release(rig):
         assert release["patch_ledger"]
     finally:
         client.close()
+        await rig.service.shutdown()
+
+
+@pytest.mark.anyio
+async def test_developer_removes_value_line_reaches_approval_without_ai(rig):
+    try:
+        await deploy(rig)
+        rig.toggle(False)
+        (rig.developer / APP_FILE).write_text("import os\nVERSION = 2\n")
+        git(rig.developer, "add", APP_FILE)
+        git(rig.developer, "commit", "-m", "Remove development configuration fixture")
+        git(rig.developer, "push", "origin", "prod")
+        rig.source_sha = git(rig.developer, "rev-parse", "HEAD")
+        rid = await rig.prepare()
+        assert rig.service.get_run(rid)["status"] == "AWAITING_APPROVAL", rig.service.get_run(rid)
+        assert rig.service.approval_view(rid)["patch_meta"] is None
+        assert len(rig.provider.requests) == 1
+        assert rig.service.store.approvals(rid) == []
+        assert not any(ctx.run_id == rid for _, ctx in rig.calls)
+    finally:
         await rig.service.shutdown()

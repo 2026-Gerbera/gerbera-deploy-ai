@@ -82,7 +82,7 @@ def service(monkeypatch: pytest.MonkeyPatch) -> Service:
 def request(service: Service, path: str = "/settings", form: dict | None = None) -> Request:
     app = FastAPI()
     app.state.deployment = service
-    app.state.settings = SimpleNamespace(admin_port=8765)
+    app.state.settings = SimpleNamespace(admin_port=8765, aws_profile=None, setting_sources={})
     headers = [(b"host", b"127.0.0.1:8765")]
     if form is not None:
         headers.extend(
@@ -315,7 +315,10 @@ async def test_service_errors_are_redacted(
         await handler(request(service, path, {}))
     assert error.value.status_code == status
     assert secret not in error.value.detail
-    assert "[REDACTED]" in error.value.detail
+    if exception is DdakToolError:
+        assert "[REDACTED]" in error.value.detail
+    else:
+        assert "입력 형식 오류" in error.value.detail
 
 
 @pytest.mark.parametrize(

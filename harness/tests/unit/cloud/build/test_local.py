@@ -130,7 +130,7 @@ def test_local_public_tool_full_path(
 ) -> None:
     runner = FakeRunner()
     configure_local_build(runner=runner)
-    monkeypatch.setattr(image_module, "_codebuild", lambda _: pytest.fail("AWS must not run"))
+    monkeypatch.setattr(image_module, "_codebuild", lambda *args: pytest.fail("AWS must not run"))
     monkeypatch.setenv("DOCKERHUB_TOKEN", "private")
     monkeypatch.setenv("BASH_ENV", "/secret/startup")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "private")

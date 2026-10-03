@@ -106,25 +106,24 @@ def submit(client, action, fields):
     return client.post(
         action,
         data=fields,
-        headers={"Origin": "http://127.0.0.1:8765"},
+        headers={
+            "Origin": "http://127.0.0.1:8765",
+            "X-Ddak-Form": "1",
+            "Accept": "text/html",
+        },
         follow_redirects=False,
     )
 
 
-def assert_error_form(response, action, expected):
-    assert response.headers["content-type"].startswith("text/html")
+def assert_form_error(response, code):
+    # 입력 유지·폼 아래 오류 표시는 #32 공통 app.js의 test_form_submit_js가 검증한다.
+    assert response.headers["content-type"].startswith("application/json")
     assert response.headers["cache-control"] == "no-store"
-    markup = Forms(response.text)
-    form = markup.form(action)
-    for name, value in expected.items():
-        assert form["fields"][name] == value
-    last_field = max(position for _, _, position in form["controls"])
-    assert any(position > last_field for position in markup.alerts), "오류는 입력 폼 아래 표시"
+    assert "location" not in response.headers
+    error = response.json()["error"]
+    assert error["code"] == code
+    assert isinstance(error["message"], str) and error["message"]
     assert PRIVATE not in response.text
-    for item in markup.forms:
-        for _, attrs, _ in item["controls"]:
-            if attrs.get("type") == "password":
-                assert not attrs.get("value")
 
 
 @pytest.mark.parametrize(
@@ -135,7 +134,7 @@ def assert_error_form(response, action, expected):
         ({"generation_provider": "unknown-fixture-provider"}, 409),
     ],
 )
-def test_choices_input_errors_keep_form_and_public_input(panel, patch, status):
+def test_choices_input_errors_return_shared_form_error_without_saving(panel, patch, status):
     client, service, _ = panel
     fields = read_form(client)
     preserved = {
@@ -147,24 +146,37 @@ def test_choices_input_errors_keep_form_and_public_input(panel, patch, status):
     response = submit(client, "/setup/choices", {**fields, **preserved, **patch})
     assert response.status_code == status
     assert service.get_project_settings("demo") is None
-    assert_error_form(response, "/setup/choices", preserved)
+    assert_form_error(response, "HTTP_400" if status == 400 else "CONFIG_INVALID")
 
 
-def test_choices_conflict_keeps_attempted_value_and_does_not_partially_save(panel):
+def test_choices_conflict_preserves_saved_identity_and_does_not_partially_save(panel):
     client, service, manager = panel
-    manager.save_choices("demo", {"image_repository": "fixture/original"}, expected_version=0)
+    manager.save_choices(
+        "demo",
+        {
+            "image_repository": "fixture/original",
+            "git_author_name": "Saved Operator",
+            "git_author_email": "saved@example.test",
+        },
+        expected_version=0,
+    )
     fields = read_form(client)
     winner = manager.save_choices(
         "demo", {"image_repository": "fixture/winner"}, expected_version=int(fields["version"])
     )
-    attempted = {"image_repository": "fixture/attempted", "generation_model": "attempted-v2"}
+    attempted = {
+        "image_repository": "fixture/attempted",
+        "generation_model": "attempted-v2",
+        "git_author_name": "Attempted Operator",
+        "git_author_email": "attempted@example.test",
+    }
     response = submit(client, "/setup/choices", {**fields, **attempted})
     assert response.status_code == 409
     assert service.get_project_settings("demo") == winner
-    assert_error_form(response, "/setup/choices", attempted)
+    assert_form_error(response, "PRECONDITION_FAILED")
 
 
-def test_choices_storage_failure_502_keeps_form_and_hides_exception(panel):
+def test_choices_storage_failure_502_returns_shared_form_error_and_hides_exception(panel):
     client, service, _ = panel
     fields = read_form(client)
     # 실제 SQLite 쓰기 장애. save_choices/Store는 교체하지 않는다.
@@ -177,7 +189,7 @@ def test_choices_storage_failure_502_keeps_form_and_hides_exception(panel):
     response = submit(client, "/setup/choices", {**fields, **preserved})
     assert response.status_code == 502
     assert service.get_project_settings("demo") is None
-    assert_error_form(response, "/setup/choices", preserved)
+    assert_form_error(response, "INTERNAL")
 
 
 @pytest.mark.parametrize("first", ["setup", "settings"])

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -28,3 +29,12 @@ def project_values(saved: dict[str, Any]) -> dict[str, Any]:
     if not values["repo_url"] and saved.get("auto_detect") is not True:
         values["auto_detect"] = False
     return values
+
+
+def load_aws_defaults() -> dict[str, str]:
+    with DEFAULTS_PATH.open("rb") as stream:
+        values = tomllib.load(stream)["aws"]
+    account = values.get("expected_account_id")
+    if not isinstance(account, str) or not re.fullmatch(r"[0-9]{12}", account):
+        raise ValueError("기본 파일의 AWS 기대 계정은 12자리 숫자여야 한다")
+    return {"expected_account_id": account}

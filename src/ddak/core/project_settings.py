@@ -36,6 +36,7 @@ class ProjectSettings(ContractModel):
     git_author_email: str | None = Field(default=None, max_length=254)
     inventory_path: str | None = Field(default=None, max_length=4096)
     cloud_domain: str | None = None
+    aws_profile: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.@-]{0,127}$")
     dns_mode: Literal["route53", "external"] = "external"
     hosted_zone_id: str | None = Field(default=None, pattern=r"^Z[A-Z0-9]{5,31}$")
 

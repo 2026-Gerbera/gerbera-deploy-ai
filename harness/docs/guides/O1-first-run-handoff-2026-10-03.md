@@ -83,3 +83,34 @@
 - 증거는 `harness/var/validation/first-run/`에 보관한다. 테스트 원본 파일명 `test_*.py` 그대로의 증거 사본은 만들지 않는다.
 - `.venv`는 검증에 사용한 기존 루트 환경을 가리키는 미추적 링크다. 환경 내용은 바꾸지 않았으며 변경 파일 목록에 포함하지 않는다. stage·커밋·push·PR·태그 없이 작업 파일만 남긴다.
 - 외부 Claude 검토는 사용자 호출 금지 지시에 따라 수행하지 않는다. 독립 내부 검토와 재현·회귀 결과로 판단한다.
+
+
+## 추가 인계: #32 병합과 Git·AWS 연결 — 2026-10-03
+
+- 이번 시작 HEAD는 사용자가 커밋한 `8c540c9`다. 같은 `.worktrees/first-run`에서 `git fetch origin` 후 `git merge --no-commit --no-ff origin/main`을 실행했다. 병합 대상은 `be52839`(#32)이며 main에 포함된 #31도 그대로 반영한다. 작업 중 보충 변경은 해시가 있는 `.snapshot.txt` 백업 뒤 복원했다. stash·임시 커밋은 만들지 않았다.
+- 충돌 5개(executor/service.py, web/routes/settings.py, web/routes/setup.py, web/templates/setup.html, O1.md)를 해결했다. O1.md의 양쪽 기록을 모두 보존했다. 오류 처리와 submit은 #32의 `FormRoute`·공통 `app.js`만 사용하며 기존 `SetupRoute`와 setup 전용 submit 코드는 제거했다. first-run의 설정 snapshot·필드 병합·감시 이관·머신 신원·기본값·WSL 판정은 유지한다.
+- 앱 push 차단 원인은 토큰 필수 검사와 전역 Git helper 차단이었다. 관리 Vault 토큰이 유효하면 이를 우선하고, 없으면 Git의 기존 머신 helper를 사용한다. 잘못된 관리 토큰은 명시적으로 거부한다. 제품은 helper 파일을 직접 읽지 않으며 대화형 인증을 비활성화한다. 승인 전 일반 push dry-run 실패 시 설정 필요로 중단한다. 출처는 점검표 detail, run 공개 설정, 후보·게시 기록의 `git_auth_source`에만 남기며 토큰 원문과 Git stderr는 표시하지 않는다.
+- `defaults.toml`에 `aws_profile = "g"`, AWS 기대 계정 `458781646776`을 추가했다. 관리 페이지의 프로젝트별 프로필이 우선한다. run에 프로필·기대 계정을 고정하고 모든 클라우드 SDK 생성 경계에서 STS 계정을 확인한다. 다른 계정이나 확인 실패는 서비스 실행 전에 중단한다. 프로세스 전역 AWS 환경은 바꾸지 않는다.
+
+### 이번 범위 밖 후속 작업
+
+- 감시 이관 도중 취소된 계획 스레드, 관리값을 환경값으로 되돌리는 필드 충돌, 재시작한 화면의 기본값 편집 경합에 대한 추가 반례 검토는 후속으로 남긴다. 기존 first-run 커밋에 들어간 처리와 회귀는 유지했으며 이번에 범위를 확대하지 않았다.
+- 실제 데스크톱 credential helper/gh와 프로필 g를 이용한 E2E는 사용자가 재개한다. 이번 검증은 가짜·스텁이며 실제 push·AWS·Terraform·VM·Docker·Claude 성공의 증거가 아니다.
+- 검증 로그는 `harness/var/validation/first-run-credentials-aws/`에 둔다. 증거 사본 이름은 `.snapshot.txt`이며 `test_*.py` 사본은 없다.
+
+### 보충 구현·병합 검증
+
+- Terraform에는 선택한 AWS_PROFILE/AWS_DEFAULT_PROFILE과 운영자 HOME을 전달하며, 설정된 AWS_CONFIG_FILE/AWS_SHARED_CREDENTIALS_FILE은 경로만 전달한다. 제품은 기존 자격증명 파일 내용을 읽지 않는다. Terraform 전역 설정은 별도 TF_CLI_CONFIG_FILE로 격리하며 프로필 모드에 상속 AWS 키를 혼합하지 않는다. 각 실행 직전 STS 확인과 provider/backend allowed_account_ids 검사를 유지한다.
+- 통합 기본 경로 144 passed, Git·웹 묶음 134 passed(별도 로컬 Git fixture 5개는 이 집중 실행에서 제외), AWS 관련 1183 passed. 집중 검증은 전체 CI의 대체가 아니다.
+- 첫 전체 CI의 lint/type/boundary/contracts는 통과했으나 제거한 `_public_form`을 import하던 구 JS 테스트가 수집 실패했다. setup 전용 JS 36사례는 #32 공통 submit 테스트의 정책으로 통합했다. 공통 submit 16사례와 setup 단일 script·폼 metadata 회귀를 유지한다. 구 비밀 입력 자동 삭제/인벤토리 마스킹 구현을 다시 도입하지 않고 #32 동작으로 통일했다. 원문은 ci-before-compatibility-*이다.
+
+- 두 번째 전체 실행은 4023 passed / 1 failed / 1 skipped / 4 deselected였다. 새 사전 push dry-run을 기존 취소 fixture가 실제 push로 간주해 대기한 테스트 호환성 문제였다. 대기 대상을 실제 push만으로 좁혔으며 후보 SHA 보존 assertions는 유지했다. 관련 7 passed를 확인하고 테스트 포맷 1건을 수정한 뒤 전체 CI를 재실행했다. 원문은 ci-before-candidate-compatibility-* 및 candidate-failure.log/candidate-green.log이다.
+- 독립 사후 검토 PASS, 기본 경로 누락·차단 0건, 검토자 stub 148 passed. 외부 Claude 검토는 사용자 금지 지시에 따라 실행하지 않는다. 검토 파일의 당시 stage 대기 메모는 이후 stage 완료 확인으로 대체한다.
+
+### 최종 완료 검증
+
+- `UV_NO_SYNC=1 PYTHONPATH=<wt>/src make -C harness ci`: **exit 0, 4024 passed / 0 failed / 1 skipped / 4 deselected**, pytest 267.95초, 전체 271.414초. lint/type/boundary/contracts 모두 PASS. 실제 Docker/AWS/LLM 표식은 제외했고 격리 앱 전용 1개는 skip이다.
+- 완료 2026-10-03T11:31:29.733881+00:00. 검사 전후 코드·템플릿·테스트·설정 입력 475개 SHA-256 동일. `ci-final.log`, `ci-final-summary.json`, `ci-input-sha256.json`이 최종 전체 검사 근거다.
+- 독립 기본 경로 검토 PASS(148 passed)와 마지막 후보 취소 fixture 집중 검토 PASS(1 passed)를 완료했다. 원문 review-final.txt와 review-focused.txt.
+- `gitleaks git --redact --report-format json --report-path harness/var/validation/first-run-credentials-aws/gitleaks-git.json .`: exit 0, 215 commits, 발견 0건. 전체 변경 사본도 `gitleaks dir --redact`로 별도 검사하며 manifest에 원본 경로·해시와 .snapshot.txt 이름을 기록한다.
+- **DONE.** origin/main(#32 포함) 병합과 충돌 해결, Git/AWS 연결 보완, 검증·기록을 완료하고 git add 상태로 인계한다. HEAD 8c540c9와 MERGE_HEAD be52839를 유지한다. 커밋·push·PR·태그는 수행하지 않았다. 미해결 충돌과 unstaged 변경은 없고 미추적 .venv 링크만 stage에서 제외한다.

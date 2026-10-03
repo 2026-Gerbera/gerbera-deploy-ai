@@ -8,11 +8,14 @@ import shlex
 import subprocess
 import sys
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlsplit
 
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.private_values import SecretVault
 from ddak.core.project_settings import ProjectSettings, watch_source
+
+CredentialSource = Literal["managed", "machine"]
 
 
 def configured_identity(saved: dict, repo_path: Path | None = None) -> tuple[str, str]:
@@ -55,28 +58,61 @@ def save_token(root: Path, project: str, url: str, token: str) -> None:
     cfg = ProjectSettings(repo_url=url)
     if not cfg.repo_url or urlsplit(url).hostname != "github.com":
         raise DdakToolError(ErrorCode.CONFIG_INVALID, "GitHub 앱 저장소 URL을 먼저 저장하세요")
-    if not token or len(token) > 4096 or any(c.isspace() or ord(c) < 32 for c in token):
+    if (
+        not token
+        or len(token) > 4096
+        or any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in token)
+    ):
         raise DdakToolError(ErrorCode.CONFIG_INVALID, "앱 저장소 토큰 형식 오류")
     SecretVault(root).put(project, "git_push_token", json.dumps({"url": url, "token": token}))
 
 
-def require_token(root: Path, project: str, url: str) -> str:
+def _managed_token(root: Path, project: str, url: str) -> str | None:
+    raw = SecretVault(root).get(project, "git_push_token")
+    if raw is None:
+        return None
     try:
-        raw = SecretVault(root).get(project, "git_push_token")
-        value = json.loads(raw or "{}")
+        value = json.loads(raw)
+        if not isinstance(value, dict) or not isinstance(value.get("url"), str):
+            raise ValueError
+        ProjectSettings(repo_url=value["url"])
+        ProjectSettings(repo_url=url)
         if watch_source(value["url"]) != watch_source(url):
             raise ValueError
         token = value["token"]
-        if not isinstance(token, str) or not token or any(c.isspace() for c in token):
+        if (
+            not isinstance(token, str)
+            or not token
+            or len(token) > 4096
+            or any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in token)
+        ):
             raise ValueError
         return token
     except (ValueError, KeyError, TypeError):
         raise DdakToolError(
-            ErrorCode.PRECONDITION_FAILED, "설정 필요: 이 앱 저장소의 push 토큰"
+            ErrorCode.PRECONDITION_FAILED, "설정 필요: 관리 push 토큰 형식 또는 저장소 연결 오류"
         ) from None
 
 
-def helper_options(root: Path, project: str, url: str) -> list[str]:
+def require_token(root: Path, project: str, url: str) -> str:
+    token = _managed_token(root, project, url)
+    if token is None:
+        raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "설정 필요: 이 앱 저장소의 push 토큰")
+    return token
+
+
+def credential_source(root: Path, project: str, url: str) -> CredentialSource:
+    """유효한 관리 토큰 우선. 값이 없을 때만 Git의 머신 helper를 허용한다."""
+    return "managed" if _managed_token(root, project, url) is not None else "machine"
+
+
+def helper_options(
+    root: Path, project: str, url: str, *, source: CredentialSource | None = None
+) -> list[str]:
+    """source는 같은 명령의 isolated_git_env에도 전달한다. 설정 파일은 쓰지 않는다."""
+    source = credential_source(root, project, url) if source is None else source
+    if source == "machine":
+        return ["credential.interactive=false"]
     helper = "!" + shlex.join(
         [sys.executable, "-P", "-m", "ddak.core.git_credentials", str(root), project, url]
     )
@@ -88,20 +124,26 @@ def helper_options(root: Path, project: str, url: str) -> list[str]:
     ]
 
 
-def isolated_git_env(environment: dict[str, str]) -> dict[str, str]:
+def isolated_git_env(
+    environment: dict[str, str], *, source: CredentialSource = "managed"
+) -> dict[str, str]:
     # 상속된 Git 설정/trace/대화형 인증은 제품 토큰보다 우선할 수 없다.
     env = {
         k: v
         for k, v in environment.items()
-        if not k.startswith(("GIT_CONFIG", "GIT_TRACE")) and k != "GIT_CURL_VERBOSE"
+        if not k.startswith(("GIT_TRACE", "GCM_TRACE"))
+        and k not in {"GIT_CURL_VERBOSE", "GH_DEBUG"}
+        and (source == "machine" or not k.startswith("GIT_CONFIG"))
     }
+    if source == "managed":
+        env.update({"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"})
     env.update(
         {
-            "GIT_CONFIG_GLOBAL": os.devnull,
-            "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_TERMINAL_PROMPT": "0",
             "GIT_ASKPASS": "/usr/bin/false",
             "SSH_ASKPASS": "/usr/bin/false",
+            "GCM_INTERACTIVE": "never",
+            "GH_PROMPT_DISABLED": "1",
             "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
         }
     )

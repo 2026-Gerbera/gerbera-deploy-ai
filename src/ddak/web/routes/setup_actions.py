@@ -7,13 +7,12 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
-from ddak.core.contracts.errors import DdakToolError
-from ddak.core.redact import redact
 from ddak.web.dependencies import deployment, selected_project, templates
+from ddak.web.form_errors import FormRoute
 from ddak.web.forms import parse_form
 from ddak.web.security import csrf_token, issue_csrf, require_safe_post
 
-router = APIRouter(prefix="/setup/actions")
+router = APIRouter(prefix="/setup/actions", route_class=FormRoute)
 
 
 def _actions(request: Request) -> Any:
@@ -76,14 +75,7 @@ async def plan_action(request: Request):
         raise HTTPException(400, "지원하지 않는 준비 종류")
     if set(form) - allowed:
         raise HTTPException(400, "준비 입력에 암호값이나 추가 필드를 허용하지 않습니다")
-    try:
-        await asyncio.to_thread(actions.plan, project, kind, arguments)
-    except DdakToolError as exc:
-        return await _page(request, project, error=redact(str(exc), max_len=500), status=409)
-    except Exception:
-        return await _page(
-            request, project, error="준비 계획 검사 실패. 연결·소유권을 확인하세요", status=502
-        )
+    await asyncio.to_thread(actions.plan, project, kind, arguments)
     return await _page(request, project)
 
 
@@ -92,15 +84,8 @@ async def approve_action(request: Request):
     project, form, actions = await _input(request)
     if set(form) != {"project", "csrf_token", "id", "approved_hash"}:
         raise HTTPException(400, "승인 입력 형식 오류")
-    try:
-        # 승인자 identity는 HTTP 필드로 받지 않는다. 기존 로컬 관리자 경계와 같다.
-        await asyncio.to_thread(
-            actions.apply, project, form["id"], form["approved_hash"], "local-operator"
-        )
-    except DdakToolError as exc:
-        return await _page(request, project, error=redact(str(exc), max_len=500), status=409)
-    except Exception:
-        return await _page(
-            request, project, error="준비 실행 실패. 사람이 환경 상태를 확인하세요", status=502
-        )
+    # 승인자 identity는 HTTP 필드로 받지 않는다.
+    await asyncio.to_thread(
+        actions.apply, project, form["id"], form["approved_hash"], "local-operator"
+    )
     return await _page(request, project)

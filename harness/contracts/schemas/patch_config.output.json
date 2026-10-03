@@ -249,7 +249,7 @@
     }
   },
   "additionalProperties": false,
-  "description": "status별 채워지는 칸.\n\n- proposed·reused: patch·patch_sha256·meta가 있고 passed=True. prepare에 넘긴다.\n- no_targets: 패치 없음. 성공 원장의 손실 관문을 통과한 원본으로 진행한다.\n- rejected: 새 제안 실패. patch=None, passed=False, 경고를 남긴다.\n  실패한 diff를 prepare에 넘기지 않는다.",
+  "description": "status별 채워지는 칸.\n\n- proposed·reused: patch·patch_sha256·meta가 있고 passed=True. prepare에 넘긴다.\n- no_targets: 패치 없음. 성공 원장의 손실 관문을 통과한 원본으로 진행한다.\n- rejected: 새 제안 실패. patch=None, passed=False, 경고를 남긴다.\n  실패한 diff를 prepare에 넘기지 않는다.\n- patch_lost: 이전 승인 패치를 유지하지 못했다. passed=False이며 patch·patch_sha256·meta는\n  None이다. violations에는 \"patch_lost\"와 파일·줄 번호만 남긴다. 승인 전에 run을 중단한다.\n토글 OFF는 새 AI 제안 없이 이전 승인 패치의 파일별 재적용만 허용한다.",
   "properties": {
     "ai_usage": {
       "items": {
@@ -354,7 +354,8 @@
         "proposed",
         "reused",
         "no_targets",
-        "rejected"
+        "rejected",
+        "patch_lost"
       ],
       "title": "Status",
       "type": "string"

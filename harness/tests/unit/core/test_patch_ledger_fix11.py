@@ -1,12 +1,13 @@
-"""source=fixture: 파일별 재사용·손실·이월 관문."""
+"""source=fixture: 승인 diff 무결성·정확 해시 재사용·이월 관문."""
 
 import json
+from copy import deepcopy
 
 import pytest
 
 from ddak.core.contracts.errors import DdakToolError
-from ddak.core.patch_ledger import file_diff, guard_patch_loss, reuse_patches, save_ledger
-from ddak.core.snapshots import apply_diff, copy_source
+from ddak.core.patch_ledger import approved_patches, file_diff, reuse_patches, save_ledger
+from ddak.core.snapshots import apply_diff, digest_bytes
 from ddak.executor.images import guard_carried_trees, tier_tree_hashes
 
 
@@ -40,33 +41,75 @@ def test_reuse_ignores_unrelated_source_changes_and_checks_private_diff(history)
         reuse_patches(source, previous, runs)
 
 
-def test_changed_original_is_reproposal_and_off_cannot_drop_patch(history, tmp_path):
-    source, runs, previous, _ = history
+def test_changed_original_requires_tool_review_without_core_content_judgment(history):
+    source, runs, previous, patch = history
     (source / "app.py").write_bytes((source / "app.py").read_bytes() + b"VERSION = 2\n")
+    assert approved_patches(previous, runs) == {"app.py": patch}
     assert reuse_patches(source, previous, runs) == (None, ["app.py"])
-    built = tmp_path / "build"
-    copy_source(source, built)
-    with pytest.raises(DdakToolError, match="손실"):
-        guard_patch_loss(source, built, previous)
 
 
-def test_upstream_exact_fix_is_not_patch_loss(history, tmp_path):
-    source, _, previous, patch = history
+def test_upstream_exact_fix_is_changed_source_for_exact_hash_reuse(history):
+    source, runs, previous, patch = history
     apply_diff(source, patch)
-    built = tmp_path / "build"
-    copy_source(source, built)
-    guard_patch_loss(source, built, previous)
+    assert reuse_patches(source, previous, runs) == (None, ["app.py"])
+    assert approved_patches(previous, runs) == {"app.py": patch}
     assert "dev" not in json.dumps(previous)
 
 
-def test_unchanged_source_requires_exact_patched_result(history, tmp_path):
-    source, _, previous, patch = history
-    built = tmp_path / "build"
-    copy_source(source, built)
-    with pytest.raises(DdakToolError):
-        guard_patch_loss(source, built, previous)
-    apply_diff(built, patch)
-    guard_patch_loss(source, built, previous)
+def test_deleted_source_is_review_candidate_without_core_loss_verdict(history):
+    source, runs, previous, patch = history
+    (source / "app.py").unlink()
+    assert approved_patches(previous, runs) == {"app.py": patch}
+    assert reuse_patches(source, previous, runs) == (None, ["app.py"])
+
+
+def test_exact_reuse_checks_result_hash(history):
+    source, runs, previous, patch = history
+    previous["local"]["patch_ledger"]["app.py"]["result_sha256"] = digest_bytes(b"other result")
+    assert approved_patches(previous, runs) == {"app.py": patch}
+    with pytest.raises(DdakToolError, match="원장"):
+        reuse_patches(source, previous, runs)
+
+
+@pytest.mark.parametrize("missing", [False, True])
+def test_private_diff_integrity_is_checked_even_when_source_changed(history, missing):
+    source, runs, previous, patch = history
+    (source / "app.py").write_text("VERSION = 2\n")
+    stored = next((runs / "run-first" / "patches").iterdir())
+    if missing:
+        stored.unlink()
+    else:
+        stored.write_bytes(patch + b"\n")
+    with pytest.raises(DdakToolError, match="원장"):
+        approved_patches(previous, runs)
+    with pytest.raises(DdakToolError, match="원장"):
+        reuse_patches(source, previous, runs)
+
+
+def test_matching_dual_environment_ledgers_deduplicate_patch(history):
+    source, runs, previous, patch = history
+    previous["cloud"] = deepcopy(previous["local"])
+    assert approved_patches(previous, runs) == {"app.py": patch}
+    assert reuse_patches(source, previous, runs) == (patch, [])
+
+
+@pytest.mark.parametrize("field", ["source_sha256", "result_sha256", "patch_sha256"])
+def test_dual_environment_conflict_is_rejected_even_when_source_changed(history, field):
+    source, runs, previous, patch = history
+    previous["cloud"] = deepcopy(previous["local"])
+    entry = previous["cloud"]["patch_ledger"]["app.py"]
+    if field == "patch_sha256":
+        other = patch + b"\n"
+        entry[field] = digest_bytes(other)
+        stored = runs / "run-first" / "patches" / (entry[field][7:] + ".diff")
+        stored.write_bytes(other)
+    else:
+        entry[field] = digest_bytes(b"different approved tree")
+    (source / "app.py").write_text("VERSION = 2\n")
+    with pytest.raises(DdakToolError, match="원장"):
+        approved_patches(previous, runs)
+    with pytest.raises(DdakToolError, match="원장"):
+        reuse_patches(source, previous, runs)
 
 
 def test_carried_tier_requires_its_original_build_tree():

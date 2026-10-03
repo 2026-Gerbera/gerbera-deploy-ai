@@ -9,6 +9,13 @@
 {% set kind = 'success' if code in ('SUCCEEDED','DONE','succeeded') else 'failure' if code in ('FAILED_BEFORE_DEPLOY','FAILED_LOCAL','FAILED_CLOUD','FAILED_VERIFY','PARITY_FAILED','NEEDS_HUMAN','FAILED','ROLLBACK_FAILED','failed','check_failed') else 'waiting' if code in ('AWAITING_APPROVAL','ROLLED_BACK','WAITING','PENDING') else 'running' if code in ('APPROVED','RUNNING','DEPLOYING','FINALIZING','PREPARING') else 'neutral' %}
 <span class="state {{ kind }}" data-code="{{ code }}"><i aria-hidden="true"></i><span>{{ label(code) }}</span></span>
 {%- endmacro %}
+
+{% macro error_box(error=None) -%}
+<section class="notice failure" data-form-error role="alert" tabindex="-1"{% if not error %} hidden{% endif %}>
+  <p><span class="state failure"><span aria-hidden="true">⚠</span><strong>오류</strong></span> <code data-error-code>{{ error.code if error else '' }}</code></p>
+  <p data-error-message>{{ error.message if error else '' }}</p>
+</section>
+{%- endmacro %}
 {% macro target(name) -%}{{ {'local':'온프렘','onprem':'온프렘','cloud':'클라우드','both':'온프렘 + 클라우드','build':'빌드','verify':'공통 검증','common':'공통'}.get(name, name or '공통') }}{%- endmacro %}
 {% macro step_label(id) -%}
 {% set name = id.rsplit('.', 1)[0] if id.endswith(('.local', '.cloud')) else id %}

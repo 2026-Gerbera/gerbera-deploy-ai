@@ -88,7 +88,7 @@ def test_real_build_sends_context_values_to_codebuild(monkeypatch: pytest.Monkey
         aws_access_key_id="test" + "ing",
         aws_secret_access_key="test" + "ing",
     )
-    monkeypatch.setattr(image_module, "_codebuild", lambda cloud: client)
+    monkeypatch.setattr(image_module, "_codebuild", lambda cloud, ctx: client)
     index, platforms = exported_names("web")
     digests = {"linux/amd64": "sha256:" + "2" * 64, "linux/arm64": "sha256:" + "3" * 64}
     exported = [{"name": index, "value": "sha256:" + "1" * 64}] + [

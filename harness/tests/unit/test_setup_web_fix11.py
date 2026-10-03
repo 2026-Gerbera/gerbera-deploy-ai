@@ -350,7 +350,11 @@ def test_secret_whitespace_preserved_and_never_repopulated(panel, action, field)
 
 @pytest.mark.parametrize(
     "error",
-    [ValueError(SECRET), RuntimeError(SECRET), DdakToolError(ErrorCode.CONFIG_INVALID, SECRET)],
+    [
+        ValueError(SECRET),
+        RuntimeError(SECRET),
+        DdakToolError(ErrorCode.CONFIG_INVALID, f"password={SECRET!r}"),
+    ],
 )
 @pytest.mark.parametrize("action", ["key", "env", "docker", "inventory", "test", "probe"])
 def test_exception_messages_never_echo_secret(panel, error, action):

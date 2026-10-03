@@ -340,6 +340,7 @@ def test_app_calls_registry_and_reuses_selected_environment_ledger(root, monkeyp
     [
         {"status": "rejected"},
         {"status": "no_targets"},
+        {"status": "patch_lost"},
         {"status": "reused"},
         {"passed": False},
         {"passed": 1},
@@ -505,3 +506,23 @@ def test_existing_env_default_does_not_shadow_a_same_line_database_target(root, 
     expected = text.replace(old, "DB_URL=os.environ['DATABASE_URL']")
     assert (built / CONFIG).read_text() == expected
     assert (root / "snap" / CONFIG).read_text() == text
+
+
+def test_patch_lost_output_is_not_passed_and_names_the_file(root: Path) -> None:
+    first = run(root, FakeProvider(reply(INTENTS)))
+    assert first.patch is not None
+    (root / "snap" / CONFIG).write_text(ORIGINAL + "# v3\n", encoding="utf-8")  # 원본이 바뀜
+    inp = PatchConfigInput(
+        run_id="run-1",
+        source_dir="snap",
+        previous=ApprovedPatch(patch=first.patch, reason="이전 승인"),
+    )
+    with tool_context("patch_config", "run-1"):
+        out = patch_config(inp, RunContext("run-1"), root=root, provider=FakeProvider())  # 토글 OFF
+    assert out.status == "patch_lost" and out.passed is False and out.patch is None
+    assert [(v.code, v.file, v.line) for v in out.violations] == [
+        ("patch_lost", CONFIG, 6),
+        ("patch_lost", CONFIG, 7),
+    ]
+    assert out.patch_sha256 is None and out.meta is None and out.attempts == 0
+    assert (root / "snap" / CONFIG).read_text() == ORIGINAL + "# v3\n"

@@ -1,3 +1,4 @@
+{% from "_form_errors.html" import form_fields, form_error with context %}
 {% extends "base.html" %}
 {% from '_status.html' import state as state_badge, target, duration %}
 {% block title %}배포 대시보드 · Gerbera{% endblock %}
@@ -16,7 +17,7 @@
   {% elif preparing %}<button class="button secondary" disabled>배포 준비 중</button>
   {% elif awaiting %}<span class="note">아래 요청을 검토하세요.</span>
   {% elif active %}<a class="button" href="{{ active[0].url }}">진행 보기</a>
-  {% else %}<form method="post" action="/settings/deploy" data-deploy-form><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="project" value="{{ project }}"><button class="button" type="submit">지금 배포 준비</button></form>{% endif %}
+  {% else %}<div><form method="post" action="/settings/deploy" data-deploy-form>{{ form_fields("deploy") }}<input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="project" value="{{ project }}"><button class="button" type="submit">지금 배포 준비</button></form>{{ form_error("deploy") }}</div>{% endif %}
   </div>
 </section>
 <p data-deploy-loading hidden role="status"><span data-loading-message>배포 준비 요청을 보내는 중입니다.</span></p>

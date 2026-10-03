@@ -501,6 +501,7 @@ def prepare_candidate(
         expected_url=repository.expected_url,
         author=repository.author,
         credentials=repository.credentials,
+        credential_source=repository.credential_source,
     )
     audit = workspace.parent / "candidate-attempt.json"
 

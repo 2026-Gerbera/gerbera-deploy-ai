@@ -150,6 +150,8 @@ async def test_real_generator_bundle_is_assembled_and_validated_without_apply(
         )
         runner.outputs = {}
         runtime = InfraRuntime(
+            aws_project_settings=fixtures.SELECTION,
+            session_factory=fixtures.StubSessions(),
             root=root,
             run_id=ctx.run_id,
             settings=replace(fixtures.SETTINGS, project="demo", outputs={}),

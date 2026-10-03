@@ -58,7 +58,7 @@ from ddak.core.contracts.plan import Plan, PlanStep
 from ddak.core.contracts.plan_facts import FileMeta
 from ddak.core.contracts.tools.generate_infra import GenerateInfraInput, GenerateInfraOutput
 from ddak.core.contracts.tools.patch_config import PatchConfigInput, PatchConfigOutput
-from ddak.core.defaults import load_defaults, project_values
+from ddak.core.defaults import load_aws_defaults, load_defaults, project_values
 from ddak.core.logging import get_logger
 from ddak.core.project_settings import ProjectSettings, watch_source
 from ddak.core.redact import redact_obj
@@ -414,6 +414,9 @@ async def _prepare_commit_inner(
         saved = service.get_project_settings(target.project) or {}
         if service.onboarding is not None:
             settings = service.onboarding.effective(target.project, saved, service.onboarding.vault)
+        aws_profile = (
+            saved.get("aws_profile") or settings.aws_profile or load_defaults()["aws_profile"]
+        )
         saved = {**saved, **project_values(saved)}
         saved.update(
             generation_provider=settings.selected_provider("generation"),
@@ -424,6 +427,7 @@ async def _prepare_commit_inner(
             ai_timeout_s=settings.ai_timeout_s,
             build_backend=settings.build_backend,
             image_repository=settings.image_repository,
+            aws_profile=aws_profile,
         )
         if settings.adapter_mode is AdapterMode.REAL:
             from ddak.core.git_credentials import configured_identity
@@ -484,11 +488,27 @@ async def _prepare_commit_inner(
             cloud_domain=saved.get("cloud_domain"),
             targets="onprem" if request.target == "local" else request.target,
             project_settings={
-                k: v
-                for k, v in saved.items()
-                if k in ProjectSettings.model_fields or k == "version"
+                "aws_expected_account_id": settings.aws_expected_account_id
+                or load_aws_defaults()["expected_account_id"],
+                **{
+                    k: v
+                    for k, v in saved.items()
+                    if k in ProjectSettings.model_fields or k == "version"
+                },
             },
         )
+        if settings.adapter_mode is AdapterMode.REAL:
+            from ddak.core.git_credentials import credential_source
+
+            context = replace(
+                context,
+                project_settings={
+                    **context.project_settings,
+                    "git_auth_source": credential_source(
+                        service.root / "private", target.project, target.repo_url
+                    ),
+                },
+            )
         if service.onboarding is not None:
             service.onboarding.require_ready(target.project, context.targets)
             policy = _project_fetch_policy(service, policy, target.project, request.repo_url)
@@ -566,6 +586,7 @@ async def _prepare_commit_inner(
                 ),
                 cloud_domain=context.cloud_domain,
                 platform=platform,
+                source_context=context,
             )
         )
         try:
@@ -675,6 +696,7 @@ async def _prepare_commit_inner(
             subjects=subjects,
             patch=getattr(bundle, "patch", None),
             patch_meta=getattr(bundle, "patch_meta", None),
+            patch_review=getattr(bundle, "patch_review", None),
             infra_summary=infra_summary,
             expected_settings_version=saved.get("version", 0),
         )
@@ -756,12 +778,11 @@ def _repository_factory(root: Path, *, allow_local: bool = False, vault_root: Pa
                 return FakeAppRepository(path, allow_local=True, expected_url=ctx.repo_url)
             options = {}
             if ctx.adapter_mode is AdapterMode.REAL and not allow_local:
-                from ddak.core.git_credentials import configured_identity, require_token
+                from ddak.core.git_credentials import configured_identity
 
                 author = configured_identity(ctx.project_settings, root / ctx.project / identity)
                 if vault_root is None:
                     raise DdakToolError(ErrorCode.CONFIG_INVALID, "앱 저장소 인증 연결 필요")
-                require_token(vault_root, ctx.project, ctx.repo_url)
                 options = {"author": author, "credentials": (vault_root, ctx.project, ctx.repo_url)}
             return AppRepository.connect(
                 root / ctx.project / identity, ctx.repo_url, allow_local=allow_local, **options
@@ -843,11 +864,13 @@ def _effective_project_settings(base, project, saved, vault, *, cli_host, check_
         "ai_timeout_s": ("ai_timeout_s", "DDAK_AI_TIMEOUT_S"),
         "build_backend": ("build_backend", "DDAK_BUILD_BACKEND"),
         "image_repository": ("image_repository", "DDAK_IMAGE_REPOSITORY"),
+        "aws_profile": ("aws_profile", "DDAK_AWS_PROFILE"),
     }
     for stored, (field, variable) in fields.items():
         legacy = {
             "generation_provider": "DDAK_LLM_BACKEND",
             "judgment_provider": "DDAK_JEV_BACKEND",
+            "aws_profile": "AWS_PROFILE",
         }.get(stored)
         if saved.get(stored) is not None:
             updates[field] = saved[stored]
@@ -895,6 +918,8 @@ def _effective_project_settings(base, project, saved, vault, *, cli_host, check_
                 "기본 파일" if provider == defaults.get(role + "_provider") else "실행환경"
             )
     updates["setting_sources"] = sources
+    if base.adapter_mode is AdapterMode.REAL and base.aws_expected_account_id is None:
+        updates["aws_expected_account_id"] = load_aws_defaults()["expected_account_id"]
     result = replace(base, **updates)
     if check_local:
         require_local_cli(result, host=cli_host)
@@ -926,7 +951,7 @@ def _setup_service(service, settings, cli_host):
         if not saved.get("repo_url"):
             return {"status": "gray", "detail": "앱 저장소 URL 필요"}
         if settings.adapter_mode is AdapterMode.REAL:
-            from ddak.core.git_credentials import configured_identity, require_token
+            from ddak.core.git_credentials import configured_identity
 
             try:
                 repo_path = (
@@ -937,7 +962,6 @@ def _setup_service(service, settings, cli_host):
                 )
                 name, email = configured_identity(saved, repo_path)
                 saved = {**saved, "git_author_name": name, "git_author_email": email}
-                require_token(service.root / "private", project, saved["repo_url"])
             except DdakToolError as error:
                 return {"status": "red", "detail": str(error)}
         context = RunContext(
@@ -947,18 +971,19 @@ def _setup_service(service, settings, cli_host):
             repo_url=saved["repo_url"],
             project_settings=saved,
         )
-        repository = service.connect_repository(context)
-        if repository is None or isinstance(repository, FakeAppRepository):
-            return {"status": "gray", "detail": "fixture 저장소; 실제 push 권한 미확인"}
-        branch = "refs/heads/" + saved.get("watch_branch", "prod")
-        refs = repository.git("ls-remote", "origin", branch, "refs/heads/ai-prod").splitlines()
-        heads = {line.split()[1]: line.split()[0] for line in refs}
-        if branch not in heads:
-            raise DdakToolError(ErrorCode.CONFIG_INVALID, "감시 브랜치를 찾을 수 없다")
-        sha = heads.get("refs/heads/ai-prod", heads[branch])
-        repository.git("fetch", "--no-tags", "origin", sha)
-        repository.git("push", "--dry-run", "--porcelain", "origin", sha + ":refs/heads/ai-prod")
-        return {"status": "green", "detail": "일반 push dry-run 통과; 원격 브랜치 변경 없음"}
+        from ddak.core.git_credentials import credential_source
+
+        label = ""
+        try:
+            source = credential_source(service.root / "private", project, saved["repo_url"])
+            label = "관리 페이지 토큰" if source == "managed" else "머신 Git 자격 증명"
+            repository = service.connect_repository(context)
+            if repository is None or isinstance(repository, FakeAppRepository):
+                return {"status": "gray", "detail": "fixture 저장소; 실제 push 권한 미확인"}
+            repository.check_push_access(saved.get("watch_branch", "prod"))
+        except DdakToolError as error:
+            return {"status": "red", "detail": (label + " · " if label else "") + str(error)}
+        return {"status": "green", "detail": label + " · 일반 push dry-run 통과; 원격 변경 없음"}
 
     def test_connection(provider_id, cfg, *, role=None):
         spec = next(p for p in provider_catalog() if p["id"] == provider_id)

@@ -22,7 +22,7 @@ import yaml
 from ddak.core.contracts.enums import LLMBackend
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.contracts.infra_outputs import IMAGE_REPOSITORY_PATTERN
-from ddak.core.defaults import load_defaults
+from ddak.core.defaults import load_aws_defaults, load_defaults
 from ddak.core.logging import get_logger
 
 
@@ -80,6 +80,8 @@ class Settings:
     jev_timeout_s: float = 2.0  # SDK 기본(10초 + 재시도 2회)을 줄인다
     build_backend: Literal["codebuild", "local"] = "codebuild"
     image_repository: str | None = None
+    aws_profile: str | None = None
+    aws_expected_account_id: str | None = None
     setting_sources: Mapping[str, str] = field(default_factory=dict, hash=False)
 
     def __post_init__(self) -> None:
@@ -129,6 +131,7 @@ class Settings:
         env = os.environ if environ is None else environ
         real = env.get("DDAK_ADAPTER_MODE") == AdapterMode.REAL.value
         defaults = load_defaults() if real else {}
+        aws_defaults = load_aws_defaults() if real else {}
         judgment = env.get("DDAK_JEV_BACKEND") or defaults.get("judgment_provider", "groq")
         selected_judgment = env.get("DDAK_JUDGMENT_PROVIDER") or judgment
         selected_generation = env.get("DDAK_LLM_PROVIDER") or (
@@ -143,6 +146,7 @@ class Settings:
             "ai_timeout_s": ("DDAK_AI_TIMEOUT_S",),
             "build_backend": ("DDAK_BUILD_BACKEND",),
             "image_repository": ("DDAK_IMAGE_REPOSITORY",),
+            "aws_profile": ("DDAK_AWS_PROFILE", "AWS_PROFILE"),
         }
         groq_key = (
             env.get("DDAK_GROQ_API_KEY")
@@ -186,6 +190,10 @@ class Settings:
                 env.get("DDAK_BUILD_BACKEND") or defaults.get("build_backend", "codebuild"),
             ),
             image_repository=env.get("DDAK_IMAGE_REPOSITORY") or defaults.get("image_repository"),
+            aws_profile=env.get("DDAK_AWS_PROFILE")
+            or env.get("AWS_PROFILE")
+            or defaults.get("aws_profile"),
+            aws_expected_account_id=aws_defaults.get("expected_account_id"),
             setting_sources={
                 key: "실행환경"
                 if any(env.get(var) for var in variables)

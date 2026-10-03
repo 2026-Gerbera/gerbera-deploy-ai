@@ -27,6 +27,7 @@ import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
+from ddak.core.aws_credentials import aws_settings, checked_session, session_credentials
 from ddak.core.contracts.approval import ApprovalRecord
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.contracts.infra_evidence import BoundaryPolicyVersion
@@ -63,8 +64,33 @@ class SessionKeys:
     access_key: str
     secret_key: str
     token: str | None = None
+    profile_name: str | None = None
+
+    @classmethod
+    def from_sdk(cls, sdk: Any, *, profile_name: str) -> SessionKeys:
+        credentials = session_credentials(sdk)
+        return cls(
+            credentials["aws_access_key_id"] or "",
+            credentials["aws_secret_access_key"] or "",
+            credentials["aws_session_token"],
+            profile_name,
+        )
+
+    def credentials(self) -> dict[str, str | None]:
+        if not all((self.access_key, self.secret_key)):
+            raise DdakToolError(ErrorCode.CONFIG_INVALID, "AWS 자격증명 두 값이 필요하다")
+        return {
+            "aws_access_key_id": self.access_key,
+            "aws_secret_access_key": self.secret_key,
+            "aws_session_token": self.token or None,
+        }
 
     def environment(self) -> dict[str, str]:
+        if self.profile_name is not None:
+            if not self.profile_name.strip() or any(ord(c) < 32 for c in self.profile_name):
+                raise DdakToolError(ErrorCode.CONFIG_INVALID, "AWS 프로필 설정을 확인해 주세요")
+            # Terraform/Go SDK도 같은 이름으로 프로필을 해석한다. 키와 혼합하지 않는다.
+            return {"AWS_PROFILE": self.profile_name}
         if not all((self.access_key, self.secret_key)):
             raise DdakToolError(ErrorCode.CONFIG_INVALID, "AWS 자격증명 두 값이 필요하다")
         environment = {
@@ -110,6 +136,16 @@ class CommandRunner:
             }
             if session:
                 env.update(session.environment())
+                if session.profile_name:
+                    # 제품은 파일을 읽지 않는다. SDK/CLI가 원래 프로필 경로를 해석한다.
+                    # SSO 캐시/credential_process도 운영자 HOME을 사용한다. Terraform
+                    # 전역 설정은 별도 TF_CLI_CONFIG_FILE로 계속 격리한다.
+                    env["HOME"] = str(Path.home())
+                    env["AWS_DEFAULT_PROFILE"] = session.profile_name
+                    for name in ("AWS_CONFIG_FILE", "AWS_SHARED_CREDENTIALS_FILE"):
+                        configured = os.environ.get(name)
+                        if configured:
+                            env[name] = str(Path(configured).expanduser().absolute())
             try:
                 with tempfile.TemporaryFile() as output:
                     process = subprocess.Popen(
@@ -324,9 +360,17 @@ class InfraRuntime:
         refresh_timeout: float = 30,
         migration_timeout: float = 120,
         foundation_clients: Callable[[SessionKeys], Mapping[str, Any]] | None = None,
+        aws_project_settings: Mapping[str, Any] | None = None,
+        session_factory: Callable[..., Any] | None = None,
     ):
         if min(timeout, apply_timeout, refresh_timeout, migration_timeout) <= 0:
             raise DdakToolError(ErrorCode.CONFIG_INVALID, "양수 제한 시간이 필요하다")
+        self.aws_project_settings = aws_settings(aws_project_settings)
+        if self.aws_project_settings["aws_expected_account_id"] != settings.account_id:
+            raise DdakToolError(
+                ErrorCode.PRECONDITION_FAILED, "인프라 대상과 AWS 기대 계정 설정이 다릅니다"
+            )
+        self.session_factory = session_factory
         root.mkdir(parents=True, exist_ok=True)
         bootstrap_identity = digest(canonical([settings.project, settings.layer])).split(":")[1]
         self._bootstrap_attempt = root / f"bootstrap-recovery-{bootstrap_identity}.json"
@@ -366,16 +410,29 @@ class InfraRuntime:
         self._boundary_versions: list[BoundaryPolicyVersion] = []
         self._local_backend = False
 
+    def _sdk_session(self, session: SessionKeys | None = None) -> Any:
+        if session is not None and session.profile_name not in (
+            None,
+            self.aws_project_settings["aws_profile"],
+        ):
+            raise DdakToolError(
+                ErrorCode.PRECONDITION_FAILED, "인프라 실행의 AWS 프로필이 달라졌습니다"
+            )
+        return checked_session(
+            self.aws_project_settings,
+            region_name=REGION,
+            credentials=(
+                session.credentials()
+                if session is not None and session.profile_name is None
+                else None
+            ),
+            session_factory=self.session_factory or boto3.Session,
+        )
+
     def _clients(self, session: SessionKeys) -> Mapping[str, Any]:
+        sdk = self._sdk_session(session)
         if self.foundation_clients is not None:
             return self.foundation_clients(session)
-        session.environment()  # 빈 세션이나 기본 credential chain 사용을 허용하지 않는다.
-        sdk = boto3.Session(
-            aws_access_key_id=session.access_key,
-            aws_secret_access_key=session.secret_key,
-            aws_session_token=session.token or None,
-            region_name=REGION,
-        )
         config = Config(connect_timeout=5, read_timeout=10, retries={"max_attempts": 2})
         # CreatePolicyVersion에는 idempotency token이 없다. 응답 유실을 재시도하면
         # 추가 버전을 중복 생성할 수 있으므로 IAM 호출은 한 번만 시도한다.
@@ -507,6 +564,11 @@ class InfraRuntime:
     def _run(
         self, *args: str, session: SessionKeys | None = None, checkov: bool = False
     ) -> CommandResult:
+        if not checkov:
+            # plan/apply 사이 교체, 갱신된 키와 검증용 init까지 실행 직전 다시 확인한다.
+            self._sdk_session(session)
+            if session is None:
+                session = SessionKeys("", "", profile_name=self.aws_project_settings["aws_profile"])
         return self.runner.run(
             [self.checkov if checkov else self.terraform, *args],
             cwd=self.work,
@@ -796,6 +858,7 @@ class InfraRuntime:
             raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "이전 apply의 상태를 확인해야 한다")
         if time.monotonic() >= self.deadline:
             raise DdakToolError(ErrorCode.ADAPTER_TIMEOUT, "인프라 실행 전 제한 시간이 초과됐다")
+        self._sdk_session(session)
         try:
             private_write(self._attempt, self._planned.encode())
         except FileExistsError:

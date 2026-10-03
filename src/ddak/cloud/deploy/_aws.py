@@ -1,7 +1,7 @@
 """cloud/deploy 공용: AWS 세션·클라이언트와 오류 감싸기.
 
-- 호출마다 새 boto3 Session(자격증명 파일 교체 반영). 프로필·리전은 표준 환경 변수
-  AWS_PROFILE·AWS_REGION(harness/env.example)을 따르고, platform cloud의 region이 있으면 우선한다.
+- 호출마다 선택 프로필의 새 세션과 기대 계정을 확인한다. 리전은 platform cloud 우선,
+  없으면 AWS_REGION(harness/env.example)을 따른다.
 - FAKE 컨텍스트로 실제 AWS를 부르지 않는다(dispatch는 FAKE면 FakeProvider를 고른다).
 - 오류 메시지에 ARN·계정 ID·AWS 오류 원문을 넣지 않는다.
 """
@@ -16,6 +16,7 @@ from typing import Any
 import boto3
 from botocore.config import Config
 
+from ddak.core.aws_credentials import checked_session
 from ddak.core.config import AdapterMode
 from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
@@ -40,9 +41,13 @@ def client(service: str, ctx: RunContext) -> Any:
     name = configured or os.environ.get("AWS_REGION") or DEFAULT_REGION
     config = Config(connect_timeout=10, read_timeout=30, retries={"max_attempts": 3})
     try:
-        return boto3.Session(region_name=name).client(service, config=config)  # pyright: ignore[reportUnknownMemberType]
-    except Exception as exc:
-        raise DdakToolError(ErrorCode.ADAPTER_FAILED, "AWS 세션을 만들지 못했다") from exc
+        return checked_session(
+            ctx.project_settings, region_name=name, config=config, session_factory=boto3.Session
+        ).client(service, config=config)
+    except DdakToolError:
+        raise
+    except Exception:
+        raise DdakToolError(ErrorCode.ADAPTER_FAILED, "AWS 세션을 만들지 못했다") from None
 
 
 def deadline(ctx: RunContext) -> float:

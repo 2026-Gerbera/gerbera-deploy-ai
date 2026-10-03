@@ -43,6 +43,7 @@ from ddak.core.contracts.release import (
     ReleaseArtifacts,
     SnapshotBinding,
 )
+from ddak.core.contracts.tools.patch_config import PatchConfigOutput
 from ddak.core.defaults import project_values
 from ddak.core.patch_ledger import guard_patch_loss, ledger, reuse_patches, save_ledger
 from ddak.core.project_settings import ProjectSettings
@@ -227,6 +228,7 @@ class DeploymentService:
         subjects: Mapping[ApprovalKind, str] | None = None,
         facts_reader: FactsReader | None = None,
         patch_meta: dict[str, Any] | None = None,
+        patch_review: PatchConfigOutput | None = None,
         infra_summary: dict[str, Any] | None = None,
         expected_settings_version: int | None = None,
     ) -> str:
@@ -239,6 +241,7 @@ class DeploymentService:
                 subjects=subjects,
                 facts_reader=facts_reader,
                 patch_meta=patch_meta,
+                patch_review=patch_review,
                 infra_summary=infra_summary,
                 expected_settings_version=expected_settings_version,
             )
@@ -253,6 +256,7 @@ class DeploymentService:
         subjects: Mapping[ApprovalKind, str] | None = None,
         facts_reader: FactsReader | None = None,
         patch_meta: dict[str, Any] | None = None,
+        patch_review: PatchConfigOutput | None = None,
         infra_summary: dict[str, Any] | None = None,
         expected_settings_version: int | None = None,
     ) -> str:
@@ -286,6 +290,11 @@ class DeploymentService:
             context = replace(
                 context,
                 project_settings={
+                    **{
+                        key: context.project_settings[key]
+                        for key in ("aws_expected_account_id", "git_auth_source")
+                        if key in context.project_settings
+                    },
                     **validated.model_dump(mode="json", exclude_unset=True),
                     "version": settings["version"],
                 },
@@ -427,7 +436,14 @@ class DeploymentService:
         with tempfile.TemporaryDirectory(prefix="ddak-approval-tree-") as tmp:
             built = Path(tmp) / "source"
             materialize(source, built, snapshot, patch)
-            guard_patch_loss(source, built, {t: previous[t] for t in selected if t in previous})
+            guard_patch_loss(
+                patch_review,
+                run_id=plan.run_id,
+                patch=patch,
+                has_previous=any(
+                    previous[t].get("patch_ledger") for t in selected if t in previous
+                ),
+            )
             guard_carried_trees(
                 carried, previous, tier_tree_hashes(file_manifest(built), context.deploy_config)
             )
@@ -1816,6 +1832,10 @@ class DeploymentService:
                 heartbeat_failed = True
                 await asyncio.shield(heart)
         if run_repository:
+            if ctx.adapter_mode is AdapterMode.REAL:
+                auth_source = getattr(run_repository, "credential_source", None)
+                if auth_source in ("managed", "machine"):
+                    git_record["git_auth_source"] = auth_source
             with contextlib.suppress(OSError):
                 (directory / "git-timings.json").write_text(
                     json.dumps(run_repository.timings[git_timing_start:], indent=2)

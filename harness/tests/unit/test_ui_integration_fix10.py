@@ -161,7 +161,9 @@ def test_superseded_is_terminal_and_approval_refused(rig, monkeypatch):
         home = client.get("/")
         assert "대체됨" in home.text and 'href="/runs/run-super-1/result"' in home.text
         response = post(client, "/runs/run-super-1/approval", decision="approved")
-        assert response.status_code == 409 and "SUPERSEDED" in response.text
+        assert response.status_code == 303
+        response = client.get(response.headers["location"], headers={"accept": "text/html"})
+        assert "SUPERSEDED" in response.text and 'role="alert"' in response.text
         events = client.get("/runs/run-super-1/events")
         assert events.status_code == 200 and '"status":"SUPERSEDED"' in events.text
         assert (

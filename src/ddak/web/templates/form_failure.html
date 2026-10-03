@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% from "_status.html" import error_box %}
+{% block title %}요청 오류 · Gerbera{% endblock %}
+{% block content %}
+<h1>요청을 완료하지 못했습니다</h1>
+{{ error_box(error) }}
+<p><a class="button secondary" href="{{ form_return_to(request) }}">화면 새로고침</a></p>
+{% endblock %}

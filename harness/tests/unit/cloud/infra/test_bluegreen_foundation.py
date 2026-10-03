@@ -16,6 +16,7 @@ from ddak.cloud.infra.providers.aws import boundary_document
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.executor.approval_meta import encode_meta
 from tests.unit.cloud.infra import test_runtime as f
+from tests.unit.cloud.test_aws_credentials import SELECTION, StubSessions
 
 ROLE_NAME = "ddak-ecs-infra-elb"
 ROLE_PATH = "/ddak/infra/"
@@ -161,6 +162,8 @@ def runtime_plan(root):
     }
     runner.outputs = {}
     runtime = f.InfraRuntime(
+        aws_project_settings=SELECTION,
+        session_factory=StubSessions(),
         root=root,
         run_id="run-1",
         settings=SETTINGS,
