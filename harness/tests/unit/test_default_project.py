@@ -24,7 +24,8 @@ def shown(client, path="/"):
 
 
 def label(project):
-    return f'<span class="project-label">{project}</span>'
+    # 개편 상단 표시는 긴 이름을 줄이므로 title로 전체 이름을 함께 준다.
+    return f'<span class="project-label" title="{project}">{project}</span>'
 
 
 @pytest.fixture(autouse=True)

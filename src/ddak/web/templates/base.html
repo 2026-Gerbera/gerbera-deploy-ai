@@ -6,20 +6,20 @@
   <meta name="color-scheme" content="light">
   {% block head %}{% endblock %}
   <title>{% block title %}Gerbera 배포 관리{% endblock %}</title>
-  <link rel="stylesheet" href="/static/app.css?v=story-inline-errors-20261003">
+  <link rel="stylesheet" href="/static/app.css?v=story-default-project-20261003">
 </head>
 <body>
   <a class="skip-link" href="#main">본문으로 이동</a>
   <header class="masthead">
     <button class="sidebar-toggle" type="button" data-sidebar-toggle aria-controls="sidebar" aria-expanded="true" hidden>메뉴 접기</button>
     <a class="brand" href="/">Gerbera</a>
-    <span class="project-label"{% if project %} title="{{ project }}"{% endif %}>{{ project or '전체 프로젝트' }}</span>
+    {% if project %}<span class="project-label" title="{{ project }}">{{ project }}</span>{% else %}<span class="scope-label">전체 프로젝트</span>{% endif %}
   </header>
   <div hidden>{% block breadcrumb %}{% endblock %}</div>
   {% from '_status.html' import error_box %}
   <div class="app-shell" data-sidebar-open="true">
     <aside id="sidebar" class="sidebar" aria-label="탐색 메뉴">
-      <nav aria-label="전체 탐색"><a class="sidebar-home" href="/"{% if request.url.path == '/' and not project %} aria-current="page"{% endif %}>전체 프로젝트</a></nav>
+      <nav aria-label="전체 탐색"><a class="sidebar-home" href="/projects"{% if request.url.path == '/projects' %} aria-current="page"{% endif %}>전체 프로젝트</a></nav>
       <nav class="sidebar-group" aria-label="프로젝트 선택"><h2>프로젝트</h2>
         {% set names = sidebar_projects|default([]) %}
         {% if project and project not in names %}{% set names = names + [project] %}{% endif %}

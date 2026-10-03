@@ -22,7 +22,7 @@ def test_sidebar_projects_and_selected_context_across_pages(rig, page):
     if page == "result":
         service.store.finish(rid, "SUCCEEDED", {"tracks": {"local": "DONE"}}, {}, {})
     paths = {
-        "home": "/",
+        "home": "/projects",
         "approval": f"/runs/{rid}/approval",
         "progress": f"/runs/{rid}/progress",
         "result": f"/runs/{rid}/result",
@@ -32,12 +32,13 @@ def test_sidebar_projects_and_selected_context_across_pages(rig, page):
     with client_for(service) as client:
         html = client.get(paths[page]).text
         sidebar = html.split('<aside id="sidebar"', 1)[1].split("</aside>", 1)[0]
-        assert 'href="/"' in sidebar
+        assert 'href="/projects"' in sidebar
         assert 'href="/?project=other-project"' in sidebar
         assert 'href="/?project=flaskr-three"' in sidebar
         assert "<form" not in sidebar
         if page == "home":
             assert "<h1>전체 프로젝트</h1>" in html
+            assert 'href="/projects" aria-current="page"' in sidebar
             assert 'aria-label="현재 프로젝트 화면"' not in sidebar
         else:
             assert 'href="/ops?project=flaskr-three"' in sidebar
@@ -52,7 +53,7 @@ def test_sidebar_projects_and_selected_context_across_pages(rig, page):
 def test_sidebar_works_with_no_projects_or_an_unsaved_project(rig):
     service, _, _ = rig
     with client_for(service) as client:
-        html = client.get("/").text
+        html = client.get("/projects").text
         assert "등록된 프로젝트가 없습니다" in html
         assert '<aside id="sidebar" class="sidebar"' in html  # JS 없이도 탐색 노출
         html = client.get("/settings?project=unsaved-project").text

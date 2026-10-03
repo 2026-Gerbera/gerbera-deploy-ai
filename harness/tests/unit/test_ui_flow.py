@@ -26,7 +26,7 @@ def test_overview_includes_unrun_and_old_projects_and_ignores_default(rig, monke
     for i in range(105):
         service.store.preparation_failed(f"busy-{i}", "busy-project", {"detail": "fixture"})
     with client_for(service) as client:
-        home = client.get("/")
+        home = client.get("/projects")
         assert home.status_code == 200 and "<h1>전체 프로젝트</h1>" in home.text
         for project in ("new-project", "old-project", "busy-project"):
             assert f'href="/?project={project}"' in home.text
@@ -47,10 +47,12 @@ def test_overview_includes_unrun_and_old_projects_and_ignores_default(rig, monke
 def test_empty_overview_offers_project_connection(rig):
     service, _, _ = rig
     with client_for(service) as client:
-        html = client.get("/").text
-        assert "아직 등록된 프로젝트가 없습니다" in html
+        html = client.get("/projects").text
+        # 저장된 프로젝트가 없으면 전체 목록에도 다른 화면과 같은 생성 안내 폼이 보인다.
+        assert "<h1>전체 프로젝트</h1>" in html
+        assert "data-project-required" in html and "프로젝트를 먼저 만드세요" in html
         assert 'method="get" action="/settings"' in html
-        assert 'name="project" required pattern=' in html
+        assert 'name="project" required' in html and 'pattern="[a-z][a-z0-9_' in html
 
 
 @pytest.mark.anyio
@@ -91,7 +93,7 @@ def test_preparation_without_run_has_visible_terminal_reason(rig, status):
         assert "fixture preparation stopped" in html
         assert 'href="/runs/None/' not in html
         assert "승인 자료 준비 중" not in html
-        assert f'data-code="{status}"' in client.get("/").text
+        assert f'data-code="{status}"' in client.get("/projects").text
         ops = client.get("/ops?project=plain").text
         assert "실행 기록 없음" in ops and "data-live-region" in ops
 
@@ -139,7 +141,7 @@ async def test_old_manual_preparation_failure_does_not_mask_new_success(rig):
     rid = prepare(service, source, "later-auto")
     service.store.finish(rid, "SUCCEEDED", {"tracks": {"local": "DONE", "cloud": "DONE"}}, {}, {})
     with client_for(service) as client:
-        home = client.get("/").text
+        home = client.get("/projects").text
         detail = client.get("/?project=flaskr-three").text
         assert 'data-code="SUCCEEDED"' in home
         assert 'data-code="FAILED_BEFORE_DEPLOY"' not in home
@@ -148,7 +150,7 @@ async def test_old_manual_preparation_failure_does_not_mask_new_success(rig):
         service._preparation_requests[requested["request_id"]]["created"] = (
             service.get_run(rid)["created"] + 1
         )
-        assert 'data-code="FAILED_BEFORE_DEPLOY"' in client.get("/").text
+        assert 'data-code="FAILED_BEFORE_DEPLOY"' in client.get("/projects").text
         assert failed["detail"] in client.get("/?project=flaskr-three").text
 
 
@@ -158,14 +160,14 @@ def test_pending_approval_survives_recent_history_limit(rig):
     for i in range(101):
         service.store.preparation_failed(f"later-{i}", "flaskr-three", {"detail": "fixture"})
     with client_for(service) as client:
-        for path in ("/", "/?project=flaskr-three", "/ops?project=flaskr-three"):
+        for path in ("/projects", "/?project=flaskr-three", "/ops?project=flaskr-three"):
             html = client.get(path).text
             assert f'href="/runs/{rid}/approval"' in html
         assert "검토하고 승인" in client.get("/?project=flaskr-three").text
         assert service.get_run(rid)["status"] == "AWAITING_APPROVAL"
         assert not calls.contexts
         service.approve(rid, approver="fixture")
-        home = client.get("/").text
+        home = client.get("/projects").text
         assert 'data-code="APPROVED"' in home
         assert f'href="/runs/{rid}/progress">진행 보기</a>' in home
 

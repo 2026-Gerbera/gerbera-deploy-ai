@@ -46,7 +46,7 @@ ul { padding-left: var(--s5); margin: var(--s2) 0; }
 .skip-link:focus { top: var(--s4); }
 .masthead { position: sticky; top: 0; z-index: 10; background: var(--paper); padding: 0 var(--gutter); border-bottom: var(--rule-width) solid var(--line); display: flex; align-items: center; gap: var(--s4); height: var(--header-height); }
 .brand { font-size: 24px; font-weight: 700; text-decoration: none; letter-spacing: -.025em; }
-.project-label { margin-left: auto; font-size: var(--text-sm); min-width: 0; max-width: 50%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.project-label, .scope-label { margin-left: auto; font-size: var(--text-sm); min-width: 0; max-width: 50%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sidebar-toggle { flex: none; min-height: 44px; padding: var(--s2) var(--s3); border: var(--line-width) solid var(--line); border-radius: 0; background: var(--paper); color: var(--ink); font: 600 var(--text-sm)/1.4 var(--font-body); cursor: pointer; }
 .app-shell { display: grid; grid-template-columns: var(--sidebar-width) minmax(0,1fr); align-items: start; }
 .app-shell[data-sidebar-open="false"] { grid-template-columns: minmax(0,1fr); }

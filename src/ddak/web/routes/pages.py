@@ -74,25 +74,33 @@ def project_summary(service, project):
     }
 
 
+@router.get("/projects")
+async def projects_overview(request: Request):
+    """전체 프로젝트 목록. 첫 화면 `/`는 기본 프로젝트 대시보드를 연다."""
+    service = deployment(request)
+    token = csrf_token(request)
+    projects = [project_summary(service, name) for name in service.list_projects()]
+    response = templates.TemplateResponse(
+        request=request,
+        name="overview.html",
+        context={
+            "projects": projects,
+            # 저장 설정이 하나도 없으면 다른 화면과 같은 프로젝트 생성 안내를 함께 보인다.
+            "project_required": not service.list_project_settings(),
+            "project": None,
+            "csrf_token": token,
+            "watch_warnings": watch_warnings(request),
+            "live_version": live_version(projects),
+        },
+    )
+    issue_csrf(request, response, token)
+    return response
+
+
 @router.get("/")
 async def dashboard(request: Request, project: str | None = None):
     service = deployment(request)
     token = csrf_token(request)
-    if project is None:
-        projects = [project_summary(service, name) for name in service.list_projects()]
-        response = templates.TemplateResponse(
-            request=request,
-            name="overview.html",
-            context={
-                "projects": projects,
-                "project": None,
-                "csrf_token": token,
-                "watch_warnings": watch_warnings(request),
-                "live_version": live_version(projects),
-            },
-        )
-        issue_csrf(request, response, token)
-        return response
     project = selected_project(request, project)
     runs = project_runs(service, project)
     links = {}
