@@ -602,6 +602,7 @@ async def _prepare_commit_inner(
             subjects=subjects,
             patch=getattr(bundle, "patch", None),
             patch_meta=getattr(bundle, "patch_meta", None),
+            patch_review=getattr(bundle, "patch_review", None),
             infra_summary=infra_summary,
             expected_settings_version=saved.get("version", 0),
         )

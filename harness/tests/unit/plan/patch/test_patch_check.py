@@ -32,9 +32,9 @@ def create_app():
     app = Flask(__name__)
     app.config.from_mapping(
         SECRET_KEY=os.environ["SECRET_KEY"],
-        SESSION_COOKIE_SECURE=os.environ.get("SESSION_COOKIE_SECURE", "false") == "true",
+        SESSION_COOKIE_SECURE=os.environ["SESSION_COOKIE_SECURE"].lower() == "true",
     )
-    app.config["APP_BASE_URL"] = os.environ.get("APP_BASE_URL", "http://localhost:5000")
+    app.config["APP_BASE_URL"] = os.environ["APP_BASE_URL"]
     return app
 """
 
@@ -433,8 +433,6 @@ def _subscript_check(source: Path, old_line: str, new_lines: str, imports: str):
     ("value", "imports"),
     [
         ('os.environ["SECRET_KEY"]', "import os\n\n"),
-        ('os.environ.get("SECRET_KEY")', "import os\n\n"),
-        ('getenv("SECRET_KEY")', "from os import getenv\n\n"),
     ],
 )
 def test_config_subscript_secret_key_from_env_passes(
@@ -442,6 +440,43 @@ def test_config_subscript_secret_key_from_env_passes(
 ) -> None:
     # 2차 데모 대표 패치. config 키 문자열 "SECRET_KEY"는 비밀값이 아니다
     result = _subscript_check(source, '"dev"', value, imports)
+    assert result.passed, result.violations
+
+
+@pytest.mark.parametrize(
+    ("value", "imports"),
+    [
+        ('os.environ.get("SECRET_KEY")', "import os\n\n"),
+        ('getenv("SECRET_KEY")', "from os import getenv\n\n"),
+        ('os.getenv("SECRET_KEY")', "import os\n\n"),
+    ],
+)
+def test_optional_env_read_is_rejected_by_decision_12(
+    source: Path, value: str, imports: str
+) -> None:
+    # 10/3 결정 12의 4: 키가 없어도 None·기본값으로 넘어가는 읽기는 새로 쓰지 않는다(필수 읽기만)
+    result = _subscript_check(source, '"dev"', value, imports)
+    assert not result.passed
+    assert "env_optional" in codes(result) and "secret_literal" not in codes(result)
+
+
+def test_optional_env_read_split_over_lines_is_caught_after_apply(source: Path) -> None:
+    # 줄 검사(정규식)를 피하려고 호출을 여러 줄로 나눠도 적용 후 AST 비교가 잡는다
+    value = 'os.environ.get(\n        "SECRET_KEY"\n    )'
+    result = _subscript_check(source, '"dev"', value, "import os\n\n")
+    assert "env_optional" in codes(result)
+
+
+def test_existing_optional_reads_in_original_are_not_flagged(source: Path) -> None:
+    # 원본에 이미 있던 env_int(…, 0) 같은 줄은 패치가 만든 것이 아니므로 따지지 않는다
+    original = SUBSCRIPT_ORIGINAL.replace(
+        "    return app\n", '    hops = env_int("PROXY_FIX_X_FOR", 0)\n    return app\n'
+    )
+    (source / APP).write_text(original, encoding="utf-8")
+    new = original.replace('"dev"', 'os.environ["SECRET_KEY"]').replace(
+        "from flask import Flask\n", "import os\n\nfrom flask import Flask\n"
+    )
+    result = check_patch(source, build_patch({APP: (original, new)}))
     assert result.passed, result.violations
 
 
@@ -467,8 +502,6 @@ def _dict_check(source: Path, new_lines: str):  # type: ignore[no-untyped-def]
     "line",
     [
         '        "SECRET_KEY": os.environ["SECRET_KEY"],',
-        '        "SECRET_KEY": os.environ.get("SECRET_KEY"),',
-        '        **{"SECRET_KEY": os.getenv("SECRET_KEY")},',
     ],
 )
 def test_dict_key_secret_key_from_env_passes(source: Path, line: str) -> None:
@@ -557,7 +590,9 @@ def test_secret_value_through_other_name_is_rejected(source: Path, lines: str) -
     assert "secret_literal" in codes(result)
 
 
-def test_non_secret_env_default_still_passes(source: Path) -> None:
+def test_env_default_for_non_secret_is_rejected_by_decision_12(source: Path) -> None:
+    # 10/3 결정 12의 4: 비밀이 아닌 키라도 개발용 기본값(localhost)을 남기면
+    # 키가 빠졌을 때 개발값이 그대로 배포된다
     lines = (
         '    app.config["SECRET_KEY"] = os.environ["SECRET_KEY"]\n'
         '    app.config["APP_BASE_URL"] = os.environ.get("APP_BASE_URL", "http://localhost:5000")'
@@ -565,4 +600,75 @@ def test_non_secret_env_default_still_passes(source: Path) -> None:
     result = _subscript_check(
         source, '    app.config["SECRET_KEY"] = "dev"', lines, "import os\n\n"
     )
-    assert result.passed, result.violations
+    assert not result.passed
+    assert "env_optional" in codes(result) and "secret_literal" not in codes(result)
+
+
+@pytest.mark.parametrize("container", ["keywords", "dict", "assignments"])
+def test_optional_read_moved_to_other_setting_is_new_optional(source, container):
+    secret = '"' + 'dev"'
+    if container == "keywords":
+        old = f'app.config.update(SECRET_KEY={secret}, AUDIT=os.getenv("SECRET_KEY"))\n'
+        new = 'app.config.update(SECRET_KEY=os.getenv("SECRET_KEY"), AUDIT=os.environ["AUDIT"])\n'
+    elif container == "dict":
+        old = f'app.config.update({{"SECRET_KEY":{secret}, "AUDIT":os.getenv("SECRET_KEY")}})\n'
+        new = (
+            'app.config.update({"SECRET_KEY":os.getenv("SECRET_KEY"), '
+            '"AUDIT":os.environ["AUDIT"]})\n'
+        )
+    else:
+        old = f'SECRET_KEY={secret}\nOTHER_SECRET_KEY=os.getenv("SECRET_KEY")\n'
+        new = 'SECRET_KEY=os.getenv("SECRET_KEY")\nOTHER_SECRET_KEY=os.environ["AUDIT"]\n'
+    old, new = "import os\n" + old, "import os\n" + new
+    (source / APP).write_text(old)
+    result = check_patch(source, build_patch({APP: (old, new)}))
+    assert not result.passed and "env_optional" in codes(result)
+
+
+@pytest.mark.parametrize(
+    "first,second",
+    [
+        ("if DEBUG:", "if PRODUCTION:"),
+        ("if PRODUCTION:", "if PRODUCTION:"),
+        ("while DEBUG:", "while PRODUCTION:"),
+        ("for mode in DEVELOPMENT:", "for mode in PRODUCTION:"),
+        ("with development():", "with production():"),
+    ],
+)
+def test_optional_read_moved_between_control_scopes_is_new(source, first, second):
+    literal = '"' + 'dev"'
+    optional = 'os.getenv("SECRET_KEY")'
+    required = 'os.environ["SECRET_KEY"]'
+    old = f"import os\n{first}\n    SECRET_KEY={optional}\n{second}\n    SECRET_KEY={literal}\n"
+    new = f"import os\n{first}\n    SECRET_KEY={required}\n{second}\n    SECRET_KEY={optional}\n"
+    (source / APP).write_text(old)
+    result = check_patch(source, build_patch({APP: (old, new)}))
+    assert not result.passed and "env_optional" in codes(result)
+
+
+def test_optional_read_moved_between_repeated_calls_is_new(source):
+    optional = 'os.getenv("SECRET_KEY")'
+    required = 'os.environ["SECRET_KEY"]'
+    literal = '"' + 'dev"'
+    old = (
+        f"import os\napp.config.update(SECRET_KEY={optional})\n"
+        f"app.config.update(SECRET_KEY={literal})\n"
+    )
+    new = (
+        f"import os\napp.config.update(SECRET_KEY={required})\n"
+        f"app.config.update(SECRET_KEY={optional})\n"
+    )
+    (source / APP).write_text(old)
+    result = check_patch(source, build_patch({APP: (old, new)}))
+    assert not result.passed and "env_optional" in codes(result)
+
+
+def test_optional_read_moved_between_duplicate_dict_keys_is_new(source):
+    optional = 'os.getenv("SECRET_KEY")'
+    required = 'os.environ["SECRET_KEY"]'
+    literal = '"' + 'dev"'
+    old = f'import os\nCONFIG={{"SECRET_KEY":{optional}, "SECRET_KEY":{literal}}}\n'
+    new = f'import os\nCONFIG={{"SECRET_KEY":{required}, "SECRET_KEY":{optional}}}\n'
+    (source / APP).write_text(old)
+    result = check_patch(source, build_patch({APP: (old, new)}))
+    assert not result.passed and "env_optional" in codes(result)

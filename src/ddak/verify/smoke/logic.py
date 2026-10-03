@@ -288,6 +288,11 @@ def s0_version(p: Probe) -> SmokeScenario:
     return _scenario("S0.version", not problems, resp, ", ".join(problems), normalized)
 
 
+# 클라우드 health_check(cloud/health/health.py)와 같은 준비 판정: HTTP 200이고
+# status가 ok·ready이거나 ready가 true. 같은 배포에서 헬스만 통과하고 스모크가 떨어지지 않게 한다
+READY_STATUSES = frozenset({"ok", "ready"})
+
+
 def s0_ready(p: Probe) -> SmokeScenario:
     resp = p.get("/health/ready")
     data = _json(resp) if resp.status in (200, 503) else {}
@@ -297,7 +302,10 @@ def s0_ready(p: Probe) -> SmokeScenario:
         "schema.current": schema.get("current"),
         "schema.expected": schema.get("expected"),
     }
-    ok = resp.status == 200 and data.get("status") == "ok"
+    status = data.get("status")  # 신뢰하지 않는 값: 문자열일 때만 비교한다
+    ok = resp.status == 200 and (
+        (isinstance(status, str) and status in READY_STATUSES) or data.get("ready") is True
+    )
     return _scenario("S0.ready", ok, resp, f"/health/ready 상태 {resp.status}", normalized)
 
 

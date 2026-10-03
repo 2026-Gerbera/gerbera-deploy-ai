@@ -16,11 +16,12 @@ from ddak.core.config import Settings
 from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.contracts.plan_facts import EnvKey, Facts, PatchTarget
-from ddak.core.contracts.tools.patch_config import PatchConfigOutput
-from ddak.core.patch_ledger import file_diff, guard_patch_loss, reuse_patches
+from ddak.core.contracts.tools.patch_config import PatchConfigOutput, PatchViolation
+from ddak.core.patch_ledger import approved_patches, file_diff, guard_patch_loss, reuse_patches
 from ddak.core.patch_patterns import scan_patch_targets
 from ddak.core.snapshots import apply_diff, copy_source, digest_bytes, file_manifest
 from ddak.plan.patch.check import PatchPolicy, check_patch
+from ddak.plan.patch.history import lost_violations, previous_files
 
 
 @dataclass(frozen=True)
@@ -30,14 +31,17 @@ class PatchPreparation:
     env_keys: tuple[EnvKey, ...] = ()
     changed_files: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
+    violations: tuple[PatchViolation, ...] = ()
+    review: PatchConfigOutput | None = None
 
     @classmethod
     def from_output(cls, out: PatchConfigOutput) -> PatchPreparation:
         """등록 툴의 검사 결과를 실행기 승인 입력으로 연결한다."""
+        guard_patch_loss(out, run_id=out.run_id, patch=out.patch.encode() if out.patch else None)
         if out.status not in {"proposed", "reused"}:
             if out.passed or out.patch is not None:
                 raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "패치 툴 상태가 일치하지 않는다")
-            return cls(warnings=tuple(out.warnings))
+            return cls(warnings=tuple(out.warnings), review=out)
         patch = out.patch.encode("utf-8") if out.patch else None
         if (
             out.passed is not True
@@ -61,6 +65,7 @@ class PatchPreparation:
             env_keys=tuple(out.env_keys),
             changed_files=tuple(out.changed_files),
             warnings=tuple(out.warnings),
+            review=out,
         )
 
 
@@ -119,19 +124,47 @@ def prepare_patch(
     proposer: Proposer | None = None,
     scanner: Callable[[Path, bytes], None] | None = None,
     approved_patch: bytes | None = None,
+    policy: PatchPolicy | None = None,
 ) -> PatchPreparation:
-    reuse, changed = reuse_patches(source, previous, runs_root)
-    reused_files = {
-        name
-        for release in previous.values()
-        for name in release.get("patch_ledger", {})
-        if name not in changed
-    }
+    # core는 승인 diff의 무결성만 확인한다. 파일별 재사용 적합성은 이 툴이 판단한다.
+    saved = approved_patches(previous, runs_root)
+    exact_reuse, _ = reuse_patches(source, previous, runs_root)
+    history = {}
+    reusable = {}
+    invalid_reuse: dict[str, int | None] = {}
+    candidates = previous_files(exact_reuse) if exact_reuse else {}
+    for name, data in saved.items():
+        parsed = previous_files(data)
+        if set(parsed) != {name}:
+            raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "승인 diff의 파일 원장이 다르다")
+        prev = parsed[name]
+        for release in previous.values():
+            entry = release.get("patch_ledger", {}).get(name)
+            if entry and (
+                digest_bytes(prev.old.encode()) != entry["source_sha256"]
+                or digest_bytes(prev.new.encode()) != entry["result_sha256"]
+            ):
+                raise DdakToolError(
+                    ErrorCode.PRECONDITION_FAILED, "승인 diff의 원본/결과 해시가 다르다"
+                )
+        history.update(parsed)
     if approved_patch and not previous:
-        approved = check_patch(source, approved_patch)
-        if approved.passed:
-            reuse = approved_patch
-            reused_files.update(approved.files)
+        history = previous_files(approved_patch)
+        manifest = file_manifest(source)
+        candidates = {
+            name: prev
+            for name, prev in history.items()
+            if manifest.get(name, {}).get("sha256") == digest_bytes(prev.old.encode())
+        }
+    for name, prev in candidates.items():
+        diff = file_diff(name, prev.old.encode(), prev.new.encode())
+        checked = check_patch(source, diff, policy or PatchPolicy(allowed_files=frozenset({name})))
+        if checked.passed:
+            reusable[name] = diff
+        else:
+            invalid_reuse[name] = next((v.line for v in checked.violations if v.line), None)
+    reuse = b"".join(reusable[name] for name in sorted(reusable)) or None
+    reused_files = set(reusable)
     found = facts.patch_targets if facts is not None else scan_patch_targets(source, ())
     targets = tuple(t for t in found if t.severity == "patch" and t.file not in reused_files)
     proposed, env_keys, origin = None, (), "cache"
@@ -183,7 +216,7 @@ def prepare_patch(
                     if any(t.severity == "patch" and t.file in changes for t in remaining):
                         raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "개발 설정 잔존")
                     check = check_patch(
-                        source, patch, PatchPolicy(allowed_files=frozenset(changes))
+                        source, patch, policy or PatchPolicy(allowed_files=frozenset(changes))
                     )
                     if not check.passed:
                         raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "check_patch 불합격")
@@ -197,7 +230,15 @@ def prepare_patch(
                 code = exc.code.value if isinstance(exc, DdakToolError) else "PATCH_INVALID"
                 warnings.append(f"AI 패치 제안 폐기({code}); 원본과 성공 원장으로 진행")
                 proposed, env_keys, origin = None, (), "cache"
-        guard_patch_loss(source, built, previous)
+        final = {
+            name: (built / name).read_bytes().decode("utf-8") for name in history if name in after
+        }
+        violations = list(lost_violations(history, final))
+        for name, line in invalid_reuse.items():
+            if before.get(name) == after.get(name) and not any(v.file == name for v in violations):
+                violations.append(PatchViolation(code="patch_lost", file=name, line=line))
+        if violations:
+            return PatchPreparation(warnings=tuple(warnings), violations=tuple(violations[:50]))
         if not patch:
             return PatchPreparation(warnings=tuple(warnings))
         # 재사용 패치가 읽는 키도 이번 계획의 주입 대상에 포함한다. 값은 담지 않는다.
