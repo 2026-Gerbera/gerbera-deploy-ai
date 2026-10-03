@@ -1,9 +1,133 @@
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import Response
+from fastapi.responses import RedirectResponse, Response
 
-from ddak.web.dependencies import deployment
+from ddak.core.contracts.errors import DdakToolError
+from ddak.core.redact import redact
+from ddak.web.dependencies import deployment, templates
+from ddak.web.forms import parse_form
+from ddak.web.security import csrf_token, issue_csrf, require_safe_post
 
 router = APIRouter(prefix="/runs")
+
+
+def _reviews(request: Request):
+    reviews = getattr(deployment(request), "patch_reviews", None)
+    if reviews is None:
+        raise HTTPException(503, "코드 제안 기능이 연결되지 않았습니다")
+    return reviews
+
+
+def _review_response(
+    request: Request,
+    run_id: str,
+    *,
+    error: str | None = None,
+    status: int = 200,
+    submitted: dict | None = None,
+):
+    service = deployment(request)
+    review = _reviews(request).get(run_id)
+    if review and review.get("successor"):
+        return RedirectResponse(f"/runs/{review['successor']}/approval", status_code=303)
+    if service.get_run(run_id)["status"] != "AWAITING_APPROVAL":
+        return RedirectResponse(f"/runs/{run_id}/result", status_code=303)
+    if (
+        review
+        and review["state"] == "sealed"
+        and request.query_params.get("wait_for_approval") == "1"
+    ):
+        return RedirectResponse(f"/runs/{run_id}/approval", status_code=303)
+    blocked = False
+    try:
+        review = _reviews(request).view(run_id)
+    except DdakToolError as exc:
+        blocked, status, error = True, 409, redact(exc.message)
+    selection = list(review.get("selected", [])) if review else []
+    if review and submitted and submitted.get("revision") == str(review["revision"]):
+        selection = [
+            item["id"]
+            for item in review["proposals"]
+            if item.get("required", False) or submitted.get("apply_" + item["id"]) == "on"
+        ]
+    elif review:
+        selection = [
+            item["id"]
+            for item in review["proposals"]
+            if item.get("required", False) or item["id"] in selection
+        ]
+    token = csrf_token(request)
+    response = templates.TemplateResponse(
+        request=request,
+        name="patch_review.html",
+        status_code=status,
+        context={
+            "project": service.get_run(run_id)["project"],
+            "run_id": run_id,
+            "review": review,
+            "csrf_token": token,
+            "error": error,
+            "submitted": submitted or {},
+            "blocked": blocked,
+            "selection": selection,
+        },
+    )
+    issue_csrf(request, response, token)
+    return response
+
+
+@router.get("/{run_id}/patch-review")
+async def patch_review_page(request: Request, run_id: str):
+    try:
+        return _review_response(request, run_id)
+    except KeyError as exc:
+        raise HTTPException(404, "실행을 찾을 수 없습니다") from exc
+    except DdakToolError as exc:
+        raise HTTPException(409, redact(exc.message)) from exc
+
+
+@router.post("/{run_id}/patch-review")
+async def patch_review_action(request: Request, run_id: str):
+    form = await parse_form(request)
+    require_safe_post(request, form.get("csrf_token", ""))
+    reviews = _reviews(request)
+    try:
+        action = form.get("action", "")
+        if action == "begin":
+            reviews.begin(run_id)
+        else:
+            if not form.get("revision", "").isascii() or not form.get("revision", "").isdigit():
+                raise ValueError("revision")
+            selected = [
+                key.removeprefix("apply_")
+                for key, value in form.items()
+                if key.startswith("apply_") and value == "on"
+            ]
+            proposal_id = action.removeprefix("revise:")
+            reviews.request(
+                run_id,
+                int(form["revision"]),
+                action,
+                selected,
+                prompt=form.get("prompt_" + proposal_id, ""),
+                candidate_id=form.get("candidate_id", ""),
+                notes={
+                    key.removeprefix("prompt_"): value
+                    for key, value in form.items()
+                    if key.startswith("prompt_")
+                },
+            )
+            if action == "cancel":
+                return RedirectResponse(f"/runs/{run_id}/approval", status_code=303)
+    except KeyError as exc:
+        raise HTTPException(404, "실행을 찾을 수 없습니다") from exc
+    except (DdakToolError, ValueError) as exc:
+        detail = (
+            redact(exc.message)
+            if isinstance(exc, DdakToolError)
+            else "검토 버전 형식이 잘못됐습니다"
+        )
+        return _review_response(request, run_id, error=detail, status=409, submitted=form)
+    return RedirectResponse(f"/runs/{run_id}/patch-review", status_code=303)
 
 
 @router.get("/{run_id}/approved-patch.diff")

@@ -16,6 +16,7 @@ from pydantic import Field
 
 from ddak.core.contracts.base import AIUsage, ContractModel, RunId, ToolInput
 from ddak.core.contracts.enums import Source
+from ddak.core.contracts.patch_review import CodeProposal, PatchReviewRequest
 from ddak.core.contracts.plan_facts import EnvKey
 
 MAX_PATCH_CHARS = 64 * 1024  # 검사기의 패치 크기 상한(64KB)과 같다
@@ -39,6 +40,7 @@ class PatchConfigInput(ToolInput):
 
     source_dir: str = Field(min_length=1, max_length=200)
     previous: ApprovedPatch | None = None
+    review: PatchReviewRequest | None = None
 
 
 class PatchMeta(ContractModel):
@@ -82,3 +84,4 @@ class PatchConfigOutput(ContractModel):
     env_keys: list[EnvKey] = Field(default_factory=list)
     changed_files: list[RelPath] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    proposals: list[CodeProposal] = Field(default_factory=list)

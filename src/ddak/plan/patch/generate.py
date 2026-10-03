@@ -179,6 +179,7 @@ class PatchProposal:
     attempts: int = 0  # AI 호출 수
     usage: list[AIUsage] = field(default_factory=list)
     source: Source | None = None  # 마지막 AI 결과의 출처(AI를 안 불렀으면 None)
+    reason: str | None = None  # 검토 UI용 실제 모델 이유(가림 후); 승인 메타와 별개다.
 
 
 # ---- 1. 대상 찾기 ----------------------------------------------------------------
@@ -372,6 +373,7 @@ def propose_intents(
     settings: Settings | None = None,
     provider: LLMProvider | None = None,
     trace: PatchProposal | None = None,
+    operator_message: str | None = None,
 ) -> tuple[bytes, tuple[EnvKey, ...], str]:
     """위치 의도를 한 번 생성하고, 잘못된 출력만 한 번 재요청한다.
 
@@ -428,9 +430,22 @@ def propose_intents(
                 prompt_version=_INTENTS_PROMPT_VERSION,
                 settings=settings,
                 provider=provider,
+                operator_message=operator_message,
             )
             if trace is not None:
                 trace.source = result.source
+                reason = result.value.reason
+                if settings is not None:
+                    secrets = [
+                        *settings.provider_keys.values(),
+                        settings.anthropic_api_key,
+                        settings.groq_api_key,
+                        settings.llm_api_key,
+                        settings.jev_api_key,
+                    ]
+                    for secret in sorted((s for s in secrets if s), key=len, reverse=True):
+                        reason = reason.replace(secret, "[REDACTED]")
+                trace.reason = redact(reason, max_len=200)
                 if result.usage is not None:
                     trace.usage.append(result.usage)
             if not result.value.intents:
@@ -618,22 +633,37 @@ def patch_config(
             chosen.setdefault(target.file, []).append(target.pattern_id)
     chosen = {name: sorted(set(patterns)) for name, patterns in chosen.items()}
     trace = PatchProposal(status="no_targets")
-    result = prepare_patch(
-        source,
-        facts,
-        ctx,
-        previous=ctx.previous_release,
-        runs_root=session.runs_root if session else source.parent,
-        proposer=lambda tree, active, context: propose_intents(
-            tree,
-            active,
-            context,
+    proposals = []
+    if inp.review is not None:
+        from ddak.plan.patch.tool_review import prepare_review
+
+        result, proposals = prepare_review(
+            inp,
+            ctx,
+            source=source,
+            facts=facts,
+            runs_root=session.runs_root if session else source.parent,
             settings=session.settings if session else settings,
             provider=provider,
             trace=trace,
-        ),
-        approved_patch=inp.previous.patch.encode("utf-8") if inp.previous else None,
-    )
+        )
+    else:
+        result = prepare_patch(
+            source,
+            facts,
+            ctx,
+            previous=ctx.previous_release,
+            runs_root=session.runs_root if session else source.parent,
+            proposer=lambda tree, active, context: propose_intents(
+                tree,
+                active,
+                context,
+                settings=session.settings if session else settings,
+                provider=provider,
+                trace=trace,
+            ),
+            approved_patch=inp.previous.patch.encode("utf-8") if inp.previous else None,
+        )
     if result.patch and policy is not None:
         check = check_patch(source, result.patch, policy)
         if not check.passed:
@@ -670,4 +700,5 @@ def patch_config(
         env_keys=list(result.env_keys),
         changed_files=list(result.changed_files),
         warnings=list(result.warnings),
+        proposals=proposals,
     )

@@ -205,7 +205,7 @@ def panel(monkeypatch):
     app = FastAPI()
     app.state.settings = SimpleNamespace(admin_port=8765)
     app.state.deployment = SimpleNamespace(
-        onboarding=coordinator, resolve_project=lambda name: name
+        onboarding=coordinator, resolve_project=lambda name: name, list_projects=lambda: ["demo"]
     )
     app.include_router(setup.router)
     with TestClient(app, base_url="http://127.0.0.1:8765") as client:

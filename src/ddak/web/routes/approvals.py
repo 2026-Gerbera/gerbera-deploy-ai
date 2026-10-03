@@ -23,10 +23,18 @@ async def approval_page(request: Request, run_id: str):
         return RedirectResponse(f"/runs/{run_id}/result", status_code=303)
     view = redact_obj({**view, "patch": None})  # 원문 대신 검증된 패턴·해시·키만 표시한다.
     token = csrf_token(request)
+    reviews = getattr(service, "patch_reviews", None)
+    review = reviews.get(run_id) if reviews is not None else None
     response = templates.TemplateResponse(
         request=request,
         name="approval.html",
-        context={"approval": view, "project": view.get("project"), "csrf_token": token},
+        context={
+            "approval": view,
+            "project": view.get("project"),
+            "csrf_token": token,
+            "patch_review": review,
+            "patch_review_enabled": reviews is not None,
+        },
     )
     issue_csrf(request, response, token)
     return response

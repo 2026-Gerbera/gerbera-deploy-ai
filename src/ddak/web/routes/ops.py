@@ -5,7 +5,15 @@ from fastapi.responses import JSONResponse, RedirectResponse
 
 from ddak.core.contracts.errors import DdakToolError
 from ddak.core.redact import redact
-from ddak.web.dependencies import deployment, run_link, selected_project, templates, watch_warnings
+from ddak.web.dependencies import (
+    deployment,
+    live_version,
+    project_runs,
+    run_link,
+    selected_project,
+    templates,
+    watch_warnings,
+)
 from ddak.web.forms import parse_form
 from ddak.web.routes.approvals import approval_page as canonical_approval_page
 from ddak.web.security import csrf_token, issue_csrf, require_safe_post
@@ -26,19 +34,23 @@ def _render(request: Request, name: str, context: dict):
 async def page(request: Request, project: str | None = None):
     service = deployment(request)
     project = selected_project(request, project)
-    runs = [r for r in service.list_runs() if r["project"] == project]
+    runs = project_runs(service, project)
     preparations = list(reversed(service.list_preparations(project)))
     for run in runs:
         run["url"] = run_link(run)
     for item in preparations:
         item["url"] = run_link(item) if item.get("run_id") else None
+    state = service.project_state(project)
     return _render(
         request,
         "ops.html",
         {
             "project": project,
             "settings": service.get_project_settings(project) or {},
-            "state": service.project_state(project),
+            "state": state,
+            "live_version": live_version(
+                [runs, preparations, state["blocked_targets"], state["active_runs"]]
+            ),
             "preparations": preparations,
             "watch_warnings": watch_warnings(request),
             "runs": runs,

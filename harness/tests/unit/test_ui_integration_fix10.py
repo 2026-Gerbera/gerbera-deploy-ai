@@ -3,7 +3,6 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from ddak import app as assembly
 from ddak.core.config import Settings
 from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
@@ -57,7 +56,7 @@ def test_dashboard_approval_progress_result_http_flow(rig, monkeypatch, failure)
     calls.fail_cloud = failure
     calls.pause_build = True
     with client_for(service) as client:
-        home = client.get("/")
+        home = client.get(f"/?project={PROJECT}")
         assert home.status_code == 200 and PROJECT in home.text
         assert f'href="/runs/{rid}/approval"' in home.text
         assert 'action="/ops/plan"' in home.text and 'action="/ops/unlock"' in home.text
@@ -78,7 +77,7 @@ def test_dashboard_approval_progress_result_http_flow(rig, monkeypatch, failure)
         assert 'class="activity-dots"' in progress.text
         assert "상세 로그가 도착하면" in progress.text
         assert "FAILED_VERIFY" in progress.text and "SUPERSEDED" in progress.text
-        assert f'href="/runs/{rid}/progress"' in client.get("/").text
+        assert f'href="/runs/{rid}/progress"' in client.get(f"/?project={PROJECT}").text
         assert client.portal is not None
         client.portal.call(calls.resume_build.set)
         client.portal.call(service.wait, rid)
@@ -93,7 +92,7 @@ def test_dashboard_approval_progress_result_http_flow(rig, monkeypatch, failure)
                 "SUCCEEDED" in result.text
                 and "승인 기록과 배포 결과를 저장했습니다." in result.text
             )
-        assert f'href="/runs/{rid}/result"' in client.get("/").text
+        assert f'href="/runs/{rid}/result"' in client.get(f"/?project={PROJECT}").text
         assert (
             'data-status="' + service.get_run(rid)["status"]
             in client.get(f"/runs/{rid}/progress").text
@@ -158,7 +157,7 @@ def test_superseded_is_terminal_and_approval_refused(rig, monkeypatch):
             source,
         )
     with client_for(service) as client:
-        home = client.get("/")
+        home = client.get(f"/?project={PROJECT}")
         assert "대체됨" in home.text and 'href="/runs/run-super-1/result"' in home.text
         response = post(client, "/runs/run-super-1/approval", decision="approved")
         assert response.status_code == 409 and "SUPERSEDED" in response.text
@@ -174,7 +173,7 @@ def test_watch_project_settings_ops_alias_and_unlock_http(rig, monkeypatch):
     service, _, _ = rig
     monkeypatch.setenv("DDAK_WATCH_PROJECT", PROJECT)
     with client_for(service) as client:
-        for path in ("/", "/settings", "/ops"):
+        for path in (f"/?project={PROJECT}", "/settings", "/ops"):
             response = client.get(path)
             assert response.status_code == 200 and PROJECT in response.text
         response = post(client, "/ops/unlock", reason="fixture verified")
@@ -211,6 +210,8 @@ def test_cloud_outputs_deduplicated_and_kept():
 
 
 def test_merge_assembly_keeps_both_refresh_and_tool_registrations(monkeypatch):
+    from ddak import app as assembly
+
     calls = []
     ctx = RunContext("fixture")
     monkeypatch.setattr(assembly, "refresh_infra_context", lambda *args: ctx)

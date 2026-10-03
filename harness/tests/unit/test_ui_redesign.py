@@ -94,6 +94,7 @@ def test_result_does_not_infer_recovery_or_current_version(rig, status, cloud):
         assert 'data-code="DONE"' in html
         assert "인프라 변경 후 실행이 실패했습니다" in html
         assert "adapter timeout" in html and "&lt;script&gt;" in html
+        assert "1분 1초" in html
         assert "<script>bad()" not in html
         assert "승인 기록과 배포 결과를 저장했습니다." not in html
         assert "새 버전으로 서비스 중" not in html
@@ -134,7 +135,8 @@ def test_parallel_progress_events_and_confirmation():
       'cloud-events','common-events'].map(id=>[id,
       {items:[],querySelector:()=>null,appendChild(item){this.items.push(item)}}]));
     const others=Object.fromEntries(['result-link',
-      'progress-title','connection-state','current-activity','activity-title'].map(id=>[id,
+      'progress-title','connection-state','current-activity','activity-title',
+      'local-activity','cloud-activity','common-activity','event-age'].map(id=>[id,
       {classList:classList(),textContent:''}]));
     const progress={dataset:{runId:'fixture',status:'RUNNING',targets:'both',
       terminalStates:'["SUCCEEDED","FAILED_CLOUD"]'}};
@@ -160,6 +162,8 @@ def test_parallel_progress_events_and_confirmation():
     assert.ok(others['activity-title'].textContent.includes('확인 대기'));
     connection.onopen();
     assert.equal(progress.dataset.stream,'live');
+    assert.equal(others['local-activity'].textContent,'응답 확인');
+    assert.equal(others['cloud-activity'].textContent,'인프라 적용');
     send('step.started',{seq:3,step:'deploy.was.local',target:'local'});
     assert.ok(cell('local','verify').classList.values.has('active')); // both remain active
     send('step.finished',{seq:4,step:'deploy.infra.cloud',
@@ -189,6 +193,7 @@ def test_parallel_progress_events_and_confirmation():
     assert.equal(others['activity-title'].textContent,'클라우드 배포 실패');
     assert.ok(closed); assert.ok(!others['result-link'].classList.values.has('hidden'));
     assert.equal(others['progress-title'].textContent,'클라우드 배포 실패');
+    assert.equal(others['local-activity'].textContent,'실행 종료');
     progress.dataset.status='SUCCEEDED';
     vm.runInNewContext(source,{document,EventSource}); assert.equal(opened,1);
     // Non-target cloud cells stay untouched for a shared build event.
@@ -211,11 +216,13 @@ def test_parallel_progress_events_and_confirmation():
     let submit, cancelled=false;
     const form={dataset:{},addEventListener:(name,fn)=>submit=fn};
     document.querySelector=()=>null;
-    document.querySelectorAll=s=>s==='[data-confirm], [data-approval-form]'?[form]:[];
+    document.querySelectorAll=s=>
+      s==='[data-deploy-form], [data-confirm], [data-approval-form]'?[form]:[];
     vm.runInNewContext(source,{document,window:{confirm:()=>false}});
     submit({submitter:{value:'denied'},preventDefault(){cancelled=true}});
     assert.ok(cancelled);
-    cancelled=false; submit({submitter:{value:'approved'},preventDefault(){cancelled=true}});
+    cancelled=false;
+    submit({submitter:{value:'approved',setAttribute(){}},preventDefault(){cancelled=true}});
     assert.equal(cancelled,false); // primary approval stays one click
     const field=value=>({value,events:{},addEventListener(k,fn){this.events[k]=fn;}});
     const selection=field('both'), dns=field('route53'), domain=field('app.example.com');
@@ -280,3 +287,259 @@ def test_approval_shows_producer_proposed_permissions_before_technical_details(r
         visible = html.split("<details><summary>기술 정보</summary>")[0]
         assert "제안 정책의 전체 허용 목록" in visible
         assert "s3:GetObject" in visible and "fixture-resource" in visible
+
+
+class ReviewControls(HTMLParser):
+    """브라우저가 전송할 수 있는 input과 표시된 동작을 검사한다."""
+
+    def __init__(self, html):
+        super().__init__()
+        self.controls = []
+        self.feed(html)
+
+    def handle_starttag(self, tag, attrs):
+        if tag in {"input", "textarea", "button"}:
+            self.controls.append((tag, dict(attrs)))
+
+    def named(self, name):
+        return [attrs for _, attrs in self.controls if attrs.get("name") == name]
+
+    def inputs(self):
+        return {
+            attrs["name"]: attrs.get("value", "on" if attrs.get("type") == "checkbox" else "")
+            for tag, attrs in self.controls
+            if tag == "input"
+            and attrs.get("name")
+            and "disabled" not in attrs
+            and (attrs.get("type") != "checkbox" or "checked" in attrs)
+        }
+
+
+@pytest.fixture
+def review_ui(rig):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+
+    service, source, calls = rig
+    rid = prepare(service, source)
+    proposals = [
+        {
+            "id": name,
+            "title": title,
+            "reason": "설정 검토",
+            "revision": 1,
+            "requires": [],
+            "env_vars": ["APP_CONFIG"],
+            "diff": "-before\n+<script>fixture()</script>",
+        }
+        for name, title in (("retained", "이전 설정"), ("config-file", "파일 설정 묶음"))
+    ]
+    proposals[0]["required"] = True
+    review = {
+        "state": "ready",
+        "revision": 3,
+        "busy": False,
+        "proposals": proposals,
+        "items": proposals,
+        "selected": [],
+        "notes": {"config-file": "기존 요청"},
+        "candidate": None,
+        "source": "fixture",
+    }
+    manager = SimpleNamespace(
+        get=Mock(side_effect=lambda _: review),
+        view=Mock(side_effect=lambda _: review),
+        begin=Mock(),
+        request=Mock(),
+        shutdown=AsyncMock(),
+    )
+    service.patch_reviews = manager
+    return service, rid, calls, manager, review
+
+
+def test_required_review_stays_checked_posts_hidden_and_has_no_prompt(review_ui):
+    service, rid, calls, manager, _ = review_ui
+    with client_for(service) as client:
+        response = client.get(f"/runs/{rid}/patch-review")
+        assert response.status_code == 200
+        html = response.text
+        controls = ReviewControls(html)
+        checkbox, hidden = controls.named("apply_retained")
+        assert checkbox["type"] == "checkbox" and {"checked", "disabled"} <= checkbox.keys()
+        assert checkbox["aria-describedby"] == "required-retained"
+        assert hidden["type"] == "hidden" and hidden["value"] == "on"
+        assert not controls.named("prompt_retained")
+        assert "revise:retained" not in html and "이전 승인 수정 유지" in html
+        assert "2개 중 1개 선택" in html
+        assert controls.named("prompt_config-file")[0]["maxlength"] == "2000"
+        assert "기존 요청" in html and "같은 파일의 설정 수정은 하나로 묶어" in html
+        assert "<script>fixture()" not in html and "&lt;script&gt;fixture()" in html
+        assert "새 제안을 모두 제외해도 이전 승인 수정은 유지" in html
+        response = post(
+            client,
+            f"/runs/{rid}/patch-review",
+            **{
+                **controls.inputs(),
+                "action": "revise:config-file",
+                "prompt_config-file": "수정 요청",
+            },
+        )
+        assert response.status_code == 303
+        manager.request.assert_called_once_with(
+            rid,
+            3,
+            "revise:config-file",
+            ["retained"],
+            prompt="수정 요청",
+            candidate_id="",
+            notes={"config-file": "수정 요청"},
+        )
+        assert not calls.contexts and not service.get_approvals(rid)
+
+
+def test_review_error_keeps_required_selection_and_user_prompt(review_ui):
+    from ddak.core.contracts.errors import DdakToolError, ErrorCode
+
+    service, rid, _, manager, _ = review_ui
+    manager.request.side_effect = DdakToolError(ErrorCode.PRECONDITION_FAILED, "다시 확인")
+    with client_for(service) as client:
+        client.get(f"/runs/{rid}/patch-review")
+        response = post(
+            client,
+            f"/runs/{rid}/patch-review",
+            action="revise:config-file",
+            revision="3",
+            **{"apply_config-file": "on", "prompt_config-file": "수정 요청 <확인>"},
+        )
+        assert response.status_code == 409
+        assert "다시 확인" in response.text and "수정 요청 &lt;확인&gt;" in response.text
+        assert "2개 중 2개 선택" in response.text
+        assert "checked" in ReviewControls(response.text).named("apply_retained")[0]
+
+
+@pytest.mark.parametrize("action", ["adopt", "keep"])
+def test_candidate_requires_explicit_choice_before_finalizing(review_ui, action):
+    service, rid, calls, manager, review = review_ui
+    review["candidate"] = {
+        "id": "candidate-2",
+        "proposal": review["proposals"][1],
+        "diff": "+new candidate",
+    }
+    with client_for(service) as client:
+        html = client.get(f"/runs/{rid}/patch-review").text
+        controls = ReviewControls(html)
+        buttons = {a["value"]: a for a in controls.named("action")}
+        assert "disabled" in buttons["finalize"]
+        assert "disabled" in buttons["revise:config-file"]
+        assert "disabled" not in buttons["adopt"] and "disabled" not in buttons["keep"]
+        assert "현재 제안은 아직 바뀌지 않았습니다" in html
+        assert not manager.request.called
+        response = post(client, f"/runs/{rid}/patch-review", **controls.inputs(), action=action)
+        assert response.status_code == 303
+        assert manager.request.call_args.args == (rid, 3, action, ["retained"])
+        assert manager.request.call_args.kwargs["candidate_id"] == "candidate-2"
+        assert not calls.contexts and not service.get_approvals(rid)
+
+
+@pytest.mark.parametrize(
+    "status,code",
+    [
+        ("generating", "PATCH_GENERATING"),
+        ("reviewing", "PATCH_REVIEWING"),
+        ("finalizing", "PATCH_FINALIZING"),
+        ("publishing", "PATCH_PUBLISHING"),
+    ],
+)
+def test_review_busy_uses_shared_state_and_waits_for_new_approval(review_ui, status, code):
+    service, rid, calls, _, review = review_ui
+    review.update(state=status, busy=True)
+    with client_for(service) as client:
+        html = client.get(f"/runs/{rid}/patch-review").text
+        assert f'class="state running" data-code="{code}"' in html
+        assert 'aria-busy="true"' in html and 'http-equiv="refresh" content="3' in html
+        assert 'name="action"' not in html
+        if status == "finalizing":
+            assert "배포 계획을 다시 검사" in html and "새 승인 화면" in html
+        if status == "publishing":
+            assert "새 승인 자료 연결 중" in html
+        approval = client.get(f"/runs/{rid}/approval").text
+        assert "disabled" in next(
+            b for b in ReviewControls(approval).named("decision") if b["value"] == "approved"
+        )
+        assert not calls.contexts and not service.get_approvals(rid)
+
+
+def test_publishing_poll_moves_to_sealed_approval_but_allows_new_review(review_ui):
+    service, rid, _, _, review = review_ui
+    review.update(state="publishing", busy=True)
+    with client_for(service) as client:
+        html = client.get(f"/runs/{rid}/patch-review").text
+        polling = f"/runs/{rid}/patch-review?wait_for_approval=1"
+        assert f'content="3; url={polling}"' in html
+        assert client.get(polling, follow_redirects=False).status_code == 200
+        review.update(state="sealed", busy=False)
+        response = client.get(polling, follow_redirects=False)
+        assert response.status_code == 303
+        assert response.headers["location"] == f"/runs/{rid}/approval"
+        html = client.get(f"/runs/{rid}/patch-review").text
+        assert 'value="begin"' in html
+
+
+def test_review_close_and_successor_return_to_approval_without_deployment(review_ui):
+    service, rid, calls, manager, review = review_ui
+    with client_for(service) as client:
+        html = client.get(f"/runs/{rid}/patch-review").text
+        assert "이전 승인 화면으로 돌아가며 배포하지 않습니다" in html
+        response = post(client, f"/runs/{rid}/patch-review", revision="3", action="cancel")
+        assert response.status_code == 303
+        assert response.headers["location"] == f"/runs/{rid}/approval"
+        assert manager.request.call_args.args[2] == "cancel"
+        review["successor"] = "review-successor"
+        response = client.get(f"/runs/{rid}/patch-review", follow_redirects=False)
+        assert response.headers["location"] == "/runs/review-successor/approval"
+        assert not calls.contexts and not service.get_approvals(rid)
+
+
+def test_approval_keeps_main_context_and_single_final_decision(review_ui, monkeypatch):
+    service, rid, _, _, review = review_ui
+    raw_patch = "+fixture-private-patch-content"
+    view = {
+        **service.approval_view(rid),
+        "patch": raw_patch,
+        "patch_warning": "이전 승인 패치 확인 <warning>",
+        "missing_env_keys": ["APP_CONFIG"],
+        "patch_meta": {
+            "reason": "환경 패치 확인",
+            "passed": True,
+            "gitleaks": "passed",
+            "new_env_keys": ["APP_CONFIG"],
+        },
+        "decision_basis": {"provider": "fixture-provider", "reason": "fixture-reason"},
+    }
+    original_subjects = dict(view["subjects"])
+    monkeypatch.setattr(service, "approval_view", lambda _: view)
+    with client_for(service) as client:
+        html = client.get(f"/runs/{rid}/approval").text
+        assert 'href="/setup?project=flaskr-three"' in html
+        for text in (
+            "이전 승인 패치 확인 &lt;warning&gt;",
+            "값 필요",
+            "APP_CONFIG",
+            "check_patch: 통과",
+            "fixture-provider",
+            "fixture-reason",
+        ):
+            assert text in html
+        buttons = ReviewControls(html).named("decision")
+        assert len(buttons) == 2 and "disabled" in next(
+            b for b in buttons if b["value"] == "approved"
+        )
+        review.update(state="sealed", selected=["retained"])
+        html = client.get(f"/runs/{rid}/approval").text
+        assert html.count('value="approved"') == 1
+        assert "disabled" not in next(
+            b for b in ReviewControls(html).named("decision") if b["value"] == "approved"
+        )
+        assert "이전 설정" in html
+        assert raw_patch not in html
+        assert view["patch"] == raw_patch and view["subjects"] == original_subjects

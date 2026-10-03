@@ -48,6 +48,8 @@ CREATE TABLE IF NOT EXISTS unlock_ack (
  project TEXT NOT NULL, target TEXT NOT NULL, PRIMARY KEY (project, target));
 CREATE TABLE IF NOT EXISTS run_targets (
  run_id TEXT PRIMARY KEY, targets TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS patch_reviews (
+ run_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, payload TEXT NOT NULL);
 """
 
 
@@ -126,8 +128,31 @@ class Store:
         finally:
             db.close()
 
-    def create_run(self, run_id: str, project: str, plan_hash: str) -> None:
+    def create_run(
+        self,
+        run_id: str,
+        project: str,
+        plan_hash: str,
+        *,
+        review_parent: tuple[str, int] | None = None,
+    ) -> None:
         with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if review_parent is not None:
+                parent, revision = review_parent
+                current = db.execute(
+                    "SELECT runs.project,runs.status,patch_reviews.revision,patch_reviews.payload "
+                    "FROM runs JOIN patch_reviews USING(run_id) WHERE run_id=?",
+                    (parent,),
+                ).fetchone()
+                if (
+                    current is None
+                    or current["project"] != project
+                    or current["status"] != "AWAITING_APPROVAL"
+                    or current["revision"] != revision
+                    or json.loads(current["payload"])["state"] != "finalizing"
+                ):
+                    raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "부모 검토가 바뀌었습니다")
             try:
                 db.execute(
                     "INSERT INTO runs VALUES (?, ?, 'AWAITING_APPROVAL', ?, ?, NULL, NULL)",
@@ -137,6 +162,27 @@ class Store:
                 raise DdakToolError(
                     ErrorCode.PRECONDITION_FAILED, "run_id는 재사용할 수 없다"
                 ) from None
+            if review_parent is not None:
+                parent, revision = review_parent
+                db.execute(
+                    "INSERT INTO patch_reviews VALUES (?,1,?)",
+                    (
+                        run_id,
+                        json.dumps(
+                            {
+                                "state": "publishing",
+                                "revision": 1,
+                                "parent": parent,
+                                "parent_revision": revision,
+                                "proposals": [],
+                                "selected": [],
+                                "successor": None,
+                                "candidate": None,
+                                "error": None,
+                            }
+                        ),
+                    ),
+                )
 
     def run(self, run_id: str) -> dict[str, Any]:
         with self.connection() as db:
@@ -174,6 +220,147 @@ class Store:
                 "SELECT payload FROM prepared_runs WHERE run_id=?", (run_id,)
             ).fetchone()
         return json.loads(row[0]) if row else None
+
+    def patch_review(self, run_id: str) -> dict[str, Any] | None:
+        with self.connection() as db:
+            row = db.execute(
+                "SELECT payload FROM patch_reviews WHERE run_id=?", (run_id,)
+            ).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def save_patch_review(
+        self, run_id: str, expected: int, value: dict[str, Any]
+    ) -> dict[str, Any]:
+        """선택·재검토·채택을 같은 revision 비교로 직렬화한다. 코드는 가림 없이 0600 DB에 둔다."""
+        value = {**value, "revision": expected + 1}
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            run = db.execute("SELECT status FROM runs WHERE run_id=?", (run_id,)).fetchone()
+            row = db.execute(
+                "SELECT revision FROM patch_reviews WHERE run_id=?", (run_id,)
+            ).fetchone()
+            if run is None:
+                raise KeyError(run_id)
+            if run[0] != "AWAITING_APPROVAL" or (row[0] if row else 0) != expected:
+                raise DdakToolError(
+                    ErrorCode.PRECONDITION_FAILED,
+                    "검토 내용이 바뀌었습니다. 최신 화면을 확인하세요",
+                )
+            db.execute(
+                "INSERT OR REPLACE INTO patch_reviews VALUES (?, ?, ?)",
+                (run_id, expected + 1, json.dumps(value, ensure_ascii=False)),
+            )
+        return value
+
+    def publish_patch_review(self, run_id: str, expected: int, successor: str) -> None:
+        """기존 실행은 보존하고 새 불변 승인 자료로 연결한다. 두 실행을 한 트랜잭션에서 전환한다."""
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT revision,payload FROM patch_reviews WHERE run_id=?", (run_id,)
+            ).fetchone()
+            runs = db.execute(
+                "SELECT run_id,project,status FROM runs WHERE run_id IN (?,?)", (run_id, successor)
+            ).fetchall()
+            if (
+                row is None
+                or row[0] != expected
+                or len(runs) != 2
+                or len({r["project"] for r in runs}) != 1
+                or any(r["status"] != "AWAITING_APPROVAL" for r in runs)
+            ):
+                raise DdakToolError(
+                    ErrorCode.PRECONDITION_FAILED, "새 승인 자료를 연결할 수 없습니다"
+                )
+            current = json.loads(row[1])
+            if current["state"] != "finalizing":
+                raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "승인 자료 준비 상태가 다릅니다")
+            pending = db.execute(
+                "SELECT payload FROM patch_reviews WHERE run_id=?", (successor,)
+            ).fetchone()
+            child = json.loads(pending[0]) if pending else {}
+            if (
+                child.get("state") != "publishing"
+                or child.get("parent") != run_id
+                or child.get("parent_revision") != expected
+            ):
+                raise DdakToolError(
+                    ErrorCode.PRECONDITION_FAILED, "후속 검토의 연결 기록이 다릅니다"
+                )
+            current.update(state="complete", successor=successor, revision=expected + 1)
+            sealed = {
+                **current,
+                "state": "sealed",
+                "revision": 1,
+                "successor": None,
+                "parent": run_id,
+            }
+            db.execute(
+                "INSERT OR REPLACE INTO patch_reviews VALUES (?,1,?)",
+                (successor, json.dumps(sealed, ensure_ascii=False)),
+            )
+            db.execute(
+                "UPDATE patch_reviews SET revision=?,payload=? WHERE run_id=?",
+                (expected + 1, json.dumps(current, ensure_ascii=False), run_id),
+            )
+            db.execute(
+                "UPDATE runs SET status='SUPERSEDED',finished=?,result=? WHERE run_id=?",
+                (
+                    time.time(),
+                    _json(
+                        {
+                            "superseded_by": successor,
+                            "reason": "선택한 코드 수정으로 승인 자료 갱신",
+                        }
+                    ),
+                    run_id,
+                ),
+            )
+
+    def abort_patch_review_children(self, parent: str, revision: int) -> None:
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            for row in db.execute("SELECT run_id,payload FROM patch_reviews").fetchall():
+                data = json.loads(row[1])
+                if (
+                    data["state"] == "publishing"
+                    and data.get("parent") == parent
+                    and data.get("parent_revision") == revision
+                ):
+                    self._cancel_unpublished_review(db, row[0], data)
+
+    @staticmethod
+    def _cancel_unpublished_review(db, run_id, data) -> None:
+        reason = "연결되지 않은 승인 자료를 중단했습니다. 원래 검토에서 다시 준비하세요"
+        data.update(state="cancelled", error=reason, revision=data["revision"] + 1)
+        db.execute(
+            "UPDATE patch_reviews SET revision=?,payload=? WHERE run_id=?",
+            (data["revision"], json.dumps(data, ensure_ascii=False), run_id),
+        )
+        db.execute(
+            "UPDATE runs SET status='CANCELLED',finished=?,result=? "
+            "WHERE run_id=? AND status='AWAITING_APPROVAL'",
+            (time.time(), _json({"reason": reason}), run_id),
+        )
+
+    def recover_patch_reviews(self) -> None:
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            for row in db.execute("SELECT run_id,revision,payload FROM patch_reviews").fetchall():
+                data = json.loads(row[2])
+                if data["state"] == "publishing":
+                    self._cancel_unpublished_review(db, row[0], data)
+                    continue
+                if data["state"] in {"generating", "reviewing", "finalizing"}:
+                    data.update(
+                        state="ready",
+                        error="서비스가 재시작돼 요청이 중단됐습니다. 기존 제안을 유지했습니다.",
+                        revision=row[1] + 1,
+                    )
+                    db.execute(
+                        "UPDATE patch_reviews SET revision=?,payload=? WHERE run_id=?",
+                        (data["revision"], json.dumps(data, ensure_ascii=False), row[0]),
+                    )
 
     def supersede_awaiting(self, project: str, run_id: str, source_sha: str) -> list[str]:
         """준비 파일까지 성공한 뒤 호출한다. 수동·태그 요청과 승인된 run은 유지한다."""
@@ -215,16 +402,38 @@ class Store:
                 superseded.append(row["run_id"])
         return superseded
 
-    def list_runs(self, limit: int = 20) -> list[dict[str, Any]]:
+    def list_runs(self, limit: int = 20, *, project: str | None = None) -> list[dict[str, Any]]:
         """관리 화면용 최근 실행 목록. 저장된 결과는 이미 redact된 값이다."""
         safe_limit = max(1, min(limit, 100))
         with self.connection() as db:
             rows = db.execute(
                 "SELECT run_id, project, status, created, finished FROM runs "
-                "ORDER BY created DESC LIMIT ?",
-                (safe_limit,),
+                "WHERE (? IS NULL OR project=?) ORDER BY created DESC, rowid DESC LIMIT ?",
+                (project, project, safe_limit),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def list_pending_runs(self, project: str) -> list[dict[str, Any]]:
+        """처리할 실행은 최근 이력의 개수 제한과 분리한다."""
+        with self.connection() as db:
+            rows = db.execute(
+                "SELECT run_id, project, status, created, finished FROM runs "
+                "WHERE project=? AND status IN ('AWAITING_APPROVAL','APPROVED','RUNNING') "
+                "ORDER BY created DESC, rowid DESC",
+                (project,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_projects(self) -> list[str]:
+        """실행이 없거나 최근 실행 목록에서 밀린 프로젝트도 홈에 표시한다."""
+        with self.connection() as db:
+            return [
+                row[0]
+                for row in db.execute(
+                    "SELECT project FROM project_settings UNION SELECT project FROM runs "
+                    "UNION SELECT project FROM env_release ORDER BY project"
+                )
+            ]
 
     def list_project_settings(self) -> list[dict[str, Any]]:
         with self.connection() as db:
@@ -351,6 +560,18 @@ class Store:
                 or run["status"] not in {"AWAITING_APPROVAL", "APPROVED"}
             ):
                 raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "승인 가능한 실행이 아니다")
+            review = db.execute(
+                "SELECT payload FROM patch_reviews WHERE run_id=?", (first.run_id,)
+            ).fetchone()
+            if (
+                first.decision == "approved"
+                and review
+                and json.loads(review[0])["state"] not in {"cancelled", "sealed"}
+            ):
+                raise DdakToolError(
+                    ErrorCode.PRECONDITION_FAILED,
+                    "코드 수정 검토 중입니다. 최신 승인 자료를 준비하세요",
+                )
             for record in records:
                 db.execute(
                     "INSERT OR REPLACE INTO approvals VALUES (?, ?, ?)",

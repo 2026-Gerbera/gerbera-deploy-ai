@@ -179,6 +179,8 @@ class DeploymentService:
         self._preparation_requests: dict[str, dict[str, Any]] = {}
         self._preparing_runs: dict[str, str] = {}
         self._preparation_locks: dict[str, asyncio.Lock] = {}
+        self.patch_reviews: Any = None  # 조립부가 제안 생성·재계획 함수를 주입한다.
+        self.store.recover_patch_reviews()
 
     def close(self) -> None:
         if any(not t.done() for t in (*self._tasks.values(), *self._preparation_tasks.values())):
@@ -186,6 +188,8 @@ class DeploymentService:
         self._lease.close()
 
     async def shutdown(self) -> None:
+        if self.patch_reviews is not None:
+            await self.patch_reviews.shutdown()
         preparing = [t for t in self._preparation_tasks.values() if not t.done()]
         for task in preparing:
             task.cancel()
@@ -228,6 +232,7 @@ class DeploymentService:
         patch_meta: dict[str, Any] | None = None,
         infra_summary: dict[str, Any] | None = None,
         expected_settings_version: int | None = None,
+        review_parent: tuple[str, int] | None = None,
     ) -> str:
         with self.preparation_stage(plan.run_id, "prepare"):
             return self._prepare(
@@ -240,6 +245,7 @@ class DeploymentService:
                 patch_meta=patch_meta,
                 infra_summary=infra_summary,
                 expected_settings_version=expected_settings_version,
+                review_parent=review_parent,
             )
 
     def _prepare(
@@ -254,7 +260,9 @@ class DeploymentService:
         patch_meta: dict[str, Any] | None = None,
         infra_summary: dict[str, Any] | None = None,
         expected_settings_version: int | None = None,
+        review_parent: tuple[str, int] | None = None,
     ) -> str:
+        self._check_review_baseline(context)
         if source.expanduser().is_symlink():
             raise DdakToolError(ErrorCode.CONFIG_INVALID, "소스 심볼릭 링크는 지원하지 않는다")
         source = source.expanduser().resolve()
@@ -540,7 +548,10 @@ class DeploymentService:
         )
         if directory.exists() and any(p.name != "events.jsonl" for p in directory.iterdir()):
             raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "기존 실행 산출물은 덮어쓸 수 없다")
-        self.store.create_run(plan.run_id, plan.project, cast(str, plan.plan_hash))
+        self._check_review_baseline(context)
+        self.store.create_run(
+            plan.run_id, plan.project, cast(str, plan.plan_hash), review_parent=review_parent
+        )
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         directory.chmod(0o700)
         (directory / "plan.json").write_text(plan.model_dump_json(by_alias=True, indent=2) + "\n")
@@ -743,8 +754,22 @@ class DeploymentService:
             )
         return result
 
-    def list_runs(self, limit: int = 20) -> list[dict[str, Any]]:
-        return self.store.list_runs(limit)
+    def list_runs(self, limit: int = 20, *, project: str | None = None) -> list[dict[str, Any]]:
+        return (
+            self.store.list_runs(limit, project=project)
+            if project is not None
+            else self.store.list_runs(limit)
+        )
+
+    def list_pending_runs(self, project: str) -> list[dict[str, Any]]:
+        return self.store.list_pending_runs(project)
+
+    def list_projects(self) -> list[str]:
+        return sorted(
+            set(self.store.list_projects())
+            | set(self._preparing_runs)
+            | {row["project"] for row in self._preparation_requests.values()}
+        )
 
     def get_state(self, project: str) -> dict[str, Any]:
         """감시 조립부에 전달하는 마지막 성공 존재 여부. intake 모듈을 import하지 않는다."""
@@ -822,11 +847,15 @@ class DeploymentService:
 
     def list_preparations(self, project: str) -> list[dict[str, Any]]:
         project = self.resolve_project(project)
-        return [
+        records = [
             self.get_preparation(key)
             for key, r in self._preparation_requests.items()
             if r["project"] == project
         ]
+        automatic = self._preparing_runs.get(project)
+        if automatic and not any(row["status"] == "PREPARING" for row in records):
+            records.append(self.get_preparation(automatic))
+        return records
 
     def get_preparation(self, request_id: str) -> dict[str, Any]:
         if request_id in self._preparation_requests:
@@ -894,6 +923,7 @@ class DeploymentService:
             "targets": requested_targets,
             "status": "PREPARING",
             "run_id": None,
+            "created": time.time(),
         }
         self._preparation_requests[request_id] = record
 
@@ -1154,6 +1184,7 @@ class DeploymentService:
             if missing:
                 raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "값 필요: " + ", ".join(missing))
             self._check_meta(p)
+            self._check_review_baseline(p.context)
         approval_id, now = uuid.uuid4().hex, datetime.now(UTC)
         records = [
             ApprovalRecord(
@@ -1230,6 +1261,15 @@ class DeploymentService:
             if line.endswith("\n") and (event := json.loads(line))["seq"] > after
         ]
 
+    def _check_review_baseline(self, context: RunContext) -> None:
+        if context.review_baseline_hash is not None and context.review_baseline_hash != digest_json(
+            self.store.environments(context.project)
+        ):
+            raise DdakToolError(
+                ErrorCode.PRECONDITION_FAILED,
+                "코드 검토 후 배포 기준이 바뀌었습니다. 다시 준비하세요",
+            )
+
     def start(self, run_id: str) -> asyncio.Task[RunResult]:
         if run_id in self._tasks:
             raise DdakToolError(ErrorCode.LOCK_HELD, "동일 run은 한 번만 실행한다")
@@ -1237,6 +1277,7 @@ class DeploymentService:
         self._check_approval(p)
         if self.onboarding is not None:
             self.onboarding.require_ready(p.context.project, p.context.targets)
+        self._check_review_baseline(p.context)
         previous = {
             target: row["current"]
             for target, row in self.store.environments(p.plan.project).items()
@@ -1623,6 +1664,7 @@ class DeploymentService:
         run_repository = None
         git_timing_start = 0
         try:
+            self._check_review_baseline(p.context)
             if any(previous.get(t) != old for t, old in p.context.previous_release.items()):
                 raise DdakToolError(
                     ErrorCode.PRECONDITION_FAILED, "승인 뒤 이월 이미지 기준이 변경됐다"

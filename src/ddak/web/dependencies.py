@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 from pathlib import Path
@@ -15,7 +17,15 @@ from ddak.executor.engine import RunStatus
 from ddak.executor.service import DeploymentService
 
 ROOT = Path(__file__).resolve().parent
-templates = Jinja2Templates(directory=ROOT / "templates")
+
+
+def navigation_context(request: Request) -> dict:
+    app = request.scope.get("app")
+    service = getattr(getattr(app, "state", None), "deployment", None)
+    return {"sidebar_projects": service.list_projects() if service is not None else []}
+
+
+templates = Jinja2Templates(directory=ROOT / "templates", context_processors=[navigation_context])
 
 
 def deployment(request: Request) -> DeploymentService:
@@ -93,3 +103,27 @@ def public_links(context: dict) -> list[dict[str, str]]:
 def watch_warnings(request: Request) -> list[str]:
     reader = getattr(request.app.state, "watch_warnings", None)
     return reader() if reader is not None else []
+
+
+def live_version(value) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def project_runs(service: DeploymentService, project: str) -> list[dict]:
+    recent = service.list_runs(limit=100, project=project)
+    ids = {row["run_id"] for row in recent}
+    pending = [row for row in service.list_pending_runs(project) if row["run_id"] not in ids]
+    return sorted([*recent, *pending], key=lambda row: row["created"], reverse=True)
+
+
+def preparation_failure(preparations: list[dict], runs: list[dict]) -> dict | None:
+    if not preparations:
+        return None
+    latest = preparations[-1]
+    if latest["status"] not in {"FAILED_BEFORE_DEPLOY", "CANCELLED"}:
+        return None
+    if not runs or latest.get("run_id") == runs[0]["run_id"]:
+        return latest
+    if not latest.get("run_id") and latest.get("created", 0) > runs[0]["created"]:
+        return latest
+    return None
