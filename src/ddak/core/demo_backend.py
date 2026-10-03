@@ -8,6 +8,7 @@ import re
 import subprocess
 import uuid
 from pathlib import Path
+from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -119,8 +120,11 @@ class Github:
     def create(self, branch, title, body):
         return self.request("pulls", {"head": branch, "base": "prod", "title": title, "body": body})
 
-    def get(self, number):
-        return self.request(f"pulls/{int(number)}")
+    def get(self, number) -> dict[str, Any]:
+        data = self.request(f"pulls/{int(number)}")
+        if not isinstance(data, dict):
+            raise DdakToolError(ErrorCode.ADAPTER_FAILED, "GitHub PR 응답 형식 오류")
+        return data
 
 
 class DemoBackend:
