@@ -476,3 +476,61 @@ def test_database_inside_expression_is_not_rewritten(source: Path) -> None:
     t = target(key="DATABASE")
     with pytest.raises(ValueError, match="지원 리터럴"):
         render_intents(source, [t], [intent(t)])
+
+
+@pytest.mark.parametrize("reader", ["os.environ.get(name)", "os.environ[name]", "os.getenv(name)"])
+def test_parameter_wrapper_uses_literal_call_keys(source, reader):
+    write(source, 'import os\nIMG_DIR = "img"\n')
+    write(
+        source,
+        f'import os\ndef setting(name):\n    return {reader}\nvalue = setting("APP_ENV")\n',
+        "config.py",
+    )
+    targets = scan_patch_targets(source, ["app.py"])
+    patch, env = render_intents(source, targets, [intent(t) for t in targets])
+    assert b"+IMG_DIR = os.environ['IMG_DIR']" in patch
+    assert check_patch(source, patch).passed
+    assert env[0].name == "IMG_DIR"
+    write(
+        source,
+        f'import os\ndef setting(name):\n    return {reader}\nvalue = setting(name="IMG_DIR")\n',
+        "config.py",
+    )
+    with pytest.raises(ValueError, match="사용 중"):
+        render_intents(source, targets, [intent(t) for t in targets])
+
+
+@pytest.mark.parametrize(
+    "body,call",
+    [
+        ("return os.environ.get(name)", 'setting(prefix + "IMG_DIR")'),
+        ('return os.environ.get(name + "_SUFFIX")', 'setting("HOST")'),
+        ("name = prefix + name\n    return os.environ.get(name)", 'setting("HOST")'),
+    ],
+)
+def test_computed_wrapper_keys_still_fail_closed(source, body, call):
+    write(source, 'import os\nIMG_DIR = "img"\n')
+    write(source, f"import os\ndef setting(name):\n    {body}\nvalue = {call}\n", "config.py")
+    targets = scan_patch_targets(source, ["app.py"])
+    with pytest.raises(ValueError, match="동적 환경키"):
+        render_intents(source, targets, [intent(t) for t in targets])
+
+
+def test_documented_hardcoding_patch_remains_renderable(source):
+    from tests.support import REPO_ROOT
+
+    fixture = (
+        "from __future__ import annotations\nfrom flask import Flask\n"
+        "from werkzeug.middleware.proxy_fix import ProxyFix\n"
+        "from settings import app_config, make_engine, database_url\n\n\n\n\n\n\n\n\n"
+        "def create_app():\n    app = Flask(__name__)\n    app.config.update(app_config())\n"
+        '    app.extensions["database"] = make_engine(database_url())\n'
+        "    app.wsgi_app = ProxyFix(\n        app.wsgi_app,\n    )\n    return app\n"
+    )
+    write(source, fixture, "flaskr/__init__.py")
+    apply_diff(source, (REPO_ROOT / "docs/guides/fix11-demo-hardcoding.patch").read_bytes())
+    targets = scan_patch_targets(source, ["flaskr/__init__.py"])
+    assert {t.pattern_id for t in targets} == {"secret_key", "local_address"}
+    patch, keys = render_intents(source, targets, [intent(t) for t in targets])
+    assert check_patch(source, patch).passed
+    assert {k.name for k in keys} == {"SECRET_KEY", "APP_BASE_URL"}

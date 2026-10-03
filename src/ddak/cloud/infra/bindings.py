@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Any
 
 from ddak.core.config import AdapterMode
@@ -28,6 +29,7 @@ class InfraBinding:
     apply_session: Callable[[], SessionKeys]
     analyzer: Callable[[], Any]
     generation_source: Source | None = None
+    baseline_root: Path | None = None
 
 
 _BINDINGS: dict[str, InfraBinding] = {}
@@ -62,6 +64,13 @@ def _binding(run_id: str, ctx: RunContext) -> InfraBinding:
         or binding.runtime.settings.project
         != cloud_platform_name(ctx.project, ctx.project_settings)
         or binding.runtime.settings.run_project != ctx.project
+        or binding.runtime.settings.storage_intent
+        != (ctx.project_settings.get("_infra_storage") or {}).get("intent")
+        or (
+            binding.runtime.settings.storage_intent
+            and binding.runtime.settings.storage_bucket
+            != (ctx.project_settings.get("_infra_storage") or {}).get("bucket")
+        )
     ):
         raise DdakToolError(ErrorCode.INFRA_MISSING, "해당 실행의 인프라 세션 연결이 필요하다")
     return binding
@@ -69,6 +78,10 @@ def _binding(run_id: str, ctx: RunContext) -> InfraBinding:
 
 def run_validate(inp: ValidateInfraInput, ctx: RunContext) -> ValidateInfraOutput:
     binding = _binding(inp.run_id, ctx)
+    if binding.runtime.settings.storage_intent:
+        if ctx.mode is not RunMode.UPDATE:
+            raise DdakToolError(ErrorCode.CONFIG_INVALID, "저장소 변경은 UPDATE에서만 허용한다")
+        binding.runtime.prepare_storage(session=binding.read_session())
     if ctx.mode is RunMode.BOOTSTRAP and binding.runtime.settings.layer == "platform":
         if binding.mode is AdapterMode.FAKE and binding.runtime.foundation_clients is None:
             raise DdakToolError(
@@ -95,6 +108,22 @@ def run_plan(inp: PlanInfraInput, ctx: RunContext) -> PlanInfraOutput:
             **summary,
             "headline": summary["headline"] + f" · HCL source={binding.generation_source.value}",
         }
+    if binding.runtime.settings.storage_intent:
+        from .storage_bundle import save_storage_baseline, storage_summary
+
+        summary["storage"] = storage_summary(
+            binding.files, ctx, binding.generation_source or Source.LIVE
+        )
+        if len(json.dumps(summary, ensure_ascii=False, sort_keys=True).encode()) > 8192:
+            raise DdakToolError(ErrorCode.CONFIG_INVALID, "저장소 승인 요약은 8KiB 이하여야 한다")
+        if (
+            binding.runtime.settings.storage_intent == "create"
+            and binding.generation_source is Source.LIVE
+            and binding.baseline_root is not None
+        ):
+            save_storage_baseline(
+                binding.baseline_root, binding.runtime.settings.project, binding.files
+            )
     if len(json.dumps(summary, ensure_ascii=False, sort_keys=True).encode()) > 16384:
         from .plan import summary_size_detail
 

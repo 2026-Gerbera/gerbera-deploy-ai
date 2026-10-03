@@ -64,6 +64,22 @@ class _Checkov(_Meta):
     failed: list[str]
 
 
+class _StorageEvidence(_Meta):
+    file: Annotated[str, Field(min_length=1, max_length=240)]
+    line: Annotated[int, Field(gt=0)]
+    kind: Literal["hardcoded_dir", "env_read", "file_write"]
+
+
+class _StorageSummary(_Meta):
+    intent: Literal["create", "remove"]
+    rationale: Annotated[list[str], Field(min_length=1, max_length=5)]
+    evidence: Annotated[list[_StorageEvidence], Field(max_length=20)]
+    bucket: str
+    env: dict[Literal["IMG_DIR"], str]
+    files: dict[str, str]
+    source: Source
+
+
 class _InfraSummary(_Meta):
     # 01 공통 계약 C-18의 C1/C3 역할 문서 예시. 정책 판정은 C1/O2 책임이다.
     layer: Literal["app", "platform"]
@@ -76,6 +92,7 @@ class _InfraSummary(_Meta):
     access_analyzer: _Analyzer
     checkov: _Checkov
     sensitive_masked: Literal[True]
+    storage: _StorageSummary | None = None
 
     @field_validator("exit_code", "sensitive_masked", mode="before")
     @classmethod
@@ -100,7 +117,8 @@ def encode_meta(value: dict[str, Any] | None, *, infra: bool = False) -> str:
         if redact_obj(checked, max_len=MAX_META_BYTES) != checked:
             raise ValueError("redaction")
         result = json.dumps(data, ensure_ascii=False, allow_nan=False, sort_keys=True)
-        if len(result.encode("utf-8")) > MAX_META_BYTES:
+        limit = 8192 if infra and data.get("storage") is not None else MAX_META_BYTES
+        if len(result.encode("utf-8")) > limit:
             raise ValueError("size")
         return result
     except (ValueError, TypeError, RecursionError):

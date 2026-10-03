@@ -20,7 +20,14 @@ from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.contracts.plan_facts import EnvKey
 from ddak.core.contracts.tools.analyze_project import AnalyzeProjectInput, AnalyzeProjectOutput
 from ddak.core.env_keys import is_migration_key
-from ddak.core.patch_patterns import scan_patch_targets
+from ddak.core.patch_patterns import iter_source_texts, scan_patch_targets
+from ddak.core.storage import (
+    OUTPUT_KEY,
+    STORAGE_ENV_KEY,
+    STORAGE_SMOKE_GROUP,
+    scan_storage,
+    storage_intent,
+)
 from ddak.plan.analyze import rules
 
 _CONSERVATIVE = "jev 불가: 보수적 secret"
@@ -140,6 +147,18 @@ def analyze_project(
     collected = _collect(
         cfg, src, frozenset(inp.changed_paths), bootstrap=ctx.mode is RunMode.BOOTSTRAP
     )
+    evidence = scan_storage(dict(iter_source_texts(src, python_only=True)))
+    if evidence:
+        collected.setdefault(
+            STORAGE_ENV_KEY,
+            _Found(
+                tier="was" if "was" in cfg.tiers else None,
+                is_new=ctx.mode is RunMode.BOOTSTRAP
+                or any(e.file in inp.changed_paths for e in evidence),
+                required=True,
+            ),
+        )
+    intent = storage_intent(bool(evidence), bool(ctx.platform.get("cloud", {}).get(OUTPUT_KEY)))
     found = {name: value for name, value in collected.items() if not is_migration_key(name)}
     verdict: dict[str, rules.Verdict] = {n: rules.classify(n) for n in found}
     ambiguous = {n: found[n] for n, v in verdict.items() if v is None}
@@ -177,8 +196,9 @@ def analyze_project(
             t: tc.dockerfile is not None and (src / tc.dockerfile).is_file()
             for t, tc in cfg.tiers.items()
         },
-        smoke_groups=rules.smoke_groups(cfg, src),
-        infra_inputs_changed=any(k.kind == "secret" and k.is_new for k in keys),
+        smoke_groups=(*rules.smoke_groups(cfg, src), *((STORAGE_SMOKE_GROUP,) if evidence else ())),
+        infra_inputs_changed=any(k.kind == "secret" and k.is_new for k in keys)
+        or (inp.request.target in {"cloud", "both"} and intent is not None),
         patch_targets=scan_patch_targets(
             src, inp.changed_paths, bootstrap=ctx.mode is RunMode.BOOTSTRAP
         ),

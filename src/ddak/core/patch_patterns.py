@@ -14,6 +14,7 @@ from urllib.parse import urlsplit
 from ddak.core.contracts.plan_facts import PatchTarget
 from ddak.core.pem import UnsupportedPemError
 from ddak.core.snapshots import excluded
+from ddak.core.storage import STORAGE_ENV_KEY
 
 __all__ = [
     "DATABASE_SETTINGS",
@@ -31,6 +32,7 @@ DATABASE_SETTINGS = frozenset(
 
 # 검사기의 줄 규칙과 분석기의 pattern_id는 이 레지스트리만 사용한다.
 PATTERNS: dict[str, re.Pattern[str]] = {
+    "local_storage_dir": re.compile(r"\bIMG_DIR\b"),
     "secret_key": re.compile(r"\bsecret_key\b", re.I),
     "local_address": re.compile(r"\blocalhost\b|\b127(?:\.\d{1,3}){3}\b|::1", re.I),
     "cookie_secure": re.compile(r"\bSESSION_COOKIE_SECURE\b"),
@@ -261,6 +263,9 @@ def _scan_file(tree: ast.AST) -> Iterator[tuple[int, str, Literal["patch", "warn
             names[child] = name
         if value in env_nodes:
             continue
+        literal = _string(value)
+        if name == STORAGE_ENV_KEY and literal and "://" not in literal:
+            yield value.lineno, "local_storage_dir", "patch", STORAGE_ENV_KEY
         if name.lower() == "secret_key" and _string(value) is not None:
             yield value.lineno, "secret_key", "patch", "SECRET_KEY"
         elif (

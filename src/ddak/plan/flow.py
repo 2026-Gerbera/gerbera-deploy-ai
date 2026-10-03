@@ -11,7 +11,7 @@ import shutil
 import time
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -30,7 +30,14 @@ from ddak.core.contracts.tools.patch_config import PatchConfigOutput
 from ddak.core.contracts.tools.receive_deploy_request import ReceiveDeployRequestInput
 from ddak.core.contracts.tools.validate_plan import ValidatePlanInput
 from ddak.core.logging import get_logger
+from ddak.core.patch_patterns import iter_source_texts
 from ddak.core.runtime import tool_context
+from ddak.core.storage import (
+    OUTPUT_KEY,
+    STORAGE_SMOKE_GROUP,
+    scan_storage,
+    storage_intent,
+)
 from ddak.plan.analyze import analyze_project
 from ddak.plan.detect import detect_changed_tiers
 from ddak.plan.intake import FetchPolicy, cleanup_stale_sources, receive_deploy_request
@@ -187,6 +194,25 @@ def plan_deployment(
                 jev_client=jev_client,
                 root=policy.root,
             )
+        storage = storage_intent(
+            STORAGE_SMOKE_GROUP in ana.smoke_groups,
+            bool(ctx.platform.get("cloud", {}).get(OUTPUT_KEY)),
+        )
+        project_settings = dict(ctx.project_settings)
+        project_settings.pop("_infra_storage", None)
+        if request.target in {"cloud", "both"} and storage is not None:
+            project_settings["_infra_storage"] = {
+                "intent": storage,
+                "evidence": [
+                    asdict(e)
+                    for e in scan_storage(dict(iter_source_texts(checkout, python_only=True)))
+                ],
+                # 생성 이름은 읽기 세션을 가진 조립부가 순번을 예약한 뒤 채운다.
+                "bucket": ctx.platform.get("cloud", {}).get(OUTPUT_KEY)
+                if storage == "remove"
+                else None,
+            }
+        ctx = replace(ctx, project_settings=project_settings)
         facts = Facts(
             project=request.project,
             mode=request.mode,

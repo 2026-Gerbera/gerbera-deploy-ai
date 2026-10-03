@@ -61,7 +61,7 @@ from ddak.plan.patch.history import PreviousFile as _PreviousFile
 from ddak.plan.patch.history import lost_violations
 from ddak.plan.patch.history import previous_files as _previous_files
 from ddak.plan.patch.intents import EditIntent, render_intents
-from ddak.plan.patch.pipeline import current_patch_session, prepare_patch
+from ddak.plan.patch.pipeline import current_patch_session, prepare_patch, required_storage_targets
 
 # v2: DB 접속 주소 안내(patch_db_access 흡수), 빈 edits 허용
 # v3: 기본값 없는 필수 환경변수 읽기만(결정 12의 4)
@@ -75,6 +75,7 @@ _SCALAR_VALUE = re.compile(r"[=:]\s*(?:-?\d+|True|False)\b")
 _EXAMPLE_NAME = re.compile(r"^\s*(?:export\s+)?([A-Z][A-Z0-9_]{0,63})\s*=")
 _DEFAULT_INTENT_KEYS = frozenset(
     {
+        "IMG_DIR",
         "SECRET_KEY",
         "APP_BASE_URL",
         "DATABASE_URL",
@@ -384,6 +385,7 @@ def _allowed_intent_keys(source: Path, ctx: RunContext) -> frozenset[str]:
 
 def _checked_reason(checked: PatchCheck) -> str:
     labels = {
+        "local_storage_dir": "이미지 저장 경로",
         "secret_key": "서명 키",
         "local_address": "개발 주소",
         "cookie_secure": "쿠키 Secure",
@@ -403,7 +405,7 @@ def propose_intents(
     trace: PatchProposal | None = None,
     operator_message: str | None = None,
 ) -> tuple[bytes, tuple[EnvKey, ...], str]:
-    """위치 의도를 한 번 생성하고, 잘못된 출력만 한 번 재요청한다.
+    """위치 의도를 생성하고, 잘못된 출력·필수 저장 위치 누락을 한 번 재요청한다.
 
     호출자가 patch_config 툴 문맥을 설정해야 한다. AI 입력은 위치와 허용 키 이름뿐이다.
     반환 str은 AI 출처 라벨이며,
@@ -446,8 +448,40 @@ def propose_intents(
         ensure_ascii=False,
         sort_keys=True,
     )
+    required = tuple(
+        t
+        for t in required_storage_targets(source, ctx)
+        if any((t.file, t.line, t.pattern_id) == (a.file, a.line, a.pattern_id) for a in active)
+    )
+    origin = Source.CACHE.value
+    fallback: tuple[bytes, tuple[EnvKey, ...]] | None = None
+
+    def complete_required(intents: Sequence[EditIntent]) -> list[EditIntent]:
+        positions = {(i.file, i.line, i.pattern_id) for i in intents}
+        return [
+            *intents,
+            *(
+                EditIntent(file=t.file, line=t.line, pattern_id=t.pattern_id, key="IMG_DIR")
+                for t in required
+                if (t.file, t.line, t.pattern_id) not in positions
+            ),
+        ]
+
+    def rule_result() -> tuple[bytes, tuple[EnvKey, ...], str]:
+        try:
+            patch, env_keys = fallback or render_intents(source, required, complete_required(()))
+        except (ValueError, OSError):
+            raise DdakToolError(
+                ErrorCode.PRECONDITION_FAILED, "IMG_DIR 규칙 보완을 렌더링할 수 없다"
+            ) from None
+        if trace is not None:
+            trace.reason = "이미지 저장 경로를 필수 환경변수로 전환; 규칙으로 보완"
+            trace.meta = {"reason": trace.reason}
+        return patch, env_keys, origin
+
     feedback = ""
     for _ in range(MAX_ATTEMPTS):
+        missing = required
         if trace is not None:
             trace.attempts += 1
         try:
@@ -460,6 +494,7 @@ def propose_intents(
                 provider=provider,
                 operator_message=operator_message,
             )
+            origin = result.source.value
             if trace is not None:
                 trace.source = result.source
                 reason = result.value.reason
@@ -476,16 +511,29 @@ def propose_intents(
                 trace.reason = redact(reason, max_len=200)
                 if result.usage is not None:
                     trace.usage.append(result.usage)
-            if not result.value.intents:
+            positions = {(i.file, i.line, i.pattern_id) for i in result.value.intents}
+            missing = tuple(t for t in required if (t.file, t.line, t.pattern_id) not in positions)
+            if not result.value.intents and not required:
                 return b"", (), result.source.value
             if any(i.key not in allowed_keys for i in result.value.intents):
                 raise ValueError("허용목록에 없는 환경키")
+            if missing:
+                # 나머지 의도까지 유효할 때만 마지막 응답을 규칙 보완 후보로 유지한다.
+                fallback = None
+                fallback = render_intents(
+                    source,
+                    allowed if result.value.intents else required,
+                    complete_required(result.value.intents),
+                )
+                raise ValueError("필수 저장 위치 누락")
             patch, env_keys = render_intents(source, allowed, result.value.intents)
             if not patch:
                 raise ValueError("빈 패치 의도")
             return patch, env_keys, result.source.value
         except DdakToolError as exc:
             if exc.code is not ErrorCode.AI_OUTPUT_INVALID:
+                if required and exc.code is ErrorCode.AI_UNAVAILABLE:
+                    return rule_result()
                 raise
         except ValueError:
             pass  # 원본·AI 응답·예외 내용은 재요청 입력으로 보내지 않는다.
@@ -497,6 +545,14 @@ def propose_intents(
             "\n이전 응답은 AI_OUTPUT_INVALID로 거부됐다. 허용된 위치와 키를 확인하고, "
             "모든 target에 정확히 하나의 intent를 다시 지정한다."
         )
+        if missing:
+            feedback += "\n필수 저장 위치 누락: " + json.dumps(
+                [t.model_dump(include={"file", "line", "pattern_id"}) for t in missing],
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+    if required:
+        return rule_result()
     raise DdakToolError(ErrorCode.AI_OUTPUT_INVALID, "편집 의도가 두 번 거부됐다")
 
 
@@ -724,6 +780,8 @@ def patch_config(
     if facts is not None and facts.code_patch != ctx.toggles.get("code_patch", False):
         raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "패치 토글과 분석 결과가 다르다")
     targets = facts.patch_targets if facts else scan_patch_targets(source, ())
+    if ctx.toggles.get("code_patch", False):
+        targets = (*targets, *required_storage_targets(source, ctx))
     chosen: dict[str, list[str]] = {}
     for target in targets:
         if target.severity == "patch":
@@ -762,6 +820,7 @@ def patch_config(
             ),
             approved_patch=inp.previous.patch.encode("utf-8") if inp.previous else None,
             policy=policy,
+            proposal_reason=lambda: (trace.meta or {}).get("reason"),
         )
     if result.violations:
         return PatchConfigOutput(

@@ -23,7 +23,9 @@ MAX_PATCH_CHARS = 64 * 1024  # 검사기의 패치 크기 상한(64KB)과 같다
 Sha256Digest = Annotated[str, Field(pattern=r"^sha256:[0-9a-f]{64}$")]
 RelPath = Annotated[str, Field(min_length=1, max_length=200)]
 EnvName = Annotated[str, Field(pattern=r"^[A-Z][A-Z0-9_]{1,63}$")]
-PatternName = Literal["secret_key", "local_address", "cookie_secure", "proxy_fix"]
+PatternName = Literal[
+    "secret_key", "local_address", "cookie_secure", "proxy_fix", "local_storage_dir"
+]
 PatchStatus = Literal["proposed", "reused", "no_targets", "rejected", "patch_lost"]
 
 

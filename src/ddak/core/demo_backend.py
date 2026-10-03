@@ -158,6 +158,10 @@ class DemoBackend:
             "refs/tags/v2:refs/tags/v2",
         )
 
+        # v3가 아직 없으면 필수 v1·v2 fetch와 별개로 건너뛴다.
+        if repo.git("ls-remote", "--tags", "origin", "refs/tags/v3"):
+            repo.git("fetch", "--no-tags", "origin", "refs/tags/v3:refs/tags/v3")
+
         def git(*args, check=True):
             return repo.git(*args, ok=(0,) if check else (0, 1, 128))
 
@@ -167,6 +171,8 @@ class DemoBackend:
         repo, git, github = self._open(project, saved)
         snap = snapshot(git)
         action = ACTIONS[action_name]
+        if action.tag not in snap.tag_trees:
+            raise DdakToolError(ErrorCode.PRECONDITION_FAILED, f"{action.tag} 태그 없음")
         target = snap.tag_trees[action.tag]
         base = {"tag": action.tag, "target_tree": target, "repo_url": saved["repo_url"]}
         if target == snap.prod_tree:
@@ -223,7 +229,7 @@ class DemoBackend:
             if source:
                 tree = git("rev-parse", "--verify", source + "^{tree}", check=False)
                 labels[source] = tree_label(snap, tree or None)
-        return {"prs": prs, "labels": labels}
+        return {"prs": prs, "labels": labels, "available_tags": sorted(snap.tag_trees)}
 
 
 def probe_version(url: str) -> dict:

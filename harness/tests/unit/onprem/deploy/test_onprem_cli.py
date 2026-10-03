@@ -54,7 +54,11 @@ def test_was_sqlite_state_is_separate(tmp_path):
     cli.initialize(tmp_path / "was", "was", "http://192.168.10.2:8080", "linux/amd64")
     inv = json.loads((tmp_path / "was" / "inventory.json").read_text())
     assert set(inv["tiers"]) == {"was"}
-    assert inv["tiers"]["was"]["volumes"][0]["target"] == "/data"
+    volumes = inv["tiers"]["was"]["volumes"]
+    assert volumes == [
+        {"name": "flaskr-was-sqlite", "target": "/data"},
+        {"name": "flaskr-was-uploads", "target": "/app/img"},
+    ]
     assert not (tmp_path / "was" / "private" / "db.env").exists()
 
 

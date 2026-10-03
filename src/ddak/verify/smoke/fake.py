@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
 from typing import Literal
 
 from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.enums import Target
-from ddak.verify.smoke.logic import HttpClient, Response
+from ddak.verify.smoke.logic import Form, HttpClient, ImageUpload, Response
 
 
 class FakeFlaskr:
@@ -17,10 +16,9 @@ class FakeFlaskr:
     def __init__(self, run_id: str) -> None:
         self._run_id = run_id
         self._titles: list[str] = []
+        self._images: dict[str, bytes] = {}
 
-    def request(
-        self, method: str, path: str, form: Mapping[str, str] | None, timeout: float
-    ) -> Response:
+    def request(self, method: str, path: str, form: Form | None, timeout: float) -> Response:
         del timeout
         if method == "GET" and path == "/version":
             body = {
@@ -39,7 +37,14 @@ class FakeFlaskr:
                 f'<article class="post"><h1>{t}</h1></article>' for t in reversed(self._titles)
             )
             return Response(200, (), f"<nav>Flaskr</nav><h1>Posts</h1>{items}")
-        if method == "POST" and path == "/create":
+        if method == "GET" and path == "/uploads":
+            return Response(200, (), "".join(f'<img src="{p}">' for p in self._images))
+        if method == "POST" and path == "/upload" and isinstance(form, ImageUpload):
+            self._images[f"/uploads/{len(self._images) + 1}.png"] = form.data
+            return Response(302, (("Location", "/uploads"),), "")
+        if method == "GET" and path in self._images:
+            return Response(200, (("Content-Type", "image/png"),), "", self._images[path])
+        if method == "POST" and path == "/create" and not isinstance(form, ImageUpload):
             title = (form or {}).get("title", "").strip()
             if not title:
                 return Response(200, (), '<div class="error">Title is required.</div>')

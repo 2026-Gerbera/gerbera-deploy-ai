@@ -92,6 +92,9 @@ def create_binding(
         if bundle.layer == "platform"
         else (),
         rds_master_secret_arn=ctx.platform.get("cloud", {}).get("rds_master_secret_arn"),
+        storage_intent=(ctx.project_settings.get("_infra_storage") or {}).get("intent"),
+        storage_bucket=(ctx.project_settings.get("_infra_storage") or {}).get("bucket"),
+        task_role_arn=ctx.platform.get("cloud", {}).get("task_role_arn"),
     )
     runtime = InfraRuntime(
         root=root,
@@ -109,4 +112,5 @@ def create_binding(
         session_keys,
         session_keys,
         lambda: sdk_session().client("accessanalyzer", config=config),
+        baseline_root=root.parent,
     )
