@@ -73,6 +73,11 @@ def approval_story(view: dict, data: dict | None = None) -> dict:
         else "새 이미지 빌드 단계가 없습니다."
     )
     return {
+        # 표시 자료가 없어도 템플릿이 같은 키를 읽도록 빈 목록을 기본으로 둔다.
+        "files": [],
+        "patches": [],
+        "findings": [],
+        "mappings": [],
         **data,
         "summary": (
             f"{ref}의 커밋 {sha}를 "

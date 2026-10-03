@@ -237,4 +237,5 @@ input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--ink); }
 .story-metrics { display: flex; gap: 40px; flex-wrap: wrap; margin: 20px 0; }
 .story-metrics strong { display: block; font-size: 24px; }
 .story-technical { margin-top: 32px; }
+.story-basis { max-height: 320px; overflow: auto; }
 @media(max-width:700px) { .story-diff, .story-resources, .story-timeline { grid-template-columns: minmax(0,1fr); } .story-lead { font-size: 18px; } }

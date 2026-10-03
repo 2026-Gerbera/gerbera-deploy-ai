@@ -181,12 +181,12 @@
       const message = document.querySelector("[data-refresh-state]");
       controller = new AbortController();
       const timeout = window.setTimeout(() => controller.abort(), 8000);
-      let delay = 3000;
+      let delay = 3000, next = null;
       try {
         const response = await fetch(window.location.href, { signal: controller.signal, cache: "no-store" });
         if (!response.ok) throw new Error("refresh");
         const parsed = new DOMParser().parseFromString(await response.text(), "text/html");
-        const next = parsed.querySelector("[data-live-region]");
+        next = parsed.querySelector("[data-live-region]");
         const current = document.querySelector("[data-live-region]");
         if (!next || !current) throw new Error("refresh markup");
         const editing = (current.contains(document.activeElement) &&
@@ -225,7 +225,8 @@
         if (!stopped && message) message.textContent = `최신 상태 확인 · ${new Date().toLocaleTimeString("ko-KR", { hour12: false })}`;
       } catch {
         delay = 6000;
-        if (next.dataset.summaryState && next.dataset.summaryState !== "pending") {
+        // 응답을 받기 전 실패면 next가 없다. 받은 응답이 요약 완료를 알렸을 때만 멈춘다.
+        if (next?.dataset.summaryState && next.dataset.summaryState !== "pending") {
           stopped = true;
           window.clearInterval(clock);
         }

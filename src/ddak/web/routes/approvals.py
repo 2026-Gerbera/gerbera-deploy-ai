@@ -28,13 +28,16 @@ async def approval_page(request: Request, run_id: str):
     token = csrf_token(request)
     reviews = getattr(service, "patch_reviews", None)
     review = reviews.get(run_id) if reviews is not None else None
+    # 표시 자료가 없는 서비스(이전 구현·테스트 대역)도 계획만으로 승인 화면을 그린다.
+    reader = getattr(service, "get_display_data", None)
+    display = reader(run_id) if reader is not None else {}
     response = templates.TemplateResponse(
         request=request,
         name="approval.html",
         context={
             "approval": view,
             "public_links": public_links(service.get_run(run_id).get("context") or {}),
-            "story": approval_story(view, service.get_display_data(run_id)),
+            "story": approval_story(view, display),
             "project": view.get("project"),
             "csrf_token": token,
             "patch_review": review,

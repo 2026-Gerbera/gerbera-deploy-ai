@@ -74,7 +74,8 @@ def test_patch_explanation_and_decision_basis_display_without_raw_diff(rig):
         csrf_token="fixture",
         request={"url": {"path": "/approval"}},
     )
-    visible = html.split("<details>")[0]
+    # 접힌 기술 정보(<details ...>) 앞, 처음 보이는 영역만 확인한다.
+    visible = html.split("<details")[0]
     for text in (
         "check_patch: 통과",
         "새 환경 키: APP_BASE_URL",
