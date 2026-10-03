@@ -38,7 +38,7 @@ from ddak.core.storage import (
     scan_storage,
     storage_intent,
 )
-from ddak.plan.analyze import analyze_project
+from ddak.plan.analyze import analyze_project, suggest_infra_mappings
 from ddak.plan.detect import detect_changed_tiers
 from ddak.plan.intake import FetchPolicy, cleanup_stale_sources, receive_deploy_request
 from ddak.plan.planner import generate_plan
@@ -194,11 +194,17 @@ def plan_deployment(
                 jev_client=jev_client,
                 root=policy.root,
             )
+            mapping_suggestions = suggest_infra_mappings(
+                checkout, settings=settings, provider=provider
+            )
         storage = storage_intent(
             STORAGE_SMOKE_GROUP in ana.smoke_groups,
             bool(ctx.platform.get("cloud", {}).get(OUTPUT_KEY)),
         )
         project_settings = dict(ctx.project_settings)
+        project_settings.pop("_infra_mapping_suggestions", None)
+        if mapping_suggestions:
+            project_settings["_infra_mapping_suggestions"] = mapping_suggestions
         project_settings.pop("_infra_storage", None)
         if request.target in {"cloud", "both"} and storage is not None:
             project_settings["_infra_storage"] = {
