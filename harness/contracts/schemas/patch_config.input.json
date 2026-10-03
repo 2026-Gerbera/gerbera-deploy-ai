@@ -1,0 +1,76 @@
+{
+  "$defs": {
+    "ApprovedPatch": {
+      "additionalProperties": false,
+      "description": "이전 run에서 승인된 패치(재사용 후보). 실행기 승인 기록의 patch·patch_meta에서 온다.",
+      "properties": {
+        "patch": {
+          "maxLength": 65536,
+          "minLength": 1,
+          "title": "Patch",
+          "type": "string"
+        },
+        "reason": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/Source",
+          "default": "live"
+        }
+      },
+      "required": [
+        "patch",
+        "reason"
+      ],
+      "title": "ApprovedPatch",
+      "type": "object"
+    },
+    "Source": {
+      "description": "AI 결과의 출처. live가 아니면 관리 페이지가 라벨을 표시한다(목업은 목업이라고 밝힘).",
+      "enum": [
+        "live",
+        "cache",
+        "fixture",
+        "replay"
+      ],
+      "title": "Source",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "source_dir은 intake가 만든 prod 원본 스냅샷(DDAK_SOURCES_DIR 기준 상대 경로).",
+  "properties": {
+    "previous": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ApprovedPatch"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "run_id": {
+      "description": "실행 ID. 모든 툴의 필수 입력",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+      "title": "Run Id",
+      "type": "string"
+    },
+    "source_dir": {
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Source Dir",
+      "type": "string"
+    }
+  },
+  "required": [
+    "run_id",
+    "source_dir"
+  ],
+  "title": "PatchConfigInput",
+  "type": "object"
+}

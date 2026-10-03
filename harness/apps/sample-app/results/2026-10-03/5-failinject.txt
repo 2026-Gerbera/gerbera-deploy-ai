@@ -1,0 +1,23 @@
+# 실패 주입(2026-10-03 11시대, 로컬 MySQL 8.4.11, 앱 v2 was 이미지 + 시험용 0002 파일)
+# 시험용 0002 = CREATE TABLE IF NOT EXISTS failinject_probe(...). 앱 저장소에는 넣지 않았다.
+# 접속 문자열·비밀번호는 기록하지 않았다. MIGRATE_RESULT의 fingerprint는 생략했다.
+
+== 0. 준비: v2 이미지(0001만)로 up → DB 0001
+up       ok current=0001 expected=0001 applied=[0001] signature=sha256:07ace2f785b3…
+
+== 1. 0002가 든 이미지를 migrate 없이 기동
+/health/live   200 {"status":"ok"}
+/health/ready  503 {"db":"ok","schema":{"current":"0001","expected":"0002"},"status":"fail","tls":true,"tls_verified":false}
+precheck       ok current=0001 expected=0002   → 실행기 migrate_db는 current != expected라 up을 돌린다
+
+== 2. up → verify → ready
+up       ok current=0002 expected=0002 applied=[0002] signature=sha256:979e544d8940…
+verify   ok current=0002 expected=0002
+/health/ready  200 {"db":"ok","schema":{"current":"0002","expected":"0002"},"status":"ok",...}
+
+== 3. 결함 DB: schema_migrations 행(0001, 0002)은 두고 post 표만 DROP, migrate 없이
+/health/ready  200 {"schema":{"current":"0002","expected":"0002"},"status":"ok",...}   ← ready는 버전 행만 본다
+/ (목록)        500
+precheck       ok current=null expected=0002   ← 행+객체 기준이라 결함을 잡는다
+up             ok current=0002 applied=[0001] signature=sha256:979e544d8940… (복구)
+/ (목록)        200
