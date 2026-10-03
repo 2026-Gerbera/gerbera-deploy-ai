@@ -1,6 +1,186 @@
 {
+  "$defs": {
+    "ReportFacts": {
+      "additionalProperties": false,
+      "properties": {
+        "checks": {
+          "items": {
+            "$ref": "#/$defs/ReportStep"
+          },
+          "title": "Checks",
+          "type": "array"
+        },
+        "files": {
+          "items": {
+            "$ref": "#/$defs/ReportFile"
+          },
+          "title": "Files",
+          "type": "array"
+        },
+        "findings": {
+          "items": {
+            "$ref": "#/$defs/ReportFinding"
+          },
+          "title": "Findings",
+          "type": "array"
+        },
+        "images": {
+          "items": {
+            "$ref": "#/$defs/ReportImage"
+          },
+          "title": "Images",
+          "type": "array"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        },
+        "steps": {
+          "items": {
+            "$ref": "#/$defs/ReportStep"
+          },
+          "title": "Steps",
+          "type": "array"
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "title": "ReportFacts",
+      "type": "object"
+    },
+    "ReportFile": {
+      "additionalProperties": false,
+      "properties": {
+        "change": {
+          "title": "Change",
+          "type": "string"
+        },
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "tier": {
+          "title": "Tier",
+          "type": "string"
+        }
+      },
+      "required": [
+        "file",
+        "tier",
+        "change"
+      ],
+      "title": "ReportFile",
+      "type": "object"
+    },
+    "ReportFinding": {
+      "additionalProperties": false,
+      "properties": {
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "line": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Line"
+        }
+      },
+      "required": [
+        "file",
+        "kind"
+      ],
+      "title": "ReportFinding",
+      "type": "object"
+    },
+    "ReportImage": {
+      "additionalProperties": false,
+      "properties": {
+        "digest_prefix": {
+          "pattern": "^[a-f0-9]{12}$",
+          "title": "Digest Prefix",
+          "type": "string"
+        },
+        "tier": {
+          "title": "Tier",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tier",
+        "digest_prefix"
+      ],
+      "title": "ReportImage",
+      "type": "object"
+    },
+    "ReportStep": {
+      "additionalProperties": false,
+      "properties": {
+        "elapsed_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Elapsed S"
+        },
+        "error_code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error Code"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "status"
+      ],
+      "title": "ReportStep",
+      "type": "object"
+    }
+  },
   "additionalProperties": false,
   "properties": {
+    "facts": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ReportFacts"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
     "run_id": {
       "description": "실행 ID. 모든 툴의 필수 입력",
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",

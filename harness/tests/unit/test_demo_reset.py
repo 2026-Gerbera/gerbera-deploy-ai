@@ -169,8 +169,13 @@ class FakeDeployment:
     def get_run(self, rid):
         return self.runs[rid]
 
-    def list_runs(self, limit=20):
-        return list(reversed(list(self.runs.values())))
+    def list_runs(self, limit=20, *, project=None):
+        # 실제 DeploymentService처럼 프로젝트 필터와 개수 제한을 받는다.
+        rows = list(reversed(list(self.runs.values())))
+        return [row for row in rows if project is None or row["project"] == project][:limit]
+
+    def list_pending_runs(self, project):
+        return []
 
     def list_preparations(self, project):
         return self.requests

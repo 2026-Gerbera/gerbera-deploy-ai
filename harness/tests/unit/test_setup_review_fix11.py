@@ -96,6 +96,9 @@ class FakeBuildSetup:
 class MemoryService:
     """DB/저장소 경계만 대체. 설정 해석·coordinator·guard는 실제 코드다."""
 
+    def list_projects(self):
+        return [PROJECT]
+
     def __init__(self, root, saved=None):
         self.root = root.resolve() / "state"
         self.root.mkdir()

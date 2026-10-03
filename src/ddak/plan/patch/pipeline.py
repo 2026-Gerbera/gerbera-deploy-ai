@@ -74,7 +74,7 @@ class PatchSession:
     run_id: str
     source_root: Path
     runs_root: Path
-    facts: Facts
+    facts: Facts | None
     settings: Settings
 
 

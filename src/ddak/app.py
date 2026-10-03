@@ -23,6 +23,7 @@ import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import replace
+from functools import partial
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import quote, urlsplit
@@ -52,8 +53,9 @@ from ddak.core.app_repository import AppRepository, FakeAppRepository
 from ddak.core.config import AdapterMode, Settings, require_local_cli
 from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.deploy_request import DeployRequest
-from ddak.core.contracts.enums import RunMode
+from ddak.core.contracts.enums import RunMode, Source
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
+from ddak.core.contracts.patch_review import PatchReviewRequest, ReviewResult
 from ddak.core.contracts.plan import Plan, PlanStep
 from ddak.core.contracts.plan_facts import FileMeta
 from ddak.core.contracts.tools.generate_infra import GenerateInfraInput, GenerateInfraOutput
@@ -69,10 +71,11 @@ from ddak.core.runtime_values import derived_public
 from ddak.core.setup_actions import SetupActions
 from ddak.core.setup_service import SetupService
 from ddak.core.setup_tools import BuildSetup
-from ddak.core.snapshots import copy_source
+from ddak.core.snapshots import copy_source, digest_json
 from ddak.core.tool_paths import managed_tools
 from ddak.executor.approval_meta import check_infra_summary, encode_meta
 from ddak.executor.infra import refresh_infra_context
+from ddak.executor.patch_review import PatchReviews
 from ddak.executor.preparation import missing_track_tools
 from ddak.executor.service import DeploymentService
 from ddak.onprem.deploy import (
@@ -83,7 +86,7 @@ from ddak.onprem.deploy import (
     write_inventory,
 )
 from ddak.onprem.inventory import load_inventory
-from ddak.plan import new_run_id, plan_deployment
+from ddak.plan import new_run_id, plan_deployment, replan_patch
 from ddak.plan.intake import (
     FetchPolicy,
     Watcher,
@@ -93,7 +96,13 @@ from ddak.plan.intake import (
     load_watch_targets,
     resolve_head,
 )
-from ddak.plan.patch import PatchPreparation, PatchSession, patch_session
+from ddak.plan.patch import (
+    PatchPreparation,
+    PatchSession,
+    combine_review,
+    patch_session,
+    proposal_diff,
+)
 from ddak.web.app import create_app
 
 _log = get_logger("plan")
@@ -1135,6 +1144,246 @@ def _setup_actions(service, settings):
     return SetupActions(service, Adapter)
 
 
+def _previous_built_tiers(store, project: str) -> dict:
+    """이월된 이미지도 실제 빌드 당시 파일로 비교한다. 원본 manifest로 패치를 지우지 않는다."""
+    result = {}
+    for target, state in store.environments(project).items():
+        current = state.get("current")
+        if current is None:
+            continue
+        tiers = {}
+        for tier in current.get("images", {}):
+            origin = current.get("image_sources", {}).get(tier, {})
+            if origin.get("source") == "approved_mysql_artifact":
+                continue
+            origin_id = origin.get("release_id", current.get("release_id"))
+            record = (
+                current
+                if origin_id == current.get("release_id")
+                else store.release_record(origin_id)
+            )
+            files = record.get("files") if record else None
+            if not isinstance(files, dict):
+                raise DdakToolError(
+                    ErrorCode.PRECONDITION_FAILED, "이전 이미지의 빌드 기록을 확인할 수 없습니다"
+                )
+            tiers[tier] = {name: FileMeta(**value) for name, value in files.items()}
+        result[target] = tiers
+    return result
+
+
+def _review_tool_output(service, settings, source, context, review):
+    """검토도 같은 등록 툴·프로젝트 설정·성공 원장으로 검사한다."""
+    saved = service.get_project_settings(context.project) or {}
+    if service.onboarding is not None:
+        settings = service.onboarding.effective(context.project, saved, service.onboarding.vault)
+    selected = (
+        ("local",)
+        if context.targets == "onprem"
+        else (("cloud",) if context.targets == "cloud" else ("local", "cloud"))
+    )
+    context = replace(
+        context,
+        previous_release={
+            target: row["current"]
+            for target, row in service.store.environments(context.project).items()
+            if target in selected and row.get("current")
+        },
+        toggles={**context.toggles, "code_patch": True},
+    )
+    session = PatchSession(context.run_id, source.parent, service.root / "runs", None, settings)
+    request = PatchConfigInput(run_id=context.run_id, source_dir=source.name, review=review)
+    registered = service.registry.get("patch_config")
+    with patch_session(session), tool_context("patch_config", context.run_id):
+        output = PatchConfigOutput.model_validate(registered.fn(request, context))
+    if output.run_id != context.run_id:
+        raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "패치 툴 응답의 run ID가 다릅니다")
+    prepared = PatchPreparation.from_output(output)
+    if output.status == "rejected":
+        raise DdakToolError(
+            ErrorCode.PRECONDITION_FAILED,
+            "; ".join(output.warnings) or "패치 툴 검사를 통과하지 못했습니다",
+        )
+    return output, prepared
+
+
+def _configure_patch_review(service: DeploymentService, settings: Settings) -> None:
+    def generate(source, context, *, previous=None, allproposals=None, prompt=""):
+        request = PatchReviewRequest(
+            action="revise" if previous else "propose",
+            proposals=allproposals or [],
+            proposal_id=previous.id if previous else "",
+            prompt=prompt,
+        )
+        output, checked = _review_tool_output(service, settings, source, context, request)
+        proposals = output.proposals
+        if previous is not None:
+            proposals = [item for item in proposals if item.id == previous.id]
+        elif combine_review(source, proposals, [item.id for item in proposals]) != checked.patch:
+            raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "제안과 검사된 패치가 다릅니다")
+        origin = output.source or (output.meta.source if output.meta else Source.LIVE)
+        return ReviewResult(proposals, origin, checked.warnings)
+
+    async def finalize(prepared, patch: bytes | None, draft: dict, guard) -> str:
+        guard()
+        original = prepared.context
+        run_id = new_run_id()
+        source = service.root / "sources" / run_id
+        context = replace(
+            original,
+            run_id=run_id,
+            source_binding=None,
+            candidate_sha=None,
+            release_artifacts=None,
+            images={},
+            preparation_errors={},
+            preparation_failures={},
+            preparation_warnings=[],
+            source_checks={},
+            review_baseline_hash=None,
+            toggles={**original.toggles, "code_patch": bool(patch)},
+        )
+        if not original.repo_url:
+            raise DdakToolError(
+                ErrorCode.CONFIG_INVALID, "재계획에는 소스 저장소 기록이 필요합니다"
+            )
+        baseline = digest_json(service.store.environments(original.project))
+        saved = service.get_project_settings(original.project) or {}
+        effective = settings
+        if service.onboarding is not None:
+            effective = service.onboarding.effective(
+                original.project, saved, service.onboarding.vault
+            )
+        try:
+            await service._repository_work(copy_source, prepared.source, source)
+            _, checked = await service._repository_work(
+                partial(
+                    _review_tool_output,
+                    service,
+                    effective,
+                    source,
+                    context,
+                    PatchReviewRequest(
+                        action="compose", proposals=draft["proposals"], selected=draft["selected"]
+                    ),
+                )
+            )
+            if checked.patch != patch:
+                raise DdakToolError(
+                    ErrorCode.PRECONDITION_FAILED, "선택한 수정과 검사 결과가 다릅니다"
+                )
+            request = DeployRequest(
+                project=original.project,
+                repo_url=original.repo_url,
+                ref=original.source_sha,
+                target="local" if original.targets == "onprem" else (original.targets or "both"),
+                mode=original.mode,
+                code_patch=bool(checked.patch),
+            )
+            bundle = await service._repository_work(
+                partial(
+                    replan_patch,
+                    request,
+                    run_id=run_id,
+                    source=source,
+                    patch=checked.patch,
+                    settings=effective,
+                    source_context=context,
+                    previous_manifests=lambda project: _previous_manifests(service.store, project),
+                    previous_tier_manifests=lambda project: _previous_built_tiers(
+                        service.store, project
+                    ),
+                    cloud_domain=context.cloud_domain,
+                    platform=dict(context.platform),
+                    patch_env_keys=checked.env_keys,
+                    record_stage=lambda name, ms, status: service.record_stage(
+                        run_id, name, ms, status
+                    ),
+                    **(
+                        {"jev_client": get_jev_client(effective)}
+                        if service.onboarding is not None
+                        else {}
+                    ),
+                )
+            )
+            context = replace(
+                bundle.context,
+                review_baseline_hash=baseline,
+                preparation_warnings=list(
+                    dict.fromkeys([*draft.get("warnings", []), *checked.warnings])
+                ),
+                required_env_keys=tuple(key.name for key in bundle.facts.env_keys if key.required),
+                preparation_failures=missing_track_tools(bundle.plan, service.registry),
+            )
+            # 신규 필수 키에도 현재 main의 온프렘 파생 설정을 제공한다.
+            platform = json.loads(json.dumps(context.platform))
+            if "was" in platform.get("onprem", {}).get("tiers", {}):
+                was = platform["onprem"]["tiers"]["was"]
+                was["public_env"] = {
+                    **derived_public(platform["onprem"], context.required_env_keys),
+                    **was.get("public_env", {}),
+                }
+            context = replace(context, platform=platform)
+            if service.repository_factory is not None:
+                context = await _source_preflight(service, context, patch=checked.patch)
+            try:
+                subjects, infra_summary = await _infra_approval(service, bundle.plan, context)
+            except DdakToolError as exc:
+                if request.target != "both" or not bundle.plan.deploy.local.steps:
+                    raise
+                context = replace(
+                    context,
+                    preparation_failures={**context.preparation_failures, "cloud": ["apply_infra"]},
+                    preparation_errors={
+                        "cloud": {
+                            "phase": "infra",
+                            "code": exc.code.value,
+                            "detail": str(redact_obj(exc.message))[:1000],
+                        }
+                    },
+                )
+                subjects, infra_summary = {}, None
+            guard()
+            if digest_json(service.store.environments(original.project)) != baseline:
+                raise DdakToolError(
+                    ErrorCode.PRECONDITION_FAILED,
+                    "검토 중 배포 기준이 바뀌었습니다. 다시 준비하세요",
+                )
+            plan = _platform_bootstrap_plan(bundle.plan, context, infra_summary)
+            return service.prepare(
+                plan,
+                context,
+                source,
+                patch=checked.patch,
+                patch_meta=checked.meta,
+                patch_review=checked.review,
+                subjects=subjects,
+                infra_summary=infra_summary,
+                expected_settings_version=original.project_settings.get("version", 0),
+                review_parent=(prepared.plan.run_id, draft["revision"]),
+            )
+        except (Exception, asyncio.CancelledError) as exc:
+            failure = (
+                DdakToolError(
+                    ErrorCode.PRECONDITION_FAILED, "코드 수정 승인 자료 준비가 중단됐습니다"
+                )
+                if isinstance(exc, asyncio.CancelledError)
+                else exc
+            )
+            service.record_preparation_failure(
+                run_id, original.project, failure, context=context, phase="patch_review"
+            )
+            raise
+
+    service.patch_reviews = PatchReviews(
+        service,
+        generate=generate,
+        combine=combine_review,
+        finalize=finalize,
+        diff=proposal_diff,
+    )
+
+
 def _demo_reset_service(service, settings):
     from ddak.core.demo_backend import DemoBackend
     from ddak.core.demo_reset import DemoReset
@@ -1199,6 +1448,7 @@ def create(
         service.code_question = _code_question_service(service, settings)
         if onprem_profile:
             _configure_onprem(service)
+        _configure_patch_review(service, settings)
         return service
 
     app = create_app(

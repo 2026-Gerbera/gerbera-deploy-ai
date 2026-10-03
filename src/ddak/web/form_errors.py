@@ -21,7 +21,9 @@ from ddak.web.security import CSRF_COOKIE, csrf_token, issue_csrf
 FLASH_QUERY = "_form_error"
 FLASH_TTL = 300
 FLASH_LIMIT = 128
-_PAGE = re.compile(r"/(?:setup(?:/actions)?|settings|ops|(?:ops/)?runs/[A-Za-z0-9_-]+/approval)?")
+_PAGE = re.compile(
+    r"/(?:setup(?:/actions)?|settings|ops|(?:ops/)?runs/[A-Za-z0-9_-]+/(?:approval|patch-review))?"
+)
 _PROJECT = re.compile(r"[a-z][a-z0-9_-]{0,63}")
 _FORM = re.compile(r"[a-z0-9][a-z0-9_.:-]{0,127}")
 
@@ -66,7 +68,7 @@ def _fallback(request: Request, form: dict[str, str]) -> str:
     return return_page(path + "?" + urlencode({"project": form.get("project", "")})) or "/"
 
 
-def error_data(exc: Exception, form: dict[str, str]) -> tuple[int, dict[str, str]]:
+def error_data(exc: Exception, form: dict[str, str]) -> tuple[int, dict[str, Any]]:
     if isinstance(exc, DdakToolError):
         status, code, message = 409, exc.code.value, exc.message
     elif isinstance(exc, HTTPException):
@@ -151,6 +153,11 @@ def failure_response(request: Request, exc: Exception) -> Response:
     destination = return_page(metadata.get("_return_to", "")) or _fallback(request, form)
     ident = metadata.get("_form_id", "")
     error["form_id"] = ident if _FORM.fullmatch(ident) else ""
+    # 라우트가 CSRF 확인 후 선별한 입력만 허용된 복귀 화면의 일회성 알림에 보관한다.
+    retained = getattr(request.state, "retained_form", None)
+    retained_paths = getattr(request.state, "retained_paths", {request.url.path})
+    if retained and _page_key(destination)[0] in retained_paths:
+        error["submitted"] = retained
     token, flash = csrf_token(request), secrets.token_urlsafe(32)
     cache = _flashes(request)
     while len(cache) >= FLASH_LIMIT:
@@ -210,7 +217,7 @@ class FormRoute(APIRoute):
                 )
             ):
                 destination = response.headers.get("location", "")
-                if re.fullmatch(r"/runs/[A-Za-z0-9_-]+/(?:progress|result)", destination):
+                if re.fullmatch(r"/runs/[A-Za-z0-9_-]+/(?:approval|progress|result)", destination):
                     record["destination"] = destination
                     response.headers["location"] = (
                         destination + "?" + urlencode({FLASH_QUERY: flash})

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 from pathlib import Path
@@ -15,10 +17,25 @@ from ddak.core.project_settings import ProjectSettings
 from ddak.executor.engine import RunStatus
 from ddak.executor.service import DeploymentService
 from ddak.web.form_errors import form_context, form_error_for, form_return_to
+from ddak.web.story import approval_story
 
 ROOT = Path(__file__).resolve().parent
-templates = Jinja2Templates(directory=ROOT / "templates", context_processors=[form_context])
-templates.env.globals.update(form_error_for=form_error_for, form_return_to=form_return_to)
+
+
+def navigation_context(request: Request) -> dict:
+    app = request.scope.get("app")
+    service = getattr(getattr(app, "state", None), "deployment", None)
+    # 프로젝트 목록을 주지 않는 서비스(테스트 대역)도 현재 프로젝트만으로 사이드바를 그린다.
+    reader = getattr(service, "list_projects", None)
+    return {"sidebar_projects": reader() if reader is not None else []}
+
+
+templates = Jinja2Templates(
+    directory=ROOT / "templates", context_processors=[navigation_context, form_context]
+)
+templates.env.globals.update(
+    form_error_for=form_error_for, form_return_to=form_return_to, approval_story=approval_story
+)
 
 
 def deployment(request: Request) -> DeploymentService:
@@ -135,3 +152,27 @@ def public_links(context: dict) -> list[dict[str, str]]:
 def watch_warnings(request: Request) -> list[str]:
     reader = getattr(request.app.state, "watch_warnings", None)
     return reader() if reader is not None else []
+
+
+def live_version(value) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def project_runs(service: DeploymentService, project: str) -> list[dict]:
+    recent = service.list_runs(limit=100, project=project)
+    ids = {row["run_id"] for row in recent}
+    pending = [row for row in service.list_pending_runs(project) if row["run_id"] not in ids]
+    return sorted([*recent, *pending], key=lambda row: row["created"], reverse=True)
+
+
+def preparation_failure(preparations: list[dict], runs: list[dict]) -> dict | None:
+    if not preparations:
+        return None
+    latest = preparations[-1]
+    if latest["status"] not in {"FAILED_BEFORE_DEPLOY", "CANCELLED"}:
+        return None
+    if not runs or latest.get("run_id") == runs[0]["run_id"]:
+        return latest
+    if not latest.get("run_id") and latest.get("created", 0) > runs[0]["created"]:
+        return latest
+    return None

@@ -49,6 +49,48 @@
       ],
       "title": "ReportIssue",
       "type": "object"
+    },
+    "ReportNarrative": {
+      "additionalProperties": false,
+      "properties": {
+        "changes": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 3,
+          "minItems": 2,
+          "title": "Changes",
+          "type": "array"
+        },
+        "checks": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 8,
+          "title": "Checks",
+          "type": "array"
+        },
+        "conclusion": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Conclusion",
+          "type": "string"
+        },
+        "next_action": {
+          "maxLength": 400,
+          "minLength": 1,
+          "title": "Next Action",
+          "type": "string"
+        }
+      },
+      "required": [
+        "conclusion",
+        "changes",
+        "checks",
+        "next_action"
+      ],
+      "title": "ReportNarrative",
+      "type": "object"
     }
   },
   "additionalProperties": false,
@@ -67,6 +109,17 @@
       },
       "title": "Issues",
       "type": "array"
+    },
+    "narrative": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ReportNarrative"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "passed": {
       "default": true,
@@ -96,7 +149,8 @@
         "rule",
         "live",
         "cache",
-        "replay"
+        "replay",
+        "ai"
       ],
       "title": "Source",
       "type": "string"

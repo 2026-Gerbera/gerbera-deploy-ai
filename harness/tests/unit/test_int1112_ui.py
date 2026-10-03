@@ -74,7 +74,8 @@ def test_patch_explanation_and_decision_basis_display_without_raw_diff(rig):
         csrf_token="fixture",
         request={"url": {"path": "/approval"}},
     )
-    visible = html.split("<details>")[0]
+    # 접힌 기술 정보(<details ...>) 앞, 처음 보이는 영역만 확인한다.
+    visible = html.split("<details")[0]
     # 판정 근거 요약은 화면에 보이고, 단계별 근거·제외·무효화 원문은 접힌 기술 정보에 둔다.
     technical = html.split('<details id="approval-technical">', 1)[1].split("</details>", 1)[0]
     for text in (
