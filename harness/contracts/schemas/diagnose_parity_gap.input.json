@@ -1,0 +1,122 @@
+{
+  "$defs": {
+    "FailedStep": {
+      "additionalProperties": false,
+      "description": "이번 run에서 failed·check_failed로 끝난 step 하나(실행기 기록에서 온다).",
+      "properties": {
+        "error": {
+          "anyOf": [
+            {
+              "maxLength": 4000,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error"
+        },
+        "output": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Output"
+        },
+        "status": {
+          "enum": [
+            "failed",
+            "check_failed"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "step_id": {
+          "maxLength": 120,
+          "minLength": 1,
+          "title": "Step Id",
+          "type": "string"
+        },
+        "target": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Target"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "tool": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Tool",
+          "type": "string"
+        }
+      },
+      "required": [
+        "step_id",
+        "tool",
+        "status"
+      ],
+      "title": "FailedStep",
+      "type": "object"
+    },
+    "Target": {
+      "description": "배포 대상 환경. 실행기가 plan.json의 트랙과 deploy.yaml로 정한다(AI가 고르지 않는다).",
+      "enum": [
+        "local",
+        "cloud"
+      ],
+      "title": "Target",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "failed_steps": {
+      "items": {
+        "$ref": "#/$defs/FailedStep"
+      },
+      "maxItems": 100,
+      "title": "Failed Steps",
+      "type": "array"
+    },
+    "reason": {
+      "enum": [
+        "parity_failed",
+        "track_failed"
+      ],
+      "title": "Reason",
+      "type": "string"
+    },
+    "run_id": {
+      "description": "실행 ID. 모든 툴의 필수 입력",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+      "title": "Run Id",
+      "type": "string"
+    },
+    "tracks": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "maxProperties": 8,
+      "title": "Tracks",
+      "type": "object"
+    }
+  },
+  "required": [
+    "run_id",
+    "reason"
+  ],
+  "title": "DiagnoseParityGapInput",
+  "type": "object"
+}

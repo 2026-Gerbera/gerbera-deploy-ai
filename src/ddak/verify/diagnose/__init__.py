@@ -1,22 +1,15 @@
-"""verify/diagnose: 원인 분석(AI). 담당 장민영(O3).
+"""verify/diagnose: 원인 분석(설명 전용). 담당 장민영(O3).
 
-공개 함수: diagnose_parity_gap. 다른 디렉토리는 이 파일의 공개 함수만 쓴다.
+공개 함수: diagnose_parity_gap(툴 진입점, tool.py가 등록), diagnose_by_rules(규칙 부분).
+다른 디렉토리는 이 파일의 공개 이름만 쓴다.
 AI 호출은 ddak.core.ai(call_ai, ask_jev)로만 한다(허용 디렉토리, import-linter 계약 2).
-빈 구현이다. 구현이 끝나면 이 디렉토리에 tool.py를 만들고 @tool("<이름>")으로 등록한다
-(시그니처: inp: <Tool>Input, ctx: RunContext -> <Tool>Output, 모델은 ddak.core.contracts.tools).
+실행기가 compare 불합격·트랙 실패 뒤에만 부르고, 출력은 판정·롤백에 쓰지 않는다
+(2026-10-03 diagnose-advisory 결정). 입출력은 core/contracts/tools/diagnose_parity_gap.py.
 """
 
 from __future__ import annotations
 
-from ddak.core.contracts.context import RunContext
+from ddak.verify.diagnose.advisory import diagnose_parity_gap
+from ddak.verify.diagnose.rules import RuleDiagnosis, diagnose_by_rules
 
-_TODO = "verify/diagnose 미구현: 담당 장민영"
-
-
-def diagnose_parity_gap(inp: object, ctx: RunContext) -> object:
-    """diagnose_parity_gap 빈 구현.
-
-    입력(모델 미정): compare_env_results 차이 + redact된 진단 정보. 출력: 원인 설명(AI 제안,
-    source 라벨 포함). 로그·diff는 신뢰하지 않는 입력이다.
-    """
-    raise NotImplementedError(_TODO)
+__all__ = ["RuleDiagnosis", "diagnose_by_rules", "diagnose_parity_gap"]
