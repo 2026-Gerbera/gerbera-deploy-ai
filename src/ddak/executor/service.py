@@ -174,6 +174,7 @@ class DeploymentService:
         self.interrupted = self.store.recover_interrupted()
         self._facts_readers = {"source_manifest": source_facts, **(facts_readers or {})}
         self._tasks: dict[str, asyncio.Task[RunResult]] = {}
+        self._display_outputs: dict[str, dict[str, dict]] = {}
         self._buses: dict[str, EventBus] = {}
         self._entered: set[str] = set()
         self._tokens: dict[str, str] = {}
@@ -775,6 +776,7 @@ class DeploymentService:
                     "trigger",
                     "source_sha",
                     "candidate_sha",
+                    "build_backend",
                     "project_settings",
                     "cloud_domain",
                     "repo_url",
@@ -785,6 +787,66 @@ class DeploymentService:
                 (context.get("platform") or {}).get("onprem", {}).get("public_url")
             )
         return result
+
+    def track_result(self, run_id: str) -> dict[str, Any]:
+        """실행 판정에 관여하지 않는 환경별 현재 기록의 읽기 전용 사본."""
+        row = self.get_run(run_id)
+        result = dict(row.get("result") or {})
+        steps = {key: dict(value) for key, value in (result.get("steps") or {}).items()}
+        tracks = dict(result.get("tracks") or {})
+        starts, elapsed = {}, {}
+        for event in self.events(run_id):
+            target = event.get("target")
+            sid = event.get("step")
+            if target in {"local", "cloud"} and event.get("type") == "step.started":
+                starts.setdefault(target, event.get("ts"))
+            if sid and event.get("type") in {"step.started", "step.finished", "step.skipped"}:
+                record = steps.setdefault(sid, {})
+                record.update(
+                    status="running"
+                    if event["type"] == "step.started"
+                    else "skipped"
+                    if event["type"] == "step.skipped"
+                    else event.get("status"),
+                    elapsed_s=event.get("elapsed_s"),
+                    tool=event.get("tool"),
+                )
+                if event["type"] == "step.started":
+                    record["started"] = event.get("ts")
+                if target in {"local", "cloud"} and event.get("status") in {
+                    "failed",
+                    "check_failed",
+                }:
+                    tracks[target] = "FAILED"
+            if event.get("type") == "gate.opened" and event.get("detail") in {
+                "local_verified",
+                "cloud_verified",
+            }:
+                env = "local" if event["detail"] == "local_verified" else "cloud"
+                tracks[env] = "DONE"
+                with contextlib.suppress(ValueError, TypeError):
+                    elapsed[env] = (
+                        max(
+                            0,
+                            (
+                                datetime.fromisoformat(event["ts"])
+                                - datetime.fromisoformat(starts[env])
+                            ).total_seconds(),
+                        )
+                        if starts.get(env)
+                        else None
+                    )
+            if event.get("type") == "rollback.finished" and target in {"local", "cloud"}:
+                tracks[target] = (
+                    "ROLLED_BACK" if event.get("status") == "succeeded" else "ROLLBACK_FAILED"
+                )
+        for sid, output in self._display_outputs.get(run_id, {}).items():
+            steps.setdefault(sid, {})["output"] = dict(output)
+        result.update(steps=steps, tracks=tracks, track_elapsed_s=elapsed)
+        current = {}
+        with contextlib.suppress(OSError, ValueError):
+            current = json.loads((run_dir(self.root / "runs", run_id) / "context.json").read_text())
+        return {"run": {**row, "result": result}, "images": dict(current.get("images") or {})}
 
     def list_runs(self, limit: int = 20, *, project: str | None = None) -> list[dict[str, Any]]:
         return (
@@ -882,6 +944,10 @@ class DeploymentService:
         lock = self._preparation_locks.setdefault(project, asyncio.Lock())
         await lock.acquire()
         self._preparing_runs[project] = run_id
+
+    def preparing_run(self, project: str) -> str | None:
+        """프로젝트의 진행 중인 준비 실행을 읽는다."""
+        return self._preparing_runs.get(project)
 
     def end_preparation(self, project: str, run_id: str) -> None:
         if self._preparing_runs.get(project) == run_id:
@@ -1646,6 +1712,14 @@ class DeploymentService:
                     raise DdakToolError(
                         ErrorCode.PRECONDITION_FAILED, "필수 tier 이미지 관측이 없다"
                     )
+            safe = {key: output[key] for key in ("passed", "source") if key in output}
+            if isinstance(output.get("scenarios"), list):
+                safe["scenarios"] = [
+                    {"id": item.get("id"), "ok": item.get("ok") is True}
+                    for item in output["scenarios"]
+                    if isinstance(item, dict)
+                ]
+            self._display_outputs.setdefault(ctx.run_id, {})[step.id] = safe
             write_context(self.root / "runs", ctx.run_id, updated.to_json_dict())
             return updated
 

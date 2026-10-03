@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="light">
   {% block head %}{% endblock %}
   <title>{% block title %}Gerbera 배포 관리{% endblock %}</title>
-  <link rel="stylesheet" href="/static/app.css?v=story-default-project-20261003">
+  <link rel="stylesheet" href="/static/app.css?v=narrative-20261004">
 </head>
 <body>
   <a class="skip-link" href="#main">본문으로 이동</a>
@@ -36,6 +36,7 @@
     </main>
   </div>
   <template id="form-error-template">{{ error_box(prototype=True) }}</template>
-  <script src="/static/app.js?v=story-inline-errors-20261003" defer></script>
+  <script type="application/json" id="narrative-errors">{{ narrative_errors|tojson }}</script>
+  <script src="/static/app.js?v=narrative-20261004" defer></script>
 </body>
 </html>

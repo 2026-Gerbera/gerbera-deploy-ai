@@ -333,7 +333,8 @@ def test_async_job_indicates_progress_and_cannot_be_double_submitted(review_rig)
             apply_cookie="on",
         )
         html = client.get("/runs/review-parent/patch-review").text
-        assert 'http-equiv="refresh"' in html and 'class="state running"' in html
+        assert "data-live-region" in html and 'class="state running"' in html
+        assert 'http-equiv="refresh"' not in html
         assert post(client, "/runs/review-parent/approval", decision="approved").status_code == 409
         current = reviews.get("review-parent")
         assert (

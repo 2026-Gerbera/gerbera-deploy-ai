@@ -5,7 +5,7 @@ from fastapi.responses import RedirectResponse, Response
 
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.redact import redact
-from ddak.web.dependencies import deployment, templates
+from ddak.web.dependencies import deployment, live_version, templates
 from ddak.web.form_errors import FormRoute, form_context
 from ddak.web.forms import parse_form
 from ddak.web.security import csrf_token, issue_csrf, require_safe_post
@@ -79,6 +79,11 @@ def _review_response(
             "submitted": submitted or {},
             "blocked": blocked,
             "selection": selection,
+            "live_version": live_version(
+                [review.get("state"), review.get("revision"), review.get("successor")]
+            )
+            if review
+            else "",
         },
     )
     issue_csrf(request, response, token)

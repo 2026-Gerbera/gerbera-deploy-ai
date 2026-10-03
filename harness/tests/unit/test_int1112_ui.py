@@ -35,14 +35,18 @@ def test_settings_preserves_enabled_patch_when_saving_other_fields(rig):
         assert "https://github.com/example/updated.git" in page.text
 
 
-def test_dashboard_setup_checks_and_project_links_survive_redesign(rig):
+def test_setup_checks_only_in_settings_and_project_links_survive_redesign(rig):
     service, _, _ = rig
     service.onboarding = FakeCoordinator()
     with client_for(service) as client:
         html = client.get(f"/?project={PROJECT}").text
-        assert "연결 상태 점검표" in html and "push 권한 없음" in html
-        assert 'class="state failure"' in html and "미확인" in html
-        assert f'href="/setup?project={PROJECT}"' in html
+        assert "연결 상태 점검표" not in html and "push 권한 없음" not in html
+        assert "연결 확인이 필요합니다" in html
+        assert f'href="/settings?project={PROJECT}#connection-checklist"' in html
+        settings = client.get(f"/settings?project={PROJECT}").text
+        assert 'id="connection-checklist"' in settings and "연결 상태 점검표" in settings
+        assert "push 권한 없음" in settings and 'class="state failure"' in settings
+        assert "미확인" in settings and f'href="/setup?project={PROJECT}"' in settings
         ops = client.get(f"/ops?project={PROJECT}").text
         assert f'href="/setup?project={PROJECT}"' in ops
 
@@ -75,21 +79,15 @@ def test_patch_explanation_and_decision_basis_display_without_raw_diff(rig):
         request={"url": {"path": "/approval"}},
     )
     # 접힌 기술 정보(<details ...>) 앞, 처음 보이는 영역만 확인한다.
-    visible = html.split("<details")[0]
+    from tests.unit.test_ui_narrative import body
+
+    visible = body(html)
     # 판정 근거 요약은 화면에 보이고, 단계별 근거·제외·무효화 원문은 접힌 기술 정보에 둔다.
     technical = html.split('<details id="approval-technical">', 1)[1].split("</details>", 1)[0]
-    for text in (
-        "check_patch: 통과",
-        "새 환경 키: APP_BASE_URL",
-        "값 필요",
-        "loopback",
-        "b" * 64,
-        "계획 판정 근거",
-        "fixture-provider · fixture-model",
-        'data-label="포함 단계">1개',
-        'data-label="제외 단계">1개',
-    ):
+    for text in ("수정 코드 검사 통과", "새 환경 키: APP_BASE_URL", "값 필요", "배포 계획"):
         assert text in visible
+    for text in ("loopback", "b" * 64, "fixture-provider"):
+        assert text not in visible
     assert "계획 판정 근거 원문" in technical
     for text in (
         "fixture-provider",

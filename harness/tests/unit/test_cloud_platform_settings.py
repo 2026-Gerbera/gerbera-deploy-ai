@@ -83,6 +83,9 @@ async def test_settings_page_shows_platform_default_and_source(service: Service)
     assert field["value"] == ""
     assert field["placeholder"] == "flaskr"
     assert current["setting_sources"]["cloud_platform"] == "기본 파일"
+    assert '<small data-setting-source="cloud_platform">출처: 기본 파일</small>' in (
+        response.body.decode()
+    )
 
     response = await settings.settings_page(request(service), "other")
     field = FormMarkup(response.body.decode()).fields["cloud_platform"]

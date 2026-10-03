@@ -10,6 +10,14 @@
 {% if watch_warnings %}<section class="watch-warning"><h2>자동 감시 경고</h2><ul>{% for warning in watch_warnings %}<li>{{ warning }}</li>{% endfor %}</ul></section>{% endif %}
 {% if transferred_watchers %}<div class="notice" role="status"><strong>자동 감시 주체 전환</strong><p>{{ transferred_watchers|join(', ') }}의 자동 감시를 끄고 {{ project }}에서 감시하도록 전환했습니다.</p></div>{% endif %}
 {% if request.query_params.get('saved') == '1' %}<div class="toast" role="status" aria-live="polite" data-toast><p><strong>저장했습니다.</strong> 다음 배포부터 적용됩니다.</p><button type="button" data-toast-close aria-label="알림 닫기">닫기</button></div>{% endif %}
+{% if setup_checklist %}
+<section class="section" id="connection-checklist">
+  <div class="card-header"><h2>연결 상태 점검표</h2><a class="button secondary" href="/setup?project={{ project|urlencode }}">연결·환경 설정</a></div>
+  <ul>{% for check in setup_checklist %}
+    <li><strong>{{ check.label }}</strong> · <span class="state {{ 'success' if check.status == 'green' else 'failure' if check.status == 'red' else 'neutral' }}"><i aria-hidden="true"></i>{{ '연결 확인됨' if check.status == 'green' else '오류' if check.status == 'red' else '미확인' }}</span> · {{ check.detail }}</li>
+  {% endfor %}</ul>
+</section>
+{% endif %}
 <p><a href="/setup?project={{ project|urlencode }}">초기 연결 설정 · AI / 온프레미스 / 빌드 준비 →</a></p>
 <form class="settings-layout" method="post" action="/settings">{{ form_fields("settings") }}
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="project" value="{{ project }}"><input type="hidden" name="version" value="{{ settings.version or 0 }}">

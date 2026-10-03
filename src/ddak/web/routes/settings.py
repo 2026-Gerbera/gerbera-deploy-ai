@@ -26,6 +26,8 @@ router = APIRouter(prefix="/settings", route_class=FormRoute)
 async def settings_page(request: Request, project: str | None = None):
     project = selected_project(request, project)
     current = project_settings(request, project)
+    onboarding = getattr(deployment(request), "onboarding", None)
+    setup_checklist = onboarding.view(project)["checklist"] if onboarding is not None else []
     remember = getattr(deployment(request).store, "remember_settings_view", None)
     if remember is not None:
         current["settings_view"] = remember(
@@ -40,6 +42,7 @@ async def settings_page(request: Request, project: str | None = None):
         context={
             "project": project,
             "settings": current,
+            "setup_checklist": setup_checklist,
             "csrf_token": token,
             "watch_warnings": watch_warnings(request),
             "transferred_watchers": transferred_names(request.query_params.getlist("transferred")),

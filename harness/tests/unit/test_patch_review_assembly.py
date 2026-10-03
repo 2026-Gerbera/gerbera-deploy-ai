@@ -111,7 +111,12 @@ def registered_review(rig, monkeypatch):
         return SimpleNamespace(
             plan=plan,
             context=replace(kwargs["source_context"], toggles=plan.toggles),
-            facts=SimpleNamespace(env_keys=kwargs["patch_env_keys"]),
+            facts=SimpleNamespace(
+                env_keys=kwargs["patch_env_keys"],
+                model_dump=lambda **_: {
+                    "env_keys": [key.model_dump(mode="json") for key in kwargs["patch_env_keys"]]
+                },
+            ),
         )
 
     async def infra(service, plan, context):
@@ -121,6 +126,16 @@ def registered_review(rig, monkeypatch):
     monkeypatch.setattr(assembly, "replan_patch", replan)
     monkeypatch.setattr(assembly, "_infra_approval", infra)
     assembly._configure_patch_review(service, Settings(llm_backend=LLMBackend.REPLAY, ai_retries=0))
+    original_finalize = service.patch_reviews.finalize
+
+    async def observed_finalize(*args, **kwargs):
+        try:
+            return await original_finalize(*args, **kwargs)
+        except Exception as exc:
+            harness.finalize_error = (type(exc).__name__, str(exc))
+            raise
+
+    service.patch_reviews.finalize = observed_finalize
     return harness
 
 
@@ -198,7 +213,9 @@ def test_assembly_replans_selected_patch_with_fresh_infra_subjects(
             child = draft["successor"]
             infra_plan, infra_context = harness.infra[0]
             assert child != "review-parent"
-            assert child == kwargs["run_id"] == infra_plan.run_id == infra_context.run_id
+            assert child == kwargs["run_id"] == infra_plan.run_id == infra_context.run_id, getattr(
+                harness, "finalize_error", None
+            )
             prepared = service._load_prepared(child)
             assert prepared.context.trigger == "auto"
             assert prepared.context.review_baseline_hash == digest_json(

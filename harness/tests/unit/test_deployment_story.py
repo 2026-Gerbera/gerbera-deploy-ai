@@ -56,8 +56,8 @@ def test_story_approval_masks_literals_and_keeps_one_form(rig):
     with client_for(service) as client:
         html = client.get(f"/runs/{rid}/approval").text
         assert secret not in html and address not in html
-        assert "app.py:1" in html and "SECRET_KEY = [가림]" in html
-        assert "os.environ" in html and "수정 전" in html and "수정 후" in html
+        assert "app.py:1" in html and "SECRET_KEY = [REDACTED]" in html
+        assert "os.environ" in html and 'class="del"' in html and 'class="add"' in html
         assert html.count("data-approval-form") == 1
         assert html.count('value="approved"') == 2
         assert client.get(f"/ops/runs/{rid}/approval").text == html
@@ -65,12 +65,12 @@ def test_story_approval_masks_literals_and_keeps_one_form(rig):
         positions = [
             html.index(text)
             for text in [
-                "무엇이 바뀌었나",
-                "환경 의존 코드 탐지 결과",
-                "어떻게 바꿀 것인가",
+                "들어온 것",
+                "찾은 것",
+                "AI가 고친 것",
+                "배포 계획",
                 "생기거나 바뀌는 리소스",
-                "실행 단계 미리보기",
-                "승인하면 최종적으로",
+                "승인 대상",
             ]
         ]
         assert positions == sorted(positions)
@@ -113,7 +113,7 @@ def test_result_digest_checks_and_failure_order():
     assert story["images"][0]["after"] == "b" * 12
     assert story["elapsed_s"] == 65
     assert story["failure"]["stage"] == "서비스 응답 확인"
-    assert any(c["title"] == "Home" for c in story["checks"])
+    assert any(c["title"] == "사용자 동작 확인" for c in story["checks"])
 
 
 def test_progress_and_result_render(rig):

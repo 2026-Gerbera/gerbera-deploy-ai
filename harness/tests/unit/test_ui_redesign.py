@@ -1,5 +1,6 @@
 """source=fixture: 원장 UI의 환경 분리와 기존 POST 경계 회귀."""
 
+import json
 import subprocess
 from html.parser import HTMLParser
 from importlib.metadata import distribution
@@ -8,6 +9,8 @@ from pathlib import Path
 import pytest
 
 from ddak.web.dependencies import templates
+from ddak.web.narrative import ALIASES, TEXT
+from ddak.web.story import environment_cards, result_story
 from tests.unit.test_deployment_service import rig as rig
 from tests.unit.test_ui_integration_fix10 import client_for, post, prepare
 
@@ -102,6 +105,61 @@ def test_result_does_not_infer_recovery_or_current_version(rig, status, cloud):
             assert "이전 버전으로 되돌렸습니다." not in html
 
 
+@pytest.mark.parametrize(
+    ("status", "result", "visible"),
+    [
+        (
+            "FAILED_BEFORE_DEPLOY",
+            {"phase": "settings", "detail": "<i>설정 불일치</i>"},
+            "&lt;i&gt;설정 불일치&lt;/i&gt;",
+        ),
+        (
+            "SUPERSEDED",
+            {"reason": "승인 전에 새 커밋이 들어왔습니다."},
+            "승인 전에 새 커밋이 들어왔습니다.",
+        ),
+    ],
+)
+def test_result_keeps_recorded_stop_reason(status, result, visible):
+    run = {"run_id": "run-1", "status": status, "result": {"tracks": {}, "steps": {}, **result}}
+    story = result_story(run, None, {"events": []})
+    html = templates.get_template("result.html").render(
+        run=run,
+        result=run["result"],
+        story=story,
+        environment_cards=environment_cards(run, story, []),
+        project="demo",
+        request={"url": {"path": "/result"}},
+    )
+    body = html.split("</details>", 1)[0]  # 기술 정보 원문이 아니라 화면 본문에 보여야 한다.
+    assert visible in body and "<i>설정 불일치</i>" not in html
+    if status == "FAILED_BEFORE_DEPLOY":
+        assert '<section class="notice failure" id="failure"><h2>중단 원인</h2>' in body
+
+
+def test_approval_preparation_warnings_keep_code_text_and_failure_detail(rig):
+    service, source, _ = rig
+    rid = prepare(service, source)
+    view = service.approval_view(rid)
+    view["preparation_warnings"] = ["로컬 빌드용 Docker Hub 로그인 확인 필요", "hardcoded_secret"]
+    view["preparation_failures"] = {"cloud": ["apply_infra"]}
+    view["preparation_errors"] = {
+        "cloud": {"phase": "infra", "code": "CONFIG_INVALID", "detail": "<b>요약 초과</b>"}
+    }
+    html = templates.get_template("approval.html").render(
+        approval=view,
+        project=view["project"],
+        csrf_token="fixture",
+        request={"url": {"path": "/approval"}},
+    )
+    notice = html.split("<h2>준비 경고</h2>", 1)[1].split("</section>", 1)[0]
+    # 코드가 만든 경고 문장은 그대로, 사전에 있는 규칙 코드는 사람이 읽는 문장으로 바꾼다.
+    assert "<li>로컬 빌드용 Docker Hub 로그인 확인 필요</li>" in notice
+    assert "<li>코드에 비밀값이 직접 적혀 있습니다.</li>" in notice
+    assert "클라우드 · 준비하지 못함 · 설정 입력과 연결을 확인하세요." in notice
+    assert "<small>&lt;b&gt;요약 초과&lt;/b&gt;</small>" in notice and "<b>" not in notice
+
+
 def test_approval_onprem_scope_comes_from_plan(rig):
     service, source, _ = rig
     rid = prepare(service, source)
@@ -126,93 +184,79 @@ def test_parallel_progress_events_and_confirmation():
     let queries=0, closed=false, opened=0, connection;
     const listeners={};
     const classList=()=>({values:new Set(['hidden']),
-       toggle(k,v){v?this.values.add(k):this.values.delete(k)},
-      remove(k){this.values.delete(k)}});
-    const phases=['plan','infra','build','deploy','verify'];
-    const nodes=['local','cloud'].flatMap(track=>phases.map(phase=>({dataset:{track,
-      phase},classList:classList(),textContent:'확인 중'})));
-    const lists=Object.fromEntries(['local-events',
-      'cloud-events','common-events'].map(id=>[id,
-      {items:[],querySelector:()=>null,appendChild(item){this.items.push(item)}}]));
-    const others=Object.fromEntries(['result-link',
-      'progress-title','connection-state','current-activity','activity-title',
-      'local-activity','cloud-activity','common-activity','event-age'].map(id=>[id,
-      {classList:classList(),textContent:''}]));
+      toggle(k,v){v?this.values.add(k):this.values.delete(k)},
+      add(...keys){keys.forEach(k=>this.values.add(k))},
+      remove(...keys){keys.forEach(k=>this.values.delete(k))}});
+    const element=()=>({dataset:{},classList:classList(),textContent:'',items:[],
+      setAttribute(){},removeAttribute(){},appendChild(item){this.items.push(item)},
+      set innerHTML(v){throw Error('HTML injection')}});
+    const ids=['result-link','progress-title','connection-state','current-activity',
+      'activity-title','now-working','current-step-clock','total-clock','remaining-steps',
+      'local-activity','cloud-activity','common-activity','event-age',
+      'local-events','cloud-events','common-events','pipeline-local','pipeline-cloud',
+      'pipeline-common','pipeline-final','local-progress','cloud-progress'];
+    const others=Object.fromEntries(ids.map(id=>[id,element()]));
+    const lane=(id,track)=>{
+      const parts=Object.fromEntries(['[data-step-status]','[data-step-sentence]',
+        '[data-step-age]','[data-step-detail]','[data-step-summary]'].map(key=>[key,element()]));
+      return {...element(),parts,dataset:{stepRow:id,lane:track,stepState:'waiting'},
+        querySelector:key=>{queries++;return parts[key]}};
+    };
+    const health=lane('verify.health.local','local'),
+      prior=lane('deploy.was.cloud','cloud'), infra=lane('deploy.infra.cloud','cloud');
+    const rows=[health,prior,infra];
     const progress={dataset:{runId:'fixture',status:'RUNNING',targets:'both',
-      terminalStates:'["SUCCEEDED","FAILED_CLOUD"]'}};
+      started:'2026-10-04T01:00:00Z',terminalStates:'["SUCCEEDED","FAILED_CLOUD"]'}};
     class EventSource {constructor(){opened++;connection=this} addEventListener(k,
       v){listeners[k]=v}close(){closed=true}}
-    const document={querySelector:s=>s==='[data-run-id]'?progress:null,
-      querySelectorAll:s=>{if(s==='[data-phase]'){queries++;return nodes}return []},
-      getElementById:id=>lists[id]||others[id]||null,
-      createElement:()=>({set innerHTML(v){throw Error('HTML injection')}})};
+    const document={querySelector:s=>{queries++;return s==='[data-run-id]'?progress:null},
+      querySelectorAll:s=>{queries++;return s==='[data-step-row]'?rows:[]},
+      getElementById:id=>{queries++;return id==='pipeline-wording'?
+        {textContent:process.argv[2]}:others[id]||null},
+      createElement:element};
     vm.runInNewContext(source,{document,EventSource});
     const send=(type,fields={})=>listeners[type]({data:JSON.stringify({type,...fields})});
-    const cell=(track,phase)=>nodes.find(n=>n.dataset.track===track&&n.dataset.phase===phase);
-    send('step.started',{seq:1,step:'verify.health.local',target:'local'});
-    assert.equal(cell('local','verify').textContent,'진행 중');
-    assert.equal(cell('local','plan').textContent,'확인 중'); // no invented completion
+    const before=queries;
+    send('step.started',{seq:1,step:'verify.health.local',target:'local',ts:'2026-10-04T01:00:01Z'});
+    assert.equal(health.dataset.stepState,'running');
+    assert.ok(health.classList.values.has('is-running'));
+    assert.ok(others['now-working'].classList.values.has('is-working'));
     send('step.started',{seq:2,step:'deploy.infra.cloud',target:'cloud'});
-    assert.equal(cell('local','verify').textContent,'진행 중');
-    assert.equal(cell('cloud','infra').textContent,'진행 중');
+    assert.equal(prior.dataset.stepState,'unrecorded'); // no invented completion
+    assert.ok(!prior.classList.values.has('complete'));
+    assert.ok(health.classList.values.has('is-running')&&infra.classList.values.has('is-running'));
     assert.ok(others['current-activity'].textContent.includes('온프레미스'));
     assert.ok(others['current-activity'].textContent.includes('클라우드'));
+    assert.ok(others['remaining-steps'].textContent.includes('남은 단계'));
+    assert.ok(others['current-step-clock'].textContent.length>0);
     connection.onerror();
     assert.equal(progress.dataset.stream,'reconnecting');
-    assert.ok(others['activity-title'].textContent.includes('확인 대기'));
-    connection.onopen();
-    assert.equal(progress.dataset.stream,'live');
-    assert.equal(others['local-activity'].textContent,'응답 확인 중');
-    assert.equal(others['cloud-activity'].textContent,'인프라 적용 중');
-    send('step.started',{seq:3,step:'deploy.was.local',target:'local'});
-    assert.ok(cell('local','verify').classList.values.has('active')); // both remain active
-    send('step.finished',{seq:4,step:'deploy.infra.cloud',
-      target:'cloud',status:'failed',detail:'<img onerror=bad()>',
-      elapsed_s:30});
-    assert.equal(cell('cloud','infra').textContent,'실패');
-    assert.ok(lists['cloud-events'].items.at(-1).textContent.includes('<img onerror=bad()>'));
-    assert.ok(lists['cloud-events'].items.at(-1).className.includes('failed'));
-    const before=queries;
-    send('step.finished',{seq:4,step:'deploy.infra.cloud',target:'cloud',status:'failed'});
-    assert.equal(queries,before); // replay deduplicated
-    send('gate.opened'); assert.equal(queries,before);
-    send('step.started',{seq:5,step:'mystery.id'}); assert.equal(queries,before+1);
-    assert.equal(cell('local','plan').textContent,'확인 중');
-    send('step.finished',{seq:6,step:'verify.health.local',target:'local',status:'succeeded'});
-    assert.ok(!cell('local','verify').classList.values.has('active'));
-    assert.equal(cell('local','verify').textContent,'수신 작업 성공');
-    assert.ok(!cell('local','verify').classList.values.has('complete'));
-    assert.ok(cell('local','deploy').classList.values.has('active'));
-    assert.ok(!others['current-activity'].textContent.includes('verify.health.local'));
+    assert.ok(others['connection-state'].textContent.includes('다시 연결'));
+    connection.onopen(); assert.equal(progress.dataset.stream,'live');
+    send('step.finished',{seq:3,step:'deploy.infra.cloud',target:'cloud',status:'failed',
+      detail:'<img onerror=bad()>',elapsed_s:30});
+    assert.equal(infra.parts['[data-step-status]'].textContent,'실패');
+    assert.ok(!infra.classList.values.has('is-running'));
+    assert.ok(!others['cloud-events'].items.at(-1).textContent.includes('<img'));
+    send('step.finished',{seq:3,step:'deploy.infra.cloud',status:'failed'});
+    assert.equal(others['cloud-events'].items.length,2); // sequence replay deduplicated
+    send('gate.opened',{seq:4,detail:'cloud_verified',target:'cloud'});
+    assert.equal(infra.dataset.stepState,'failed');
+    send('step.finished',{seq:5,step:'verify.health.local',target:'local',status:'succeeded',elapsed_s:3});
+    assert.equal(health.dataset.stepState,'succeeded');
+    assert.ok(health.classList.values.has('complete'));
+    assert.ok(!health.classList.values.has('is-running'));
+    assert.equal(health.parts['[data-step-detail]'].open,false);
+    send('step.started',{seq:6,step:'mystery.id'}); // dynamic rows also avoid DOM lookups
+    assert.equal(queries,before);
     send('run.state',{status:'FAILED_CLOUD'});
     assert.equal(progress.dataset.activity,'ended');
-    assert.ok(!cell('local','deploy').classList.values.has('active'));
-    assert.equal(cell('local','deploy').textContent,'결과 확인');
+    assert.ok(!others['now-working'].classList.values.has('is-working'));
     assert.equal(others['activity-title'].textContent,'클라우드 배포 실패');
-    connection.onerror();
-    assert.equal(others['activity-title'].textContent,'클라우드 배포 실패');
-    assert.ok(closed); assert.ok(!others['result-link'].classList.values.has('hidden'));
-    assert.equal(others['progress-title'].textContent,'클라우드 배포 실패');
-    assert.equal(others['local-activity'].textContent,'실행 종료');
+    assert.ok(closed&&!others['result-link'].classList.values.has('hidden'));
+    assert.equal(queries,before);
     progress.dataset.status='SUCCEEDED';
     vm.runInNewContext(source,{document,EventSource}); assert.equal(opened,1);
-    // Non-target cloud cells stay untouched for a shared build event.
-    progress.dataset.status='RUNNING';
-    nodes.filter(n=>n.dataset.track==='cloud').forEach(n=>{
-      n.dataset.excluded='true';n.textContent='대상 아님';
-    });
-    vm.runInNewContext(source,{document,EventSource});
-    send('step.started',{step:'build.was'});
-    assert.equal(cell('cloud','build').textContent,'대상 아님');
-    progress.dataset.targets='unknown';
-    nodes.forEach(n=>{n.dataset.excluded='false';n.textContent='확인 중'});
-    vm.runInNewContext(source,{document,EventSource});
-    send('step.finished',{step:'build.was',status:'succeeded'});
-    assert.equal(cell('cloud','build').textContent,'확인 중');
-    assert.equal(cell('local','build').textContent,'확인 중');
-    send('step.started',{step:'deploy.was.local',target:'local'});
-    assert.equal(cell('local','deploy').textContent,'진행 중');
-    assert.equal(cell('cloud','deploy').textContent,'확인 중');
     let submit, cancelled=false;
     const form={dataset:{},addEventListener:(name,fn)=>submit=fn};
     document.querySelector=()=>null;
@@ -251,7 +295,13 @@ def test_parallel_progress_events_and_confirmation():
     node = next(package.locate_file(f) for f in package.files or () if str(f).endswith("/bin/node"))
     root = Path(__file__).resolve().parents[3]
     subprocess.run(
-        [str(node), "-e", script, str(root / "src/ddak/web/static/app.js")],
+        [
+            str(node),
+            "-e",
+            script,
+            str(root / "src/ddak/web/static/app.js"),
+            json.dumps({"texts": TEXT, "aliases": ALIASES}),
+        ],
         check=True,
         capture_output=True,
         timeout=10,
@@ -373,7 +423,7 @@ def test_required_review_stays_checked_posts_hidden_and_has_no_prompt(review_ui)
         assert "2개 중 1개 선택" in html
         assert controls.named("prompt_config-file")[0]["maxlength"] == "2000"
         assert "기존 요청" in html and "같은 파일의 설정 수정은 하나로 묶어" in html
-        assert "<script>fixture()" not in html and "&lt;script&gt;fixture()" in html
+        assert "<script>fixture()" not in html and "&lt;script&gt;fixture()" not in html
         assert "새 제안을 모두 제외해도 이전 승인 수정은 유지" in html
         response = post(
             client,
@@ -460,7 +510,7 @@ def test_review_busy_uses_shared_state_and_waits_for_new_approval(review_ui, sta
     with client_for(service) as client:
         html = client.get(f"/runs/{rid}/patch-review").text
         assert f'class="state running" data-code="{code}"' in html
-        assert 'aria-busy="true"' in html and 'http-equiv="refresh" content="3' in html
+        assert 'aria-busy="true"' in html and "data-live-region" in html
         assert 'name="action"' not in html
         if status == "finalizing":
             assert "배포 계획을 다시 검사" in html and "새 승인 화면" in html
@@ -479,7 +529,7 @@ def test_publishing_poll_moves_to_sealed_approval_but_allows_new_review(review_u
     with client_for(service) as client:
         html = client.get(f"/runs/{rid}/patch-review").text
         polling = f"/runs/{rid}/patch-review?wait_for_approval=1"
-        assert f'content="3; url={polling}"' in html
+        assert f'data-live-url="{polling}"' in html
         assert client.get(polling, follow_redirects=False).status_code == 200
         review.update(state="sealed", busy=False)
         response = client.get(polling, follow_redirects=False)
@@ -526,10 +576,10 @@ def test_approval_keeps_main_context_and_single_final_decision(review_ui, monkey
         html = client.get(f"/runs/{rid}/approval").text
         assert 'href="/setup?project=flaskr-three"' in html
         for text in (
-            "이전 승인 패치 확인 &lt;warning&gt;",
+            "이전 승인 수정 확인이 필요합니다.",
             "값 필요",
             "APP_CONFIG",
-            "check_patch: 통과",
+            "수정 코드 검사 통과",
             "fixture-provider",
             "fixture-reason",
         ):
@@ -544,6 +594,6 @@ def test_approval_keeps_main_context_and_single_final_decision(review_ui, monkey
         assert "disabled" not in next(
             b for b in ReviewControls(html).named("decision") if b["value"] == "approved"
         )
-        assert "이전 설정" in html
+        assert "이전 승인 수정 유지" in html
         assert raw_patch not in html
         assert view["patch"] == raw_patch and view["subjects"] == original_subjects

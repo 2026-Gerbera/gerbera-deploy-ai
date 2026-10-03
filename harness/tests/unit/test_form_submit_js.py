@@ -1,15 +1,20 @@
 """source=fixture: 실제 통신 없이 관리 POST 폼의 브라우저 제출 동작을 검증한다."""
 
+import json
 import subprocess
 from importlib.metadata import distribution
 from pathlib import Path
 
 import pytest
 
+from ddak.web.narrative import ERRORS
+
 SCRIPT = r"""
 const fs = require('node:fs'), vm = require('node:vm'), assert = require('node:assert/strict');
 const source = fs.readFileSync(process.argv[1], 'utf8');
 const scenario = process.argv[2];
+const errors = JSON.parse(process.argv[3]); // base.html narrative-errors와 같은 서술 사전
+const FALLBACK = '작업을 완료하지 못했습니다. 기술 정보에서 원인을 확인하세요.';
 class Node {
   constructor(text = '') {
     this.textContent = text;
@@ -34,8 +39,10 @@ function errorBox() {
   box.classList.add('notice', 'failure');
   box.code = new Node('OLD_CODE');
   box.message = new Node('old server flash');
+  box.detail = new Node('old server detail');
   box.querySelector = selector => ({
     '[data-error-code]': box.code, '[data-error-message]': box.message,
+    '[data-error-detail]': box.detail,
   })[selector] ?? null;
   box.cloneNode = deep => { assert.equal(deep, true); return errorBox(); };
   return box;
@@ -115,7 +122,8 @@ const document = {
   querySelector: selector => ({
     '[data-deploy-loading]': loading, '[data-check="docker"]': dockerCheck,
   })[selector] ?? null,
-  getElementById: id => id === 'form-error-template' ? template : null,
+  getElementById: id => id === 'form-error-template' ? template
+    : id === 'narrative-errors' ? {textContent: process.argv[3]} : null,
 };
 const window = {
   FormData, URLSearchParams, URL,
@@ -136,7 +144,9 @@ function noNavigation() {
 }
 function genericError(f) {
   assert.equal(f.nextElementSibling.code.textContent, 'REQUEST_FAILED');
-  assert.equal(f.nextElementSibling.message.textContent,
+  // 사람용 문구는 서술 사전에서, 원문은 기술 정보 칸에만 둔다.
+  assert.equal(f.nextElementSibling.message.textContent, errors.REQUEST_FAILED);
+  assert.equal(f.nextElementSibling.detail.textContent,
     '요청을 처리하지 못했습니다. 다시 시도해 주세요.');
   assert.equal(f.nextElementSibling.hidden, false);
   restored(f); noNavigation();
@@ -220,7 +230,9 @@ async function run() {
       assert.ok(box.classes.has('failure')); assert.equal(box.getAttribute('role'), 'alert');
       assert.equal(box.textContent, '⚠ 오류'); assert.equal(box.hidden, false);
       assert.equal(box.code.textContent, 'VALIDATION_ERROR');
-      assert.equal(box.message.textContent, '<img src=x onerror=bad()> 서버 검증 실패');
+      assert.equal('VALIDATION_ERROR' in errors, false);
+      assert.equal(box.message.textContent, FALLBACK);
+      assert.equal(box.detail.textContent, '<img src=x onerror=bad()> 서버 검증 실패');
       otherBoxes.forEach(([other, node, hidden]) => {
         assert.equal(other.nextElementSibling, node);
         assert.equal(other.nextElementSibling?.hidden, hidden);
@@ -349,7 +361,14 @@ def test_management_form_submission(scenario):
     node = next(package.locate_file(f) for f in package.files or () if str(f).endswith("/bin/node"))
     root = Path(__file__).resolve().parents[3]
     result = subprocess.run(
-        [str(node), "-e", SCRIPT, str(root / "src/ddak/web/static/app.js"), scenario],
+        [
+            str(node),
+            "-e",
+            SCRIPT,
+            str(root / "src/ddak/web/static/app.js"),
+            scenario,
+            json.dumps(ERRORS, ensure_ascii=False),
+        ],
         capture_output=True,
         text=True,
         timeout=10,

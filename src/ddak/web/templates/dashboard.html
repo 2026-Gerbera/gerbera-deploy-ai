@@ -1,8 +1,9 @@
 {% from "_form_errors.html" import form_fields, form_error with context %}
 {% extends "base.html" %}
 {% from '_status.html' import state as state_badge, target, duration %}
+{% from '_pipeline.html' import pipeline %}
 {% block title %}배포 대시보드 · Gerbera{% endblock %}
-{% block breadcrumb %}Overview{% endblock %}
+{% block breadcrumb %}배포 · 현재 상태{% endblock %}
 {% block content %}
 <div data-live-region data-live-version="{{ live_version }}">
 {% set preparing = preparations|selectattr('status','equalto','PREPARING')|list %}
@@ -22,13 +23,14 @@
   </div>
 </section>
 <p data-deploy-loading hidden role="status"><span data-loading-message>배포 준비 요청을 보내는 중입니다.</span></p>
-<ol class="journey" aria-label="배포 흐름">{% for key, label in (('merge','커밋 반영' if settings.auto_detect else '배포 요청'),('detect','승인 자료 준비'),('approval','승인'),('deploy','배포'),('result','결과')) %}<li{% if current == key %} aria-current="step"{% endif %}>{{ label }}{% if current == key %} · 현재{% endif %}</li>{% endfor %}</ol>
+{{ pipeline('detect' if preparing else 'approval' if awaiting else 'deploy' if active else 'report' if runs else 'detect', false, settings.code_patch) }}
 {% if blocked %}<section class="notice failure"><h2>배포가 잠겨 있습니다</h2><p>{% for name in blocked %}{{ target(name) }}{% if not loop.last %}, {% endif %}{% endfor %}의 실제 상태를 확인한 뒤 운영 화면에서 잠금을 푸세요.</p></section>
-{% elif preparing %}<section class="notice running" aria-busy="true"><h2><span class="spinner" aria-hidden="true"></span> 승인 자료 준비 중</h2><p>소스와 배포 계획을 확인하고 있습니다. 인프라 변경이 있으면 Terraform 검증 결과도 준비합니다.</p><p>준비가 끝나면 승인 버튼이 자동으로 나타납니다. 아직 배포는 시작하지 않았습니다.</p><p class="note">이 화면에서 기다린 시간 <span data-wait-clock="{{ preparing[0].request_id }}">0초</span> · 세부 작업 단계는 준비가 끝난 뒤 확인할 수 있습니다.</p></section>
-{% elif awaiting %}<section class="notice"><h2>{{ state_badge('AWAITING_APPROVAL') }}</h2><p>커밋 <code>{{ awaiting[0].sha }}</code> · {{ awaiting[0].ref }} · {{ target(awaiting[0].targets) }}. 변경 내용을 확인한 뒤 한 번 승인합니다.</p><a class="button" href="{{ awaiting[0].url }}">검토하고 승인</a></section>
-{% elif preparation_failure %}<section class="notice failure"><h2>{{ state_badge(preparation_failure.status) }}</h2><p>{{ preparation_failure.detail or '준비 기록에서 원인을 확인하세요.' }}</p>{% if preparation_failure.url %}<a href="{{ preparation_failure.url }}">자세히 보기</a>{% endif %}</section>{% endif %}
+{% elif preparing %}<section class="notice running" aria-busy="true"><h2><span class="spinner" aria-hidden="true"></span> 승인 자료 준비 중</h2><p>마지막 성공 배포와 소스를 비교해 바뀐 파일을 찾습니다. 환경 의존 설정의 위치와 수정 후보를 확인하고, 필요한 빌드·배포·검증 순서를 정리합니다.</p><p>인프라 변경이 있으면 리소스와 권한의 변경 계획도 검사합니다. 준비가 끝나면 승인 버튼이 자동으로 나타납니다. 아직 배포는 시작하지 않았습니다.</p><p class="note">이 화면에서 기다린 시간 <span data-wait-clock="{{ preparing[0].request_id }}">0초</span> · 기록된 준비 단계는 아래에서 확인할 수 있습니다.</p></section>
+{% elif awaiting %}<section class="notice"><h2>{{ state_badge('AWAITING_APPROVAL') }}</h2><p>커밋 <code>{{ awaiting[0].sha }}</code> · {{ awaiting[0].ref }} · {{ target(awaiting[0].targets) }}. 변경 내용을 확인한 뒤 한 번 승인합니다.</p>{% set count = awaiting[0].preparation_counts %}<p>탐지 {{ count.findings }}곳 · AI 수정 {{ count.patches }}건 · 단계 {{ count.steps }}개(건너뜀 {{ count.skipped }})</p><a class="button" href="{{ awaiting[0].url }}">검토하고 승인</a></section>
+{% elif active %}<section class="notice running"><h2>승인한 변경을 실행 중입니다</h2><p>이미지를 준비한 뒤 온프레미스와 클라우드에서 각각 배포·검증을 진행합니다. 진행 화면에서 지금 실행하는 작업과 시간을 확인하세요.</p><a href="{{ active[0].url }}">환경별 진행 확인</a></section>{% elif preparation_failure %}<section class="notice failure"><h2>{{ state_badge(preparation_failure.status) }}</h2><p>{{ preparation_failure.detail or '준비 기록에서 원인을 확인하세요.' }}</p>{% if preparation_failure.url %}<a href="{{ preparation_failure.url }}">자세히 보기</a>{% endif %}</section>{% endif %}
+{% if preparing_rows %}<section class="section" id="preparation-checklist"><h2>배포 준비 단계</h2><ul class="preparation-list">{% for row in preparing_rows %}<li><span aria-hidden="true">{{ '✓' if row.status == 'succeeded' else '✕' if row.status in ('failed','check_failed') else '◐' if row.status == 'running' else '○' }}</span><strong{% if row.warning %} class="state failure"{% endif %}>{{ row.name }}</strong>{{ state_badge(row.status) }} <span class="actor">{{ row.actor }}</span> · {{ duration(row.elapsed_s) }}<p>{{ row.sentence }}</p></li>{% endfor %}</ul></section>{% endif %}
 {% if watch_warnings %}<section class="watch-warning"><h2>자동 감시 경고</h2><ul>{% for warning in watch_warnings %}<li>{{ warning }}</li>{% endfor %}</ul></section>{% endif %}
-{% if setup_checklist %}<section class="section" id="connection-checklist"><div class="card-header"><h2>연결 상태 점검표</h2><a class="button secondary" href="/setup?project={{ project|urlencode }}">연결·환경 설정</a></div><ul>{% for check in setup_checklist %}<li><strong>{{ check.label }}</strong> · <span class="state {{ 'success' if check.status == 'green' else 'failure' if check.status == 'red' else 'neutral' }}"><i aria-hidden="true"></i>{{ '연결 확인됨' if check.status == 'green' else '오류' if check.status == 'red' else '미확인' }}</span> · {{ check.detail }}</li>{% endfor %}</ul></section>{% endif %}
+{% if connection_attention %}<p class="note" data-connection-attention>연결 확인이 필요합니다 → <a href="/settings?project={{ project|urlencode }}#connection-checklist">설정</a></p>{% endif %}
 <section class="section"><h2>최근 배포</h2>
 {% if runs %}<div class="table-wrap"><table class="history"><thead><tr><th scope="col">상태</th><th scope="col">커밋 · 브랜치</th><th scope="col">대상</th><th scope="col">방식</th><th scope="col">요청(KST)</th><th scope="col">소요(승인 대기 포함)</th></tr></thead><tbody>
 {% for run in runs %}<tr><td data-label="상태"><a href="{{ run.url }}">{{ state_badge(run.status) }}</a></td><td data-label="커밋"><a href="{{ run.url }}"><code>{{ run.sha }}</code></a><small>{{ run.ref }}</small></td><td data-label="대상">{{ target(run.targets) }}</td><td data-label="방식">{{ run.trigger }}</td><td data-label="요청"><span class="numeric">{{ run.started }}</span></td><td data-label="소요(승인 대기 포함)">{{ duration(run.duration) }}</td></tr>{% endfor %}

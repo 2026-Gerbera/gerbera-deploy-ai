@@ -5,34 +5,11 @@ from __future__ import annotations
 import re
 
 from ddak.core.redact import redact
-
-ENV = {"local": "온프레미스", "cloud": "클라우드"}
-STEP = {
-    "build.was": "WAS 이미지 빌드",
-    "build.web": "WEB 이미지 빌드",
-    "build.db": "DB 이미지 준비",
-    "deploy.infra": "클라우드 리소스 적용",
-    "deploy.was": "WAS 컨테이너 교체",
-    "deploy.web": "WEB 컨테이너 교체",
-    "deploy.app": "앱 컨테이너 교체",
-    "deploy.db": "DB 컨테이너 준비",
-    "deploy.config": "환경 설정 주입",
-    "deploy.secrets": "비밀값 동기화",
-    "deploy.migrate": "DB 마이그레이션",
-    "deploy.dbinit": "DB 초기화",
-    "deploy.tls": "HTTPS 연결 준비",
-    "verify.health": "서비스 응답 확인",
-    "verify.smoke": "사용자 시나리오 확인",
-    "verify.compare": "두 환경 동작 비교",
-    "verify.tls": "HTTPS 확인",
-    "verify.report": "결과 저장",
-    "verify.watch": "배포 후 상태 관찰",
-}
+from ddak.web.narrative import ENV, SOURCES, explain, pipeline_view, planned_rows, wording
 
 
 def step_title(step: str) -> str:
-    base = re.sub(r"\.(local|cloud)$", "", step)
-    return STEP.get(base, "실행 작업")
+    return wording(step)["name"]
 
 
 def digest(ref: str | None) -> str:
@@ -56,7 +33,9 @@ def approval_story(view: dict, data: dict | None = None) -> dict:
     data = data or {}
     plan = view.get("plan") or {}
     entries = steps(plan)
-    targets = [env for env in ENV if plan.get("deploy", {}).get(env, {}).get("steps")]
+    targets = [
+        env for env in ("local", "cloud") if plan.get("deploy", {}).get(env, {}).get("steps")
+    ]
     builds = sorted(
         {s.get("tier") or s["id"].split(".")[1] for s in entries if s.get("tool") == "build_image"}
     )
@@ -97,6 +76,10 @@ def approval_story(view: dict, data: dict | None = None) -> dict:
             for s in entries
         ),
         "steps": [{**s, "title": step_title(s["id"])} for s in entries],
+        "plan_rows": planned_rows(
+            plan, view.get("build_backend"), (view.get("infra_summary") or {}).get("storage")
+        ),
+        "infra": infra_story(view.get("infra_summary") or {}),
     }
 
 
@@ -107,7 +90,7 @@ def result_story(run: dict, release: dict | None, data: dict) -> dict:
     records = result.get("steps") or {}
     previous = data.get("previous", {})
     rows = []
-    for env in ENV:
+    for env in ("local", "cloud"):
         track = result.get("tracks", {}).get(env, "UNKNOWN")
         images = release.get("environment_images", {}).get(env, {}).get("images", {})
         if not images and track == "DONE":
@@ -133,7 +116,12 @@ def result_story(run: dict, release: dict | None, data: dict) -> dict:
             )
     checks = []
     for sid, record in records.items():
-        if not sid.startswith("verify.") or sid in {"verify.report", "verify.watch"}:
+        if not sid.startswith("verify.") or sid in {
+            "verify.report",
+            "verify.watch",
+            "verify.compare",
+            "verify.diagnose",
+        }:
             continue
         output = record.get("output") or {}
         env = "local" if sid.endswith(".local") else "cloud" if sid.endswith(".cloud") else "common"
@@ -143,13 +131,16 @@ def result_story(run: dict, release: dict | None, data: dict) -> dict:
                 "title": step_title(sid),
                 "status": record.get("status"),
                 "elapsed_s": record.get("elapsed_s"),
+                "sentence": "검증 기록을 확인했습니다."
+                if record.get("status") == "succeeded"
+                else "검증 기준을 통과하지 못했습니다.",
             }
         )
         for scenario in output.get("scenarios", []):
             checks.append(
                 {
                     "env": env,
-                    "title": scenario.get("id", "시나리오"),
+                    "title": explain(scenario.get("id"), "scenario"),
                     "status": "succeeded" if scenario.get("ok") is True else "check_failed",
                     "elapsed_s": None,
                 }
@@ -185,10 +176,210 @@ def result_story(run: dict, release: dict | None, data: dict) -> dict:
         if run.get("finished") and run.get("created")
         else None
     )
+    version = (
+        context.get("ref")
+        if re.fullmatch(r"v[0-9]+", context.get("ref") or "")
+        else "버전 기록 없음"
+    )
     return {
+        "version": version,
+        "metrics": {
+            "new": sum(
+                item["action"] == "새로 빌드"
+                for item in approval_story({"plan": data.get("plan") or {}})["images"]
+            ),
+            "reuse": sum(
+                item["action"] != "새로 빌드"
+                for item in approval_story({"plan": data.get("plan") or {}})["images"]
+            ),
+            "environments": sum(
+                track not in {"N/A", "SKIPPED", "UNKNOWN"}
+                for name, track in result.get("tracks", {}).items()
+                if name in {"local", "cloud"}
+            ),
+            "passed": sum(check["status"] == "succeeded" for check in checks),
+            "checks": len(checks),
+        },
         "images": rows,
         "checks": checks,
         "failure": failure,
         "elapsed_s": elapsed,
         "commit": (release.get("source_sha") or context.get("source_sha") or "")[:7] or "기록 없음",
+        "build_backend": {"local": "온프레미스 로컬 빌드", "codebuild": "클라우드 CodeBuild"}.get(
+            context.get("build_backend"), "빌드 위치 기록 없음"
+        ),
+        "build_images": approval_story({"plan": data.get("plan") or {}})["images"],
+        "compare": comparison(records),
+        "diagnose": diagnosis(records),
+        "execution": pipeline_view(
+            run,
+            data.get("plan") or {},
+            data.get("events") or [],
+            storage=(data.get("infra_summary") or {}).get("storage"),
+        )["rows"],
     }
+
+
+def comparison(records: dict) -> dict:
+    record = records.get("verify.compare", {})
+    output = record.get("output") or {}
+    checks = output.get("checks") or []
+    return {
+        "available": bool(record),
+        "skipped": record.get("status") == "skipped",
+        "source": SOURCES.get(output.get("source"), ""),
+        "counts": {
+            kind: sum(row.get("verdict") == kind for row in checks)
+            for kind in ("match", "expected_diff", "mismatch")
+        },
+        "differences": [
+            {
+                "name": explain(str(row.get("id", "")).split(".")[0], "scenario"),
+                "sentence": "두 환경에서 같은 결과를 내지 못했습니다.",
+            }
+            for row in checks
+            if row.get("verdict") == "mismatch"
+        ],
+    }
+
+
+def diagnosis(records: dict) -> dict:
+    record = records.get("verify.diagnose", {})
+    output = record.get("output") or {}
+    return {
+        "available": bool(record),
+        "category": explain(output.get("category"), "category"),
+        "next": "해당 환경의 연결 설정과 검증 결과를 확인하고 새 배포를 준비하세요.",
+        "source": SOURCES.get(output.get("source"), ""),
+        "hypothesis": True,
+    }
+
+
+def infra_story(infra: dict) -> dict:
+    headline = str(infra.get("headline") or "")
+    platform = re.search(r"클라우드 플랫폼 ([A-Za-z0-9_-]+)", headline)
+    source = re.search(r"HCL source=(live|cache|replay|fixture)", headline)
+    role_names = {
+        "codebuild": "CodeBuild 역할",
+        "dbinit": "DB 초기화 역할",
+        "task_execution": "태스크 실행 역할",
+        "execution": "태스크 실행 역할",
+        "task": "앱 태스크 역할",
+    }
+    services = {
+        "logs": "로그",
+        "secretsmanager": "시크릿",
+        "s3": "S3",
+        "ecr": "이미지 저장소",
+        "ecs": "컨테이너",
+        "rds": "데이터베이스",
+        "kms": "암호화 키",
+        "iam": "권한 관리",
+    }
+    roles, boundaries = [], []
+    for item in infra.get("iam_diff") or []:
+        if not isinstance(item, dict):
+            continue
+        address = str(item.get("address") or "")
+        boundaries.extend(item.get("boundary_changes") or [])
+        if address == "ddak.foundation":
+            continue
+        title = next((name for key, name in role_names.items() if key in address), "배포 역할")
+        grouped = {}
+        grants = item.get("proposed_allow", item.get("added"))
+        for grant in grants if isinstance(grants, list) else []:
+            if not isinstance(grant, dict):
+                continue
+            resources = grant.get("resources") if isinstance(grant.get("resources"), list) else []
+            for action in grant.get("actions") if isinstance(grant.get("actions"), list) else []:
+                if not isinstance(action, str) or ":" not in action:
+                    continue
+                service, operation = action.split(":", 1)
+                row = grouped.setdefault(
+                    service,
+                    {
+                        "name": services.get(service, "서비스 권한"),
+                        "rights": set(),
+                        "count": len(resources),
+                    },
+                )
+                row["rights"].add(
+                    "읽기"
+                    if operation.startswith(("Get", "List", "Describe", "BatchGet"))
+                    else "쓰기"
+                    if operation.startswith(("Put", "Create", "Upload", "Start", "Update"))
+                    else "관리"
+                )
+        roles.append(
+            {
+                "title": title,
+                "status": "변경 없음" if item.get("action") == "unchanged" else "변경",
+                "boundary": item.get("boundary_attached") is True,
+                "services": [
+                    {
+                        "name": row["name"],
+                        "rights": "·".join(sorted(row["rights"])),
+                        "scope": f"{row['count']}개",
+                    }
+                    for row in grouped.values()
+                ],
+                "raw": item,
+            }
+        )
+    return {
+        "available": bool(infra),
+        "counts": {
+            key: (infra.get("counts") or {}).get(key)
+            for key in ("create", "update", "delete", "replace")
+        },
+        "platform": platform[1] if platform else "기록 없음",
+        "source": {
+            "live": "AI 생성",
+            "cache": "기준본",
+            "replay": "저장 응답",
+            "fixture": "검증용 데이터",
+        }.get(source[1] if source else infra.get("source"), "기록 없음"),
+        "foundation": "state 버킷·권한 경계 확인"
+        if "기반" in headline
+        or any(
+            item.get("address") == "ddak.foundation"
+            for item in infra.get("iam_diff") or []
+            if isinstance(item, dict)
+        )
+        else "기록 없음",
+        "http_exception": "ALB 80→443 리다이렉트" if "공개 HTTP 예외" in headline else "",
+        "roles": roles,
+        "boundaries": boundaries,
+        "boundary_changed": any(item.get("action") in {"create", "update"} for item in boundaries),
+        "storage": infra.get("storage"),
+        "storage_text": wording("deploy.infra.cloud", storage=infra.get("storage")),
+    }
+
+
+def environment_cards(run: dict, story: dict, links: list[dict]) -> list[dict]:
+    result = run.get("result") or {}
+    cards = []
+    targets = (run.get("context") or {}).get("targets")
+    for env in ("local", "cloud"):
+        excluded = (env == "local" and targets == "cloud") or (
+            env == "cloud" and targets in {"onprem", "local"}
+        )
+        status = result.get("tracks", {}).get(env, "N/A" if excluded else "RUNNING")
+        rows = [row for row in story["execution"] if row["track"] == env]
+        active = next((row for row in rows if row["status"] == "running"), None)
+        cards.append(
+            {
+                "env": env,
+                "status": status,
+                "busy": status in {"RUNNING", "WAITING", "PENDING"},
+                "elapsed_s": result.get("track_elapsed_s", {}).get(
+                    env, sum(row.get("elapsed_s") or 0 for row in rows) if rows else None
+                ),
+                "current": active["name"] if active else "다음 작업 준비",
+                "images": [row for row in story["images"] if row["env"] == env],
+                "checks": [row for row in story["checks"] if row["env"] == env],
+                "execution": rows,
+                "link": next((link for link in links if link["label"] == ENV[env]), None),
+            }
+        )
+    return cards

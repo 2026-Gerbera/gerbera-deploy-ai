@@ -16,6 +16,7 @@ from ddak.web.dependencies import (
     watch_warnings,
 )
 from ddak.web.form_errors import FormRoute
+from ddak.web.narrative import planned_rows, preparation_rows, wording
 from ddak.web.security import csrf_token, issue_csrf
 
 router = APIRouter(route_class=FormRoute)
@@ -117,12 +118,51 @@ async def dashboard(request: Request, project: str | None = None):
             ),
             duration=(run["finished"] - run["created"]) if run.get("finished") else None,
         )
+        if run["status"] == "AWAITING_APPROVAL":
+            data = service.get_display_data(run["run_id"])
+            view = service.approval_view(run["run_id"])
+            run["storage"] = (view.get("infra_summary") or {}).get("storage")
+            rows = planned_rows(data.get("plan") or {}, storage=run["storage"])
+            run["preparation_counts"] = {
+                "findings": len(data.get("findings", [])),
+                "patches": len(data.get("patches", [])),
+                "steps": sum(row["status"] != "skipped" for row in rows),
+                "skipped": sum(row["status"] == "skipped" for row in rows),
+            }
         for link in public_links(context):
             links.setdefault(link["label"], link)
     preparations = list(reversed(service.list_preparations(project)))
     for item in preparations:
         item["url"] = run_link(item) if item.get("run_id") else None
     state = service.project_state(project)
+    settings = project_settings(request, project)
+    preparing = service.preparing_run(project)
+    preparation_events = service.events(preparing) if preparing else []
+    preparing_rows = (
+        preparation_rows(
+            preparation_events,
+            code_patch=settings.get("code_patch", False),
+            cloud=settings.get("default_targets") in {"both", "cloud"},
+        )
+        if preparing
+        else []
+    )
+    awaiting = next((run for run in runs if run["status"] == "AWAITING_APPROVAL"), None)
+    storage = None if preparing else (awaiting or {}).get("storage")
+    if preparing and service.store.prepared(preparing):
+        storage = (service.approval_view(preparing).get("infra_summary") or {}).get("storage")
+    if storage and storage.get("intent") in {"create", "remove"}:
+        text = wording("deploy.infra.cloud", storage=storage)
+        preparing_rows.append(
+            {
+                "name": text["checklist"],
+                "status": "waiting",
+                "actor": "사람 승인",
+                "elapsed_s": None,
+                "sentence": text["description"],
+                "warning": text["warning"],
+            }
+        )
     setup_checklist = (
         service.onboarding.view(project)["checklist"] if service.onboarding is not None else []
     )
@@ -132,16 +172,24 @@ async def dashboard(request: Request, project: str | None = None):
         context={
             "project": project,
             "runs": runs,
-            "settings": project_settings(request, project),
+            "settings": settings,
+            "preparing_rows": preparing_rows,
             "state": state,
             "preparations": preparations,
             "preparation_failure": preparation_failure(list(reversed(preparations)), runs),
             "public_links": list(links.values()),
             "watch_warnings": watch_warnings(request),
             "csrf_token": token,
-            "setup_checklist": setup_checklist,
+            "connection_attention": any(check["status"] != "green" for check in setup_checklist),
             "live_version": live_version(
-                [runs, preparations, state["blocked_targets"], links, setup_checklist]
+                [
+                    runs,
+                    preparations,
+                    state["blocked_targets"],
+                    links,
+                    setup_checklist,
+                    preparation_events,
+                ]
             ),
         },
     )

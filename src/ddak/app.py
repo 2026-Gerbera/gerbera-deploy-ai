@@ -1388,8 +1388,11 @@ def _configure_patch_review(service: DeploymentService, settings: Settings) -> N
                     ErrorCode.PRECONDITION_FAILED,
                     "검토 중 배포 기준이 바뀌었습니다. 다시 준비하세요",
                 )
+            facts = redact_obj(bundle.facts.model_dump(mode="json"))
+            for key in facts.get("env_keys", []):
+                key["reason"] = None
             plan = _platform_bootstrap_plan(bundle.plan, context, infra_summary)
-            return service.prepare(
+            child = service.prepare(
                 plan,
                 context,
                 source,
@@ -1401,6 +1404,13 @@ def _configure_patch_review(service: DeploymentService, settings: Settings) -> N
                 expected_settings_version=original.project_settings.get("version", 0),
                 review_parent=(prepared.plan.run_id, draft["revision"]),
             )
+            directory = run_dir(service.root / "runs", run_id)
+            directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+            path = directory / "facts.json"
+            path.touch(mode=0o600, exist_ok=True)
+            path.write_text(json.dumps(facts, ensure_ascii=False, indent=2) + "\n")
+            return child
+
         except (Exception, asyncio.CancelledError) as exc:
             failure = (
                 DdakToolError(

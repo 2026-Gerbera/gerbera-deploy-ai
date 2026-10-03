@@ -3,6 +3,7 @@
 from dataclasses import replace
 
 import pytest
+from markupsafe import escape
 
 from ddak import app
 from ddak.cloud.infra import unbind_infra
@@ -14,6 +15,8 @@ from ddak.core.contracts.tools.plan_infra import PlanInfraInput
 from ddak.core.registry import Registry, spec_for
 from ddak.executor.infra import refresh_infra_context
 from ddak.plan.intake import FetchPolicy, WatchTarget
+from ddak.web.dependencies import templates
+from ddak.web.story import approval_story
 from tests.unit.cloud.infra.test_storage_runtime import context
 from tests.unit.test_deployment_service import rig as rig
 from tests.unit.test_infra_preparation import infra_plan
@@ -33,6 +36,23 @@ def infra_registry(service):
     service.refresh = refresh_infra_context
 
 
+def storage_block(view):
+    """승인 화면의 S3 판단 흐름 블록. 실제 storage 요약이 그대로 화면까지 오는지 본다."""
+    html = templates.get_template("approval.html").render(
+        approval=view,
+        story=approval_story(view),
+        project=view.get("project"),
+        csrf_token="fixture",
+        request={"url": {"path": "/approval"}},
+    )
+    block = html.split('id="resource-decision-slot"', 1)[1].split("</section>", 1)[0]
+    storage = view["infra_summary"]["storage"]
+    assert len(storage["rationale"]) == 5
+    assert all(str(escape(text)) in block for text in storage["rationale"])
+    assert "판단 근거 기록 없음" not in block
+    return block
+
+
 async def test_v3_to_v1_remove_is_shown_before_approval(rig):
     service, source, _ = rig
     infra_registry(service)
@@ -50,6 +70,10 @@ async def test_v3_to_v1_remove_is_shown_before_approval(rig):
         assert service.get_run(run_id)["status"] == "AWAITING_APPROVAL"
         assert view["infra_summary"]["counts"]["delete"] == 4
         assert view["infra_summary"]["storage"]["intent"] == "remove"
+        block = storage_block(view)
+        bucket = view["infra_summary"]["storage"]["bucket"]
+        assert f"S3 이미지 저장소 삭제 · {bucket} (업로드 이미지 포함)" in block
+        assert "생성 0 · 삭제 4" in block
         assert not service.get_approvals(run_id)
         assert "123456789012" not in str(view["infra_summary"])
     finally:
@@ -81,6 +105,9 @@ async def test_reserved_name_is_displayed_and_bound_before_approval(rig):
         view = service.approval_view(run_id)
         assert service.get_run(run_id)["status"] == "AWAITING_APPROVAL"
         assert view["infra_summary"]["storage"]["bucket"] == "gerbera-flaskr-images-1"
+        block = storage_block(view)
+        assert "S3 이미지 저장소 신규 생성 · gerbera-flaskr-images-1" in block
+        assert "생성 4 · 삭제 0" in block and "s3://gerbera-flaskr-images-1/img" in block
         assert view["project_settings"]["_infra_storage"]["bucket"] == "gerbera-flaskr-images-1"
         changed = replace(
             ctx,

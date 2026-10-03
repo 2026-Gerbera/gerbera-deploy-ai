@@ -69,6 +69,8 @@ def test_post_report_fake_ai_schema_and_redacted_facts(monkeypatch):
     assert secret not in captured[0]["data"]
     assert "before" not in captured[0]["data"] and "raw" not in captured[0]["data"]
     assert captured[0]["settings"].ai_timeout_s == 20 and captured[0]["settings"].ai_retries == 0
+    assert "핵심 항목 3개 이하" in captured[0]["instruction"]
+    assert "식별자 대신 사람이 읽는 작업 이름" in captured[0]["instruction"]
 
 
 def test_post_report_error_returns_rule(monkeypatch):
