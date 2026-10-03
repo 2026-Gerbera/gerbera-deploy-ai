@@ -304,6 +304,11 @@ def summarize_plan(
         external_roles=external_roles,
         configured_buckets=configured_buckets,
         storage_bucket=storage_bucket,
+        configured_keys={
+            address: set(expressions)
+            for address, item in configured.items()
+            if isinstance(expressions := item.get("expressions"), dict)
+        },
     )
     for resource in changes:
         if resource.get("type") == "aws_s3_bucket":
