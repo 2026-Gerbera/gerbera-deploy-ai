@@ -20,6 +20,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -35,6 +36,12 @@ from ddak.core.contracts.base import AIUsage
 from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.enums import Source
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
+from ddak.core.contracts.tools.patch_config import (
+    PatchConfigInput,
+    PatchConfigOutput,
+    PatchMeta,
+    PatchViolation,
+)
 from ddak.core.redact import redact
 from ddak.core.snapshots import digest_bytes
 from ddak.plan.patch.check import (
@@ -48,7 +55,7 @@ from ddak.plan.patch.check import (
     check_patch,
 )
 
-PROMPT_VERSION = "patch_config-v1"
+PROMPT_VERSION = "patch_config-v2"  # v2: DB 접속 주소 안내(patch_db_access 흡수), 빈 edits 허용
 MAX_SOURCE_BYTES = 64 * 1024  # 대상 파일 하나의 크기 상한(검사기의 패치 상한과 같다)
 MAX_SCAN_FILES = 500
 MAX_ATTEMPTS = 2  # 처음 + 위반 코드를 알려 주고 다시 묻기 1회
@@ -63,7 +70,8 @@ INSTRUCTION = """\
 목표: 환경마다 달라야 하는 값이 코드에 박혀 있는 줄을 환경변수에서 읽도록 고친다.
 대상 패턴(이것만 고친다):
 - secret_key: 서명 키(SECRET_KEY) 하드코딩 → os.environ["SECRET_KEY"]처럼 환경변수에서 읽기
-- local_address: 코드 안 localhost·127.0.0.1 주소 → 환경변수(예: APP_BASE_URL)에서 읽기
+- local_address: 코드 안 localhost·127.0.0.1 주소 → 환경변수에서 읽기
+  (앱 주소면 APP_BASE_URL, DB 접속 주소면 DATABASE_URL)
 - cookie_secure: SESSION_COOKIE_SECURE 고정값 → 환경변수에서 읽어 bool로
 - proxy_fix: ProxyFix 신뢰 hop 수 고정값
   → 환경변수(PROXY_FIX_X_FOR, PROXY_FIX_X_PROTO)에서 읽어 int로
@@ -129,6 +137,7 @@ class PatchProposal:
     env_vars: list[str] = field(default_factory=list)
     attempts: int = 0  # AI 호출 수
     usage: list[AIUsage] = field(default_factory=list)
+    source: Source | None = None  # 마지막 AI 결과의 출처(AI를 안 불렀으면 None)
 
 
 # ---- 1. 대상 찾기 ----------------------------------------------------------------
@@ -323,6 +332,7 @@ def propose_config_patch(
         )
         if result.usage is not None:
             proposal.usage.append(result.usage)
+        proposal.source = result.source
         draft = result.value
         if not draft.edits:  # AI가 고칠 줄이 없다고 답했다
             proposal.status, proposal.patch, proposal.check = "no_targets", None, None
@@ -348,3 +358,64 @@ def propose_config_patch(
             "규칙을 지켜 다시 쓴다."
         )
     return proposal
+
+
+# ---- 툴 입출력(core/contracts/tools/patch_config.py 초안) -----------------------------
+
+
+def _source_root(source_dir: str, root: Path | None) -> Path:
+    """analyze_project와 같은 규칙: DDAK_SOURCES_DIR(기본 var/sources) 아래 상대 경로만."""
+    if Path(source_dir).is_absolute() or ".." in Path(source_dir).parts:
+        raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "source_dir 형식이 올바르지 않다")
+    base = root if root is not None else Path(os.environ.get("DDAK_SOURCES_DIR") or "var/sources")
+    path = base / source_dir
+    if not path.is_dir():
+        raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "원본 스냅샷이 없다")
+    return path
+
+
+def patch_config(
+    inp: PatchConfigInput,
+    ctx: RunContext,
+    *,
+    root: Path | None = None,
+    policy: PatchPolicy | None = None,
+    provider: LLMProvider | None = None,
+    settings: Settings | None = None,
+) -> PatchConfigOutput:
+    """툴 진입점. tool_context("patch_config", run_id) 안에서 부른다(계획 흐름이 건다)."""
+    previous = None
+    if inp.previous is not None:
+        previous = PreviousPatch(
+            patch=inp.previous.patch.encode("utf-8"),
+            reason=inp.previous.reason,
+            source=inp.previous.source,
+        )
+    found = propose_config_patch(
+        _source_root(inp.source_dir, root),
+        ctx,
+        previous=previous,
+        policy=policy,
+        provider=provider,
+        settings=settings,
+    )
+    check = found.check
+    passed = found.status in ("proposed", "reused") and check is not None and check.passed
+    return PatchConfigOutput(
+        run_id=inp.run_id,
+        status=found.status,
+        passed=passed,
+        patch=found.patch.decode("utf-8") if found.patch else None,
+        patch_sha256=check.patch_sha256 if check is not None else None,
+        meta=PatchMeta.model_validate(found.meta) if found.meta else None,
+        env_vars=found.env_vars,
+        targets=found.targets,  # type: ignore[arg-type]  # 이름은 PATTERNS 키
+        target_hashes=found.target_hashes,
+        violations=[
+            PatchViolation(code=v.code[:40], file=v.file[:200], line=v.line)
+            for v in (check.violations if check is not None else [])[:50]
+        ],
+        attempts=found.attempts,
+        source=found.source,
+        ai_usage=found.usage,
+    )

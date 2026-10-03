@@ -139,6 +139,25 @@ def test_hardcoded_numbers_and_strings_are_targets(tmp_path: Path) -> None:
     assert find_targets(tmp_path) == {"app.py": ["local_address", "proxy_fix"]}
 
 
+def test_db_address_with_password_is_covered_by_patch_config(tmp_path: Path) -> None:
+    # patch_db_access 흡수: 코드에 박힌 DB 접속 주소도 local_address 대상이다.
+    # 비밀번호는 AI에 가려진다
+    fake_pw = "fake-" + "db-" + "pw-123"
+    original = f'DB_URL = "mysql+pymysql://app:{fake_pw}@localhost:3306/flaskr"\n'
+    (tmp_path / "db.py").write_text(original, encoding="utf-8")
+    assert find_targets(tmp_path) == {"db.py": ["local_address"]}
+    edits = [
+        {"path": "db.py", "start": 1, "end": 0, "lines": ["import os", ""]},
+        {"path": "db.py", "start": 1, "end": 1, "lines": ['DB_URL = os.environ["DATABASE_URL"]']},
+    ]
+    provider = FakeProvider(reply(edits, ["DATABASE_URL"]))
+    out = propose(tmp_path, provider)
+    assert fake_pw not in provider.seen[0].user and "[REDACTED]" in provider.seen[0].user
+    assert out.status == "proposed" and out.env_vars == ["DATABASE_URL"]
+    assert out.patch is not None and fake_pw in out.patch.decode()  # 지운 줄에만 있다
+    assert all(fake_pw not in line for line in out.patch.decode().splitlines() if line[:1] == "+")
+
+
 def test_ai_may_answer_that_nothing_needs_fixing(source: Path) -> None:
     empty = json.dumps({"edits": [], "reason": "고칠 줄이 없다", "env_vars": []})
     out = propose(source, FakeProvider(empty))
