@@ -33,7 +33,11 @@ class AppRepository:
         timeout_s: float = 30,
         secret_scan: Callable[[Path], None] | None = None,
         expected_url: str | None = None,
+        author: tuple[str, str] | None = None,
+        credentials: tuple[Path, str, str] | None = None,
     ) -> None:
+        self.author = author
+        self.credentials = credentials
         self.secret_scan = secret_scan
         self.expected_url = expected_url
         self.path = path.resolve(strict=True)
@@ -42,7 +46,15 @@ class AppRepository:
         self.timings: list[dict[str, Any]] = []
 
     @classmethod
-    def connect(cls, path: Path, repo_url: str, *, allow_local: bool = False) -> AppRepository:
+    def connect(
+        cls,
+        path: Path,
+        repo_url: str,
+        *,
+        allow_local: bool = False,
+        author: tuple[str, str] | None = None,
+        credentials: tuple[Path, str, str] | None = None,
+    ) -> AppRepository:
         """제품 전용 checkout만 만든다. 기존 checkout의 원격을 자동 변경하지 않는다."""
         parts = urlsplit(repo_url)
         if (
@@ -58,7 +70,13 @@ class AppRepository:
         ):
             raise DdakToolError(ErrorCode.CONFIG_INVALID, "앱 저장소 URL 형식 오류")
         path.mkdir(parents=True, exist_ok=True)
-        repo = cls(path, allow_local=allow_local, expected_url=repo_url)
+        repo = cls(
+            path,
+            allow_local=allow_local,
+            expected_url=repo_url,
+            author=author,
+            credentials=credentials,
+        )
         if not (path / ".git").exists():
             if any(path.iterdir()):
                 raise DdakToolError(
@@ -79,6 +97,17 @@ class AppRepository:
         if self.expected_url is not None and self.expected_url != repo_url:
             raise DdakToolError(
                 ErrorCode.PRECONDITION_FAILED, "승인 저장소와 연결된 저장소가 다르다"
+            )
+        if self.credentials and self.git(
+            "config",
+            "--includes",
+            "--name-only",
+            "--get-regexp",
+            r"^http\..*extraheader$",
+            ok=(0, 1),
+        ):
+            raise DdakToolError(
+                ErrorCode.PRECONDITION_FAILED, "앱 checkout에 별도 HTTP 인증 헤더가 있다"
             )
         fetch = self.git("remote", "get-url", "--all", "origin").splitlines()
         push = self.git("remote", "get-url", "--push", "--all", "origin").splitlines()
@@ -115,6 +144,36 @@ class AppRepository:
             self.require_origin(self.expected_url)
         started = time.monotonic()
         env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+        options: list[str] = []
+        if self.author and args and args[0] in {"merge", "commit", "commit-tree"}:
+            # 명령에만 사람 신원을 적용한다. 상속된 신원으로 덮어쓰지 않는다.
+            env = {
+                k: v for k, v in env.items() if not k.startswith(("GIT_AUTHOR_", "GIT_COMMITTER_"))
+            }
+            options += [
+                "-c",
+                "user.name=" + self.author[0],
+                "-c",
+                "user.email=" + self.author[1],
+                "-c",
+                "user.useConfigOnly=true",
+                "-c",
+                "author.name=" + self.author[0],
+                "-c",
+                "author.email=" + self.author[1],
+                "-c",
+                "committer.name=" + self.author[0],
+                "-c",
+                "committer.email=" + self.author[1],
+            ]
+        if self.credentials:
+            from ddak.core.git_credentials import helper_options, isolated_git_env
+
+            if args and args[0] != "config":
+                options += [
+                    part for option in helper_options(*self.credentials) for part in ("-c", option)
+                ]
+            env = isolated_git_env(env)
         argv = [
             "git",
             "-c",
@@ -123,6 +182,7 @@ class AppRepository:
             "http.followRedirects=false",
             "-c",
             "protocol.file.allow=" + ("always" if self.allow_local else "never"),
+            *options,
             *args,
         ]
         process = subprocess.Popen(

@@ -1,4 +1,4 @@
-"""onprem/provision: 온프렘 서버·컨테이너 준비, 앱 DB·계정. 담당 김준석(O2).
+"""onprem/provision: 온프렘 서버·컨테이너 준비, 앱 DB·계정. 담당 정준우(O1, O2 승계).
 
 공개 이름: prepare_host(점검만, 변경 없음), HostCheck, Check, ensure_app_database(미구현).
 AI import 금지(import-linter 계약 1).
@@ -15,7 +15,7 @@ from ddak.core.contracts.context import RunContext
 
 __all__ = ["Check", "HostCheck", "ensure_app_database", "prepare_host"]
 
-_TODO = "onprem/provision 미구현: 담당 김준석"
+_TODO = "onprem/provision 미구현: 담당 정준우(O1)"
 _TIMEOUT = 15.0
 _Run = Callable[[list[str], float], int]
 

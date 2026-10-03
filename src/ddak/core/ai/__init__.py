@@ -1,4 +1,4 @@
-"""AI 관문(call_ai, ask_jev). 담당 O2(김준석).
+"""AI 관문(call_ai, ask_jev). 담당 O1(정준우, O2 승계).
 
 - AI는 제안만 만든다(✅ 장부 4-a): JSON(채팅 의도, 분석 분류, step 선택, 실패 원인 설명,
   보고 요약)과 Terraform HCL 초안(generate_infra).

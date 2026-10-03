@@ -74,6 +74,9 @@ def test_dashboard_approval_progress_result_http_flow(rig, monkeypatch, failure)
         assert response.headers["location"] == f"/runs/{rid}/progress"
         progress = client.get(response.headers["location"])
         assert progress.status_code == 200
+        assert 'data-activity="running"' in progress.text
+        assert 'class="activity-dots"' in progress.text
+        assert "상세 로그가 도착하면" in progress.text
         assert "FAILED_VERIFY" in progress.text and "SUPERSEDED" in progress.text
         assert f'href="/runs/{rid}/progress"' in client.get("/").text
         assert client.portal is not None
@@ -95,6 +98,7 @@ def test_dashboard_approval_progress_result_http_flow(rig, monkeypatch, failure)
             'data-status="' + service.get_run(rid)["status"]
             in client.get(f"/runs/{rid}/progress").text
         )
+        assert 'data-activity="ended"' in client.get(f"/runs/{rid}/progress").text
         records = service.get_approvals(rid)
         assert {r.kind for r in records} == {"deploy", "infra"}
         assert next(r.bound_to for r in records if r.kind == "infra") == HASH
@@ -267,7 +271,7 @@ def test_progress_js_uses_server_terminal_states_and_ignores_stepless_events():
     )
 
 
-def test_patch_approval_shows_inline_diff_without_unavailable_download(rig):
+def test_patch_approval_binds_private_diff_without_showing_source_lines(rig):
     service, source, _ = rig
     plan = support.plan("run-ui-patch", patch=True)
     service.prepare(
@@ -278,7 +282,9 @@ def test_patch_approval_shows_inline_diff_without_unavailable_download(rig):
     )
     with client_for(service) as client:
         response = client.get(f"/runs/{plan.run_id}/approval")
-        assert response.status_code == 200 and "+VERSION = 2" in response.text
+        assert response.status_code == 200
+        assert "+VERSION = 2" not in response.text
+        assert service.approval_view(plan.run_id)["subjects"]["patch"] in response.text
         assert "approved-patch.diff" not in response.text
         assert client.get(f"/runs/{plan.run_id}/approved-patch.diff").status_code == 404
 

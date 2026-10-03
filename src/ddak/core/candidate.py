@@ -18,6 +18,7 @@ from ddak.core.contracts.deploy_config import DeployConfig
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.pem import MAX_PEM_BYTES, UnsupportedPemError, require_certificate_pem
 from ddak.core.snapshots import apply_diff, digest_bytes, excluded, file_manifest
+from ddak.core.tool_paths import scanner_binary
 
 
 def _secret_name(path: Path) -> bool:
@@ -135,7 +136,7 @@ def _scan_findings(repository: Path) -> set[tuple[str, str, int]]:
         try:
             result = subprocess.run(
                 [
-                    "gitleaks",
+                    scanner_binary(),
                     "dir",
                     "--redact",
                     "--no-banner",
@@ -284,7 +285,11 @@ def _scan_summary(findings: set[tuple[str, str, int]], *, fixture: bool = False)
 
 
 def _source_policy(
-    repository: AppRepository, source_sha: str, *, patch: bytes | None = None
+    repository: AppRepository,
+    source_sha: str,
+    *,
+    patch: bytes | None = None,
+    enforce_original: bool = True,
 ) -> tuple[dict[str, Any], set[tuple[str, str, int]], dict[str, Any]]:
     source_sha = git_sha(source_sha)
     repository.git("cat-file", "-e", source_sha + "^{commit}")
@@ -297,7 +302,7 @@ def _source_policy(
             findings: set[tuple[str, str, int]] = set()
         else:
             findings = _scan_findings(root)
-            if findings - allowed:
+            if findings - allowed and patch is None and enforce_original:
                 raise DdakToolError(
                     ErrorCode.PRECONDITION_FAILED, "비밀값 검사 실패; 커밋하지 않음"
                 )
@@ -322,8 +327,11 @@ def _source_policy(
             if repository.secret_scan is not None:
                 repository.secret_scan(root)
             else:
-                _require_source_exceptions(_scan_findings(root), patched_files, files, findings)
-        return files, findings, _scan_summary(findings, fixture=repository.secret_scan is not None)
+                _require_source_exceptions(
+                    _scan_findings(root), patched_files, files, findings & allowed
+                )
+        ignored = findings & allowed
+        return files, ignored, _scan_summary(ignored, fixture=repository.secret_scan is not None)
 
 
 def preflight_source(
@@ -360,7 +368,7 @@ def _scan_candidate(
         # 기존 fixture는 Git HEAD/인덱스를 관찰하므로 동일 worktree 호출 계약을 유지한다.
         repository.secret_scan(workspace)
         return _scan_summary(set(), fixture=True)
-    source_files, allowed, summary = _source_policy(repository, source_sha)
+    source_files, allowed, summary = _source_policy(repository, source_sha, enforce_original=False)
     with tempfile.TemporaryDirectory(prefix="ddak-candidate-scan-") as directory:
         root = Path(directory)
         files = _export_tree(repository, revision, root)
@@ -491,6 +499,8 @@ def prepare_candidate(
         timeout_s=repository.timeout_s,
         secret_scan=repository.secret_scan,
         expected_url=repository.expected_url,
+        author=repository.author,
+        credentials=repository.credentials,
     )
     audit = workspace.parent / "candidate-attempt.json"
 
@@ -600,3 +610,24 @@ def prepare_candidate(
         "merge_conflicts": conflicts,
         "source_preflight": summary,
     }
+
+
+def strict_patch_scan(source: Path, patch: bytes) -> None:
+    """패치가 수정한 파일은 원본 fingerprint 예외 없이 검사한다."""
+    with tempfile.TemporaryDirectory(prefix="ddak-patch-secrets-") as directory:
+        root = Path(directory)
+        built = root / "built"
+        from ddak.core.snapshots import copy_source
+
+        before = copy_source(source, built)
+        apply_diff(built, patch)
+        after = file_manifest(built)
+        only_changed = root / "changed"
+        only_changed.mkdir()
+        for name in before:
+            if before[name] != after.get(name):
+                dest = only_changed / name
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes((built / name).read_bytes())
+        if _scan_findings(only_changed):
+            raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "패치 추가분 비밀값 검사 불합격")

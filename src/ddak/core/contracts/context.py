@@ -55,6 +55,7 @@ class RunContext:
     preparation_failures: Mapping[str, list[str]] = field(default_factory=dict)
     preparation_errors: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
     preparation_warnings: list[str] = field(default_factory=list)  # 비밀값 없는 준비 경고
+    required_env_keys: tuple[str, ...] = ()  # 이름만. 필수 값은 private env에 보관한다.
     source_checks: Mapping[str, Any] = field(default_factory=dict)  # 비밀값 없는 검사·예외 요약
 
     def __post_init__(self) -> None:

@@ -178,31 +178,40 @@ class ClaudeCliProvider:
 
 
 def cli_status(claude_bin: str = "claude", timeout_s: float = 10.0) -> dict[str, Any]:
-    """관리 페이지 "LLM 연결" 카드용. `claude auth status` 결과를 읽는다(이메일은 가림).
+    """설치/인증만 확인한다. 연결 green은 명시적 fixed probe가 맡는다.
 
-    확인 필요: 출력 형식(JSON 여부, 키 이름 loggedIn·authMethod·subscriptionType). 로그인 자체는
-    웹에서 받지 않는다(약관 금지 패턴). 운영자가 터미널에서 직접 로그인한다.
+    확인된 명령 auth status --json을 사용한다. version/원문/이메일을 반환하지 않는다.
     """
     try:
-        proc = subprocess.run(
-            [claude_bin, "auth", "status"],
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-            env=build_env(),
-            check=False,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        with tempfile.TemporaryDirectory(prefix="llm-status-") as cwd:
+            proc = subprocess.run(
+                [claude_bin, "auth", "status", "--json"],
+                capture_output=True,
+                text=True,
+                timeout=timeout_s,
+                env=build_env(),
+                cwd=cwd,
+                check=False,
+            )
+        data = json.loads(proc.stdout)
+        logged_in = isinstance(data, dict) and data.get("loggedIn") is True
+        if proc.returncode != 0 or not logged_in:
+            return {
+                "backend": "cli",
+                "ok": False,
+                "status": "red",
+                "detail": "Claude CLI 미로그인 또는 인증 오류",
+            }
+    except (OSError, subprocess.TimeoutExpired, ValueError, TypeError):
         return {
             "backend": "cli",
             "ok": False,
-            "detail": f"claude auth status 실패: {type(exc).__name__}",
+            "status": "red",
+            "detail": "Claude CLI 설치/인증 확인 실패",
         }
-    try:
-        data = json.loads(proc.stdout)
-    except ValueError:
-        return {"backend": "cli", "ok": proc.returncode == 0, "detail": "출력 형식 확인 필요"}
-    if not isinstance(data, dict):
-        return {"backend": "cli", "ok": False, "detail": "출력 형식 확인 필요"}
-    shown = {k: v for k, v in data.items() if "email" not in k.lower() and "token" not in k.lower()}
-    return {"backend": "cli", "ok": bool(data.get("loggedIn")), "detail": shown}
+    return {
+        "backend": "cli",
+        "ok": False,
+        "status": "gray",
+        "detail": "Claude CLI 인증됨; 연결 테스트 전",
+    }

@@ -37,6 +37,7 @@ class FetchPolicy:
     retries: int = 2
     cache_ttl_s: float = 3600.0
     token: SecretStr | None = field(default=None, repr=False)
+    credentials: tuple[Path, str, str] | None = field(default=None, repr=False)
     root: Path = Path("var/sources")  # 아래에 cache/ 와 runs/
 
     @classmethod

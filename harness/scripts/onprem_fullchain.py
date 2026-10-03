@@ -24,17 +24,16 @@ def main() -> None:
 
         from ddak.app import ADMIN_HOST, create
 
-        for key, value in {
+        defaults = {
             "DDAK_ADAPTER_MODE": "real",
             "DDAK_BUILD_BACKEND": "local",
             "DDAK_IMAGE_REPOSITORY": "2026gerbera/flaskr",
             "DDAK_JEV_BACKEND": "claude-cli",
             "DDAK_LLM_BACKEND": "cli",
-        }.items():
-            os.environ.setdefault(key, value)
-        settings = Settings.from_env()
+        }
+        settings = Settings.from_env({**defaults, **os.environ})
         uvicorn.run(
-            create(cli_host=ADMIN_HOST, onprem_profile=True),
+            create(cli_host=ADMIN_HOST, onprem_profile=True, settings=settings),
             host=ADMIN_HOST,
             port=settings.admin_port,
         )

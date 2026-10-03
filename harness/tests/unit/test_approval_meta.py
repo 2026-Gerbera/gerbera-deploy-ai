@@ -154,7 +154,12 @@ def test_invalid_metadata_rejected_before_persistence(rig: Any, change: dict) ->
         prepare(rig, subjects={"infra": HASH}, infra_summary={**summary(), **change})
     assert exc.value.code is ErrorCode.CONFIG_INVALID
     assert "do-not-log-this-value" not in str(exc.value)
-    assert not (service.root / "runs" / "run-2").exists()
+    directory = service.root / "runs" / "run-2"
+    assert {p.name for p in directory.iterdir()} == {"events.jsonl"}
+    assert service.store.prepared("run-2") is None
+    event = service.events("run-2")[-1]
+    assert event["type"] == "stage.finished" and event["status"] == "failed"
+    assert "do-not-log-this-value" not in (directory / "events.jsonl").read_text()
 
 
 @pytest.mark.parametrize(

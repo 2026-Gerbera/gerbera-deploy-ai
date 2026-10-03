@@ -28,26 +28,22 @@ from __future__ import annotations
 
 import ast
 import difflib
+import io
 import re
 import subprocess
 import tempfile
+import tokenize
 from collections import Counter
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
+from ddak.core.patch_patterns import PATTERNS as PATTERNS
 from ddak.core.snapshots import apply_diff, copy_source, digest_bytes
 
 MAX_PATCH_BYTES = 64 * 1024
 MAX_FILES = 5
 
-# 대상 패턴(P0). 줄 단위로 본다.
-PATTERNS: dict[str, re.Pattern[str]] = {
-    "secret_key": re.compile(r"\bSECRET_KEY\b"),
-    "local_address": re.compile(r"\blocalhost\b|\b127\.0\.0\.1\b"),
-    "cookie_secure": re.compile(r"\bSESSION_COOKIE_SECURE\b"),
-    "proxy_fix": re.compile(r"\bProxyFix\b|\bx_for\b|\bx_proto\b|PROXY_FIX_"),
-}
 _ENV_READ = re.compile(r"\bos\.environ\b|\bgetenv\s*\(|\brequire_env\s*\(|\benv_(?:bool|int)\s*\(")
 _IMPORT = re.compile(r"^\s*(?:import\s+[\w.]+(?:\s*,\s*[\w.]+)*|from\s+[\w.]+\s+import\s+.+)\s*$")
 _SECRET_NAME = re.compile(r"SECRET|PASSW|PASSWD|TOKEN|API_?KEY|PRIVATE_?KEY|CREDENTIAL", re.I)
@@ -59,6 +55,8 @@ _ENV_KEY_BEFORE = re.compile(
 )
 # 첨자 키 자리(app.config["SECRET_KEY"]): 이름·]·) 바로 뒤의 [. 리스트 리터럴 ["..."]은 아니다
 _SUBSCRIPT_KEY_BEFORE = re.compile(r"[\w\])]\s*\[\s*$")
+_DICT_KEY_BEFORE = re.compile(r"(?:^|[{,])\s*$")
+_DICT_KEY_AFTER = re.compile(r"^\s*:")
 _STRUCTURAL = re.compile(r"^\s*[()\[\]{},:]*\s*$")
 _DANGEROUS = re.compile(
     r"\bos\.system\b|\bsubprocess\b|\beval\s*\(|\bexec\s*\(|__import__|\bopen\s*\("
@@ -315,10 +313,27 @@ def _secret_literal(line: str) -> bool:
         return False
     for match in _STRING.finditer(line):
         before = line[: match.start()]
-        key_position = _ENV_KEY_BEFORE.search(before) or _SUBSCRIPT_KEY_BEFORE.search(before)
+        dict_key = _DICT_KEY_BEFORE.search(before) and _DICT_KEY_AFTER.match(line[match.end() :])
+        key_position = (
+            _ENV_KEY_BEFORE.search(before) or _SUBSCRIPT_KEY_BEFORE.search(before) or dict_key
+        )
         if not (key_position and _ENV_NAME.fullmatch(match.group("s"))):
             return True
     return False
+
+
+def _comment_text(line: str) -> str | None:
+    try:
+        return next(
+            (
+                token.string
+                for token in tokenize.generate_tokens(io.StringIO(line).readline)
+                if token.type == tokenize.COMMENT
+            ),
+            None,
+        )
+    except (tokenize.TokenError, IndentationError):
+        return None
 
 
 def _check_lines(diff: _FileDiff) -> tuple[list[Violation], set[str]]:
@@ -326,6 +341,7 @@ def _check_lines(diff: _FileDiff) -> tuple[list[Violation], set[str]]:
     removed: set[str] = set()
     added: set[str] = set()
     env_read = False
+    old_comments = Counter(_comment_text(line) for _, line in diff.removed)
     for number, line in diff.removed:
         found = _patterns_in(line)
         removed |= found
@@ -340,8 +356,13 @@ def _check_lines(diff: _FileDiff) -> tuple[list[Violation], set[str]]:
         if _secret_literal(line):
             problems.append(Violation("secret_literal", diff.path, number, "비밀값 리터럴이 있다"))
         if _has_comment(line):
-            # 주석은 줄 검사·AST 모두 값을 볼 수 없다(따옴표 없는 비밀값). 이유는 diff 밖에 쓴다
-            problems.append(Violation("comment", diff.path, number, "추가한 줄에 주석이 있다"))
+            comment = _comment_text(line)
+            if comment and old_comments[comment] > 0:
+                old_comments[comment] -= 1  # 기존 주석 바이트 보존만 허용; 새 주석은 금지
+            else:
+                problems.append(
+                    Violation("comment", diff.path, number, "새 주석은 허용하지 않는다")
+                )
         if _DANGEROUS.search(line):
             problems.append(Violation("dangerous", diff.path, number, "허용되지 않는 호출이 있다"))
         if _is_blank_or_comment(line) or _IMPORT.match(line) or reads_env or found:
@@ -370,7 +391,7 @@ def _syntax(root: Path, paths: Iterable[str]) -> list[Violation]:
         if not path.endswith(".py"):
             continue
         try:
-            ast.parse((root / path).read_text("utf-8"), filename=path)
+            compile((root / path).read_text("utf-8"), path, "exec", dont_inherit=True)
         except SyntaxError as error:
             problems.append(Violation("syntax", path, error.lineno, "적용 후 문법 오류"))
         except (UnicodeDecodeError, ValueError, OSError):  # ValueError: NUL 바이트

@@ -20,6 +20,7 @@ from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.contracts.plan_facts import EnvKey
 from ddak.core.contracts.tools.analyze_project import AnalyzeProjectInput, AnalyzeProjectOutput
 from ddak.core.env_keys import is_migration_key
+from ddak.core.patch_patterns import scan_patch_targets
 from ddak.plan.analyze import rules
 
 _CONSERVATIVE = "jev 불가: 보수적 secret"
@@ -30,6 +31,7 @@ class _Found:
     tier: TierName | None = None
     is_new: bool = False
     snippet: str | None = None  # 키를 쓰는 코드 한 줄(값·기본값 없음)
+    required: bool | None = None  # 예시 파일만 있으면 기존 필수 기본값을 유지한다.
 
 
 @dataclass(frozen=True)
@@ -61,18 +63,27 @@ def _collect(
     cfg: DeployConfig, root: Path, changed: frozenset[str], *, bootstrap: bool = False
 ) -> dict[str, _Found]:
     found: dict[str, _Found] = {}
-    if cfg.env_example and (root / cfg.env_example).is_file():
+    if (
+        cfg.env_example
+        and (root / cfg.env_example).is_file()
+        and not any(
+            (root / p).is_symlink() for p in (Path(cfg.env_example), *Path(cfg.env_example).parents)
+        )
+        and not any(p.startswith(".") for p in Path(cfg.env_example).parts[:-1])
+    ):
         new = bootstrap or cfg.env_example in changed
         for name in rules.example_keys(root / cfg.env_example):
             f = found.setdefault(name, _Found())
             f.is_new = f.is_new or new
-    for tier, tc in cfg.tiers.items():
-        for rel in tc.paths:
-            for name, src, snippet in rules.source_keys(root, rel):
-                f = found.setdefault(name, _Found())
+    for name, src, snippet, required in rules.source_key_reads(root, "."):
+        f = found.setdefault(name, _Found())
+        for tier, tc in cfg.tiers.items():
+            if any(Path(src) == Path(rel) or Path(src).is_relative_to(rel) for rel in tc.paths):
                 f.tier = f.tier or tier
-                f.is_new = f.is_new or src in changed
-                f.snippet = f.snippet or snippet
+                break
+        f.is_new = f.is_new or src in changed
+        f.snippet = f.snippet or snippet
+        f.required = required if f.required is None else f.required or required
     return found
 
 
@@ -151,8 +162,10 @@ def analyze_project(
                 kind=kind,
                 tier=f.tier,
                 is_new=f.is_new,
+                required=name not in {"RELEASE_ID", "SOURCE_SHA"} and f.required is not False,
                 by=by,
                 reason=reason,
+                source=judgment.source if v is None and jev is not None else None,
                 provider=judgment.provider if v is None else None,
                 model=judgment.model if v is None else None,
             )
@@ -164,6 +177,10 @@ def analyze_project(
             t: tc.dockerfile is not None and (src / tc.dockerfile).is_file()
             for t, tc in cfg.tiers.items()
         },
+        smoke_groups=rules.smoke_groups(cfg, src),
         infra_inputs_changed=any(k.kind == "secret" and k.is_new for k in keys),
+        patch_targets=scan_patch_targets(
+            src, inp.changed_paths, bootstrap=ctx.mode is RunMode.BOOTSTRAP
+        ),
         source=judgment.source if ambiguous and jev else None,
     )

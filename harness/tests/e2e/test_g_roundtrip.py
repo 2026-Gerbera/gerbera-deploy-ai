@@ -209,6 +209,7 @@ async def test_watch_manual_approval_git_roundtrip(
             "watch_branch": "prod",
             "default_targets": "onprem" if local_backend else "both",
             "auto_detect": True,
+            "code_patch": False,  # 이 왕복은 코드 패치 없는 배포 경로를 검증한다.
         },
         updated_by="operator",
         expected_version=0,
@@ -297,7 +298,7 @@ async def test_watch_manual_approval_git_roundtrip(
         assert app._watch_targets(service) == [target]
         real_watcher = app.Watcher
 
-        def watcher(targets, handler, *, policy):
+        def watcher(targets, handler, *, policy, **kwargs):
             return real_watcher(
                 targets,
                 handler,

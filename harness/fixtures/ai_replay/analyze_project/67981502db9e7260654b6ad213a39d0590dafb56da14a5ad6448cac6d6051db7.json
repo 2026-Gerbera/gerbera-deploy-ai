@@ -1,0 +1,12 @@
+{
+  "output": {
+    "answers": [
+      {
+        "id": "secret.app_mode",
+        "probability": 0.2
+      }
+    ]
+  },
+  "prompt_version": "judgment-cli-v1",
+  "purpose": "analyze_project"
+}

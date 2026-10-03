@@ -1,5 +1,6 @@
 """배포할 미빌드 tier의 환경별 digest를 승인 입력에 고정한다."""
 
+import fnmatch
 import json
 import re
 import tempfile
@@ -11,7 +12,7 @@ from ddak.core.config import AdapterMode
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.contracts.plan import Plan
 from ddak.core.contracts.release import CarriedImageSource, ImageArtifact, SnapshotBinding
-from ddak.core.snapshots import materialize
+from ddak.core.snapshots import digest_json, materialize
 
 
 def locked_database(source: Path, snapshot: SnapshotBinding, patch: bytes | None) -> ImageArtifact:
@@ -94,3 +95,51 @@ def carried_images(
             carried_image_source(old, step.tier, target)
             result.setdefault(target, {})[step.tier] = ref
     return result
+
+
+def tier_tree_hashes(files: Mapping[str, Any], config: Mapping[str, Any]) -> dict[str, str]:
+    result = {}
+    for tier, spec in config.get("tiers", {}).items():
+        paths = {
+            Path(p).as_posix()
+            for p in (
+                *spec.get("paths", ["."]),
+                spec.get("dockerfile"),
+                ".dockerignore",
+                "deploy.yaml",
+            )
+            if isinstance(p, str) and p
+        }
+        selected = {
+            name: meta
+            for name, meta in files.items()
+            if any(
+                p
+                and (
+                    p == "."
+                    or name == p
+                    or name.startswith(p.rstrip("/") + "/")
+                    or fnmatch.fnmatchcase(name, p)
+                )
+                for p in paths
+            )
+        }
+        result[tier] = digest_json(selected)
+    return result
+
+
+def guard_carried_trees(
+    carried: Mapping[str, Mapping[str, str]],
+    previous: Mapping[str, Mapping[str, Any]],
+    hashes: Mapping[str, str],
+) -> None:
+    for target, tiers in carried.items():
+        for tier in tiers:
+            if tier not in hashes:
+                continue  # DeployConfig 없는 기존 내부 fixture. REAL 접수는 config가 필수다.
+            old = previous[target].get("image_sources", {}).get(tier, {}).get("tier_tree_hash")
+            if old is None or old != hashes[tier]:
+                raise DdakToolError(
+                    ErrorCode.PRECONDITION_FAILED,
+                    f"{target}/{tier}: 이월 이미지와 승인 트리 증거가 다르다; tier 재빌드 필요",
+                )

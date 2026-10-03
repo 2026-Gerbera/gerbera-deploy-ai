@@ -1,4 +1,5 @@
-"""plan/intake: 배포 요청 접수(GitHub 가져오기·커밋 고정·deploy.yaml·소스 해시). 담당 김준석(O2).
+"""plan/intake: 배포 요청 접수(GitHub 가져오기·커밋 고정·deploy.yaml·소스 해시).
+담당 정준우(O1, O2 승계).
 
 공개 이름: receive_deploy_request, cleanup_stale_sources, FetchPolicy, WatchTarget, Watcher,
 load_watch_targets, resolve_head, warm_cache.
@@ -15,13 +16,21 @@ from ddak.core.contracts.tools.receive_deploy_request import (
 from ddak.plan.intake.fetch import resolve_head, warm_cache
 from ddak.plan.intake.logic import Fetcher, cleanup_stale_sources, receive
 from ddak.plan.intake.policy import FetchPolicy
-from ddak.plan.intake.watch import Watcher, WatchTarget, load_watch_targets
+from ddak.plan.intake.watch import (
+    Watcher,
+    WatchTarget,
+    initial_trigger_from_env,
+    interval_from_env,
+    load_watch_targets,
+)
 
 __all__ = [
     "FetchPolicy",
     "WatchTarget",
     "Watcher",
     "cleanup_stale_sources",
+    "initial_trigger_from_env",
+    "interval_from_env",
     "load_watch_targets",
     "receive_deploy_request",
     "resolve_head",

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from ddak.core.contracts.errors import DdakToolError
+from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.plan.intake import FetchPolicy, Watcher, WatchTarget, load_watch_targets, resolve_head
 from ddak.plan.intake import watch as w
 from ddak.plan.intake.fetch import warm_cache
@@ -22,12 +22,22 @@ T2 = WatchTarget("other", "https://github.com/o/r2")
 class Sim:
     """heads를 tick마다 하나씩 소비하는 가짜 원격. sleep은 tick을 세고 끝나면 stop한다."""
 
-    def __init__(self, tmp: Path, heads: list, handler=None, targets=(T,), max_ticks=20):
+    def __init__(
+        self,
+        tmp: Path,
+        heads: list,
+        handler=None,
+        targets=(T,),
+        max_ticks=20,
+        initial_trigger=False,
+        get_state=None,
+    ):
         self.heads, self.i, self.calls, self.sleeps, self.warms = heads, 0, [], [], 0
         self.max, self.watcher = max_ticks, None
         self.policy = FetchPolicy(root=tmp)
         self.handler = handler or self._ok
         self.targets = list(targets)
+        self.initial_trigger, self.get_state = initial_trigger, get_state
 
     async def _ok(self, t, sha):
         self.calls.append((t.project, sha))
@@ -53,6 +63,7 @@ class Sim:
         self.watcher = Watcher(
             self.targets, self.handler, policy=self.policy, sleep=self.sleep,
             resolve=self.resolve, warm=self.warm, clock=lambda: 1.0,
+            initial_trigger=self.initial_trigger, get_state=self.get_state,
         )  # fmt: skip
         asyncio.run(asyncio.wait_for(self.watcher.run(), 5))
         return self
@@ -152,7 +163,7 @@ def test_stop_is_immediate_and_projects_independent(tmp_path: Path):
     async def go():
         wt = Watcher(
             [T, T2], lambda t, s: asyncio.sleep(0), policy=FetchPolicy(root=tmp_path),
-            resolve=lambda u, r, p: A, warm=lambda t, p: A,
+            resolve=lambda u, r, p: A, warm=lambda t, p: A, initial_trigger=False,
         )  # fmt: skip
         task = asyncio.create_task(wt.run())
         await asyncio.sleep(0.05)
@@ -226,3 +237,62 @@ def test_load_targets_explicit_configuration():
     assert (target.project, target.target, target.ref) == ("custom", "local", "staging")
     with pytest.raises(DdakToolError):
         load_watch_targets({"DDAK_WATCH_TARGETS": "unknown"})
+
+
+def test_initial_head_triggers_by_default_without_success(tmp_path):
+    s = Sim(tmp_path, [A] * 6, max_ticks=6, initial_trigger=True).run()
+    assert s.calls == [("demo", A)]
+    assert w.read_last_commit(s.policy, T) == A
+
+
+@pytest.mark.parametrize("successful,expected", [(False, [("demo", A)]), (True, [])])
+def test_initial_trigger_uses_service_success_even_with_processed_baseline(
+    tmp_path, successful, expected
+):
+    w.write_last_commit(FetchPolicy(root=tmp_path), T, A)
+
+    def state(_):
+        return {"last_success": {"local": successful}}
+
+    s = Sim(tmp_path, [A] * 6, max_ticks=6, initial_trigger=True, get_state=state).run()
+    assert s.calls == expected
+
+
+def test_initial_trigger_can_be_disabled(tmp_path):
+    s = Sim(tmp_path, [A] * 6, max_ticks=6, initial_trigger=False).run()
+    assert s.calls == []
+    assert w.initial_trigger_from_env({})
+    assert not w.initial_trigger_from_env({"DDAK_WATCH_INITIAL_TRIGGER": "false"})
+    with pytest.raises(DdakToolError):
+        w.initial_trigger_from_env({"DDAK_WATCH_INITIAL_TRIGGER": "not-a-bool"})
+
+
+@pytest.mark.parametrize(
+    "code,attempts",
+    [
+        (ErrorCode.CONFIG_INVALID, 1),
+        (ErrorCode.PRECONDITION_FAILED, 1),
+        (ErrorCode.ADAPTER_TIMEOUT, 3),
+    ],
+)
+def test_deterministic_handler_once_transient_handler_retries(tmp_path, code, attempts):
+    tries = []
+
+    async def fail(t, sha):
+        tries.append(sha)
+        raise DdakToolError(code, "sensitive-placeholder")
+
+    Sim(tmp_path, [A] * 10, handler=fail, max_ticks=10, initial_trigger=True).run()
+    assert tries == [A] * attempts
+
+
+def test_format_poll_error_stops_once(tmp_path):
+    s = Sim(tmp_path, ["not-a-sha"], initial_trigger=True).run()
+    assert s.calls == [] and s.sleeps == []
+    assert w.read_last_commit(s.policy, T) is None
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf"])
+def test_nonfinite_watch_interval_rejected(value):
+    with pytest.raises(DdakToolError):
+        w.interval_from_env({"DDAK_WATCH_INTERVAL_S": value})

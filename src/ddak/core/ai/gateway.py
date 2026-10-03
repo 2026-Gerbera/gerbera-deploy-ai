@@ -1,29 +1,32 @@
-"""call_ai(): LLM 호출의 유일한 관문. ask_jev(): Jev 호출의 유일한 관문.
+"""공통 AI gate: 허용 툴 -> redact -> provider -> 제한 재시도 -> JSON 계약 검증.
 
-순서: 허용 툴 확인 -> 입력 정제(redact) -> untrusted_data 감싸기 -> (예산) -> provider 호출
-      (타임아웃·재시도) -> 스키마 파싱 -> 사용량과 출처(source) 반환.
-- 허용 툴: registry.ai_tools()(uses_ai=True). contextvar current_tool(실행기가 설정)로 판단한다.
-- 코드·diff·로그·설정은 신뢰하지 않는 데이터다. 구분자로 감싸고 지시로 따르지 말라고 적는다.
-- 운영자 채팅 문장은 지시로 둔다(operator_message). 감싸면 모델이 지시를 거부한다(실측).
-- 출력은 항상 pydantic으로 파싱한다. 실패하면 AI_OUTPUT_INVALID. 재지시 1회 -> 규칙 계획은
-  호출한 툴(generate_plan 등)이 처리한다(✅ 장부 5).
-- backend를 바꿔도(cli/api/replay) 이 함수의 동작은 같다.
-TODO(O2): run당 예산(DDAK_AI_BUDGET_USD_PER_RUN), ai.call 이벤트 기록.
+관리 연결 테스트는 별도 private fixed-prompt 경로만 사용한다. 툴 문맥을 만들지 않는다.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import math
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import Literal
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 from ddak.core import runtime
-from ddak.core.ai.providers import AIRequest, LLMProvider, get_provider
-from ddak.core.ai.providers.jev import GroqJevClient, JevAnswer, JevQuestion, JudgmentClient
+from ddak.core.ai.providers import (
+    AIRequest,
+    AIResponse,
+    LLMProvider,
+    ProviderRole,
+    ProviderSpec,
+    get_jev_client,
+    get_provider,
+    provider_model,
+)
+from ddak.core.ai.providers.jev import JevAnswer, JevQuestion, JudgmentClient
 from ddak.core.config import Settings
 from ddak.core.contracts.base import AIUsage
-from ddak.core.contracts.enums import LLMBackend, Source
+from ddak.core.contracts.enums import Source
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.redact import redact
 from ddak.core.registry import ai_tools
@@ -39,27 +42,96 @@ SYSTEM_GUARD = (
 @dataclass(frozen=True)
 class AIResult[M: BaseModel]:
     value: M
-    source: Source  # live가 아니면 관리 페이지가 라벨을 표시한다
+    source: Source
     usage: AIUsage | None = None
     attempts: int = 1
 
 
 def ensure_ai_allowed() -> str:
-    """현재 툴이 AI 툴이 아니면 AI_NOT_ALLOWED. 허용이면 툴 이름을 돌려준다."""
     tool = runtime.current_tool.get()
     if tool is None or tool not in ai_tools():
-        raise DdakToolError(ErrorCode.AI_NOT_ALLOWED, f"AI를 호출할 수 없는 문맥이다: {tool}")
+        raise DdakToolError(ErrorCode.AI_NOT_ALLOWED, "AI를 호출할 수 없는 문맥이다")
     return tool
 
 
+def _safe_data(text: str, settings: Settings | None = None) -> str:
+    if settings is not None:
+        secrets = [
+            *settings.provider_keys.values(),
+            settings.anthropic_api_key,
+            settings.groq_api_key,
+            settings.llm_api_key,
+            settings.jev_api_key,
+        ]
+        for secret in sorted((s for s in secrets if s), key=len, reverse=True):
+            text = text.replace(secret, "[REDACTED]")
+    return redact(text).replace(DATA_CLOSE, "")
+
+
 def build_user_prompt(instruction: str, data: str, *, operator_message: str | None = None) -> str:
-    """지시와 데이터를 분리한다. 데이터는 redact를 거친 뒤 구분자로 감싼다."""
-    safe = redact(data).replace(DATA_CLOSE, "")
-    parts = [instruction]
+    parts = [redact(instruction)]
     if operator_message:
         parts.append(f"운영자 요청: {redact(operator_message)}")
-    parts.append(f"{DATA_OPEN}\n{safe}\n{DATA_CLOSE}")
+    parts.append(f"{DATA_OPEN}\n{_safe_data(data)}\n{DATA_CLOSE}")
     return "\n\n".join(parts)
+
+
+def _retry[T](action: Callable[[], T], settings: Settings) -> tuple[T, int]:
+    for attempt in range(1, max(0, settings.ai_retries) + 2):
+        try:
+            return action(), attempt
+        except DdakToolError as exc:
+            if exc.code is not ErrorCode.AI_UNAVAILABLE:
+                raise DdakToolError(exc.code, "AI provider 요청 처리 실패") from None
+        except Exception:
+            if attempt > max(0, settings.ai_retries):
+                raise DdakToolError(ErrorCode.AI_UNAVAILABLE, "AI 호출 실패") from None
+    # provider 예외 원문/체인에 키가 있을 수 있으므로 포함하지 않는다.
+    raise DdakToolError(ErrorCode.AI_UNAVAILABLE, "AI 호출 실패") from None
+
+
+def _generation_request[M: BaseModel](
+    *,
+    purpose: str,
+    instruction: str,
+    data: str,
+    output_model: type[M],
+    settings: Settings,
+    operator_message: str | None = None,
+    prompt_version: str = "v0",
+    model: str | None = None,
+) -> AIRequest:
+    return AIRequest(
+        purpose=purpose,
+        system=SYSTEM_GUARD,
+        user=build_user_prompt(
+            _safe_data(instruction, settings),
+            _safe_data(data, settings),
+            operator_message=_safe_data(operator_message, settings) if operator_message else None,
+        ),
+        json_schema=output_model.model_json_schema(),
+        model=model,
+        timeout_s=settings.ai_timeout_s,
+        prompt_version=redact(prompt_version),
+    )
+
+
+def _generate[M: BaseModel](
+    req: AIRequest,
+    output_model: type[M],
+    provider: LLMProvider,
+    settings: Settings,
+) -> tuple[AIResult[M], AIResponse]:
+    response, attempts = _retry(lambda: provider.complete(req), settings)
+    try:
+        value = output_model.model_validate_json(response.text, strict=True)
+    except ValidationError as exc:
+        raise DdakToolError(
+            ErrorCode.AI_OUTPUT_INVALID, f"AI 출력이 스키마와 맞지 않는다({exc.error_count()}건)"
+        ) from None
+    return AIResult(
+        value=value, source=response.source, usage=response.usage, attempts=attempts
+    ), response
 
 
 def call_ai[M: BaseModel](
@@ -72,53 +144,89 @@ def call_ai[M: BaseModel](
     settings: Settings | None = None,
     provider: LLMProvider | None = None,
 ) -> AIResult[M]:
-    """허용된 AI 툴 안에서만 부른다. 비밀값은 redact로 가린 뒤에만 provider에게 간다."""
     tool = ensure_ai_allowed()
     cfg = settings or Settings.from_env()
-    req = AIRequest(
+    req = _generation_request(
         purpose=tool,
-        system=SYSTEM_GUARD,
-        user=build_user_prompt(instruction, data, operator_message=operator_message),
-        json_schema=output_model.model_json_schema(),
-        model=cfg.llm_model,
-        timeout_s=cfg.ai_timeout_s,
+        instruction=instruction,
+        data=data,
+        output_model=output_model,
+        settings=cfg,
+        operator_message=operator_message,
         prompt_version=prompt_version,
+        model=provider_model(cfg),
     )
-    client = provider or get_provider(cfg)
-    attempts = 0
-    while True:
-        attempts += 1
-        try:
-            response = client.complete(req)
-            break
-        except DdakToolError as exc:
-            if exc.code is not ErrorCode.AI_UNAVAILABLE or attempts > cfg.ai_retries:
-                raise
-        except Exception as exc:  # provider 내부 예상 못한 오류도 AI_UNAVAILABLE로 모은다
-            if attempts > cfg.ai_retries:
-                msg = f"AI 호출 실패: {type(exc).__name__}"
-                raise DdakToolError(ErrorCode.AI_UNAVAILABLE, msg) from exc
-    try:
-        value = output_model.model_validate_json(response.text)
-    except ValidationError as exc:
-        msg = f"AI 출력이 스키마와 맞지 않는다({exc.error_count()}건)"
-        raise DdakToolError(ErrorCode.AI_OUTPUT_INVALID, msg) from exc
-    return AIResult(value=value, source=response.source, usage=response.usage, attempts=attempts)
+    result, _ = _generate(
+        req, output_model, provider if provider is not None else get_provider(cfg), cfg
+    )
+    return result
 
 
-def get_jev_client(settings: Settings | None = None) -> JudgmentClient:
-    """판단 backend만 선택한다. 예약한 TypeSafe 키는 사용하지 않는다."""
-    cfg = settings or Settings.from_env()
-    if cfg.jev_backend == "claude-cli":
-        from ddak.core.ai.providers.claude import ClaudeJevClient
-
-        return ClaudeJevClient(
-            cfg.claude_bin,
-            model=cfg.llm_model if cfg.llm_backend is LLMBackend.CLI else None,
-            timeout_s=cfg.ai_timeout_s,
-            effort=cfg.llm_effort,
+def _safe_questions(
+    questions: Sequence[JevQuestion],
+    settings: Settings | None = None,
+) -> list[JevQuestion]:
+    if len({q.id for q in questions}) != len(questions):
+        raise DdakToolError(ErrorCode.AI_OUTPUT_INVALID, "질문 ID가 중복되었다")
+    return [
+        q.model_copy(
+            update={
+                "text": _safe_data(q.text, settings),
+                "choices": tuple(_safe_data(c, settings) for c in q.choices),
+            }
         )
-    return GroqJevClient(cfg.groq_api_key, model=cfg.groq_model, timeout_s=cfg.groq_timeout_s)
+        for q in questions
+    ]
+
+
+def _validate_answers(
+    answers: list[JevAnswer], questions: Sequence[JevQuestion]
+) -> list[JevAnswer]:
+    bad = DdakToolError(ErrorCode.AI_OUTPUT_INVALID, "판단 출력이 질문 계약과 맞지 않는다")
+    try:
+        parsed = [
+            JevAnswer.model_validate(a.model_dump() if isinstance(a, JevAnswer) else a, strict=True)
+            for a in answers
+        ]
+        by_id = {a.id: a for a in parsed}
+        if len(parsed) != len(questions) or len(by_id) != len(parsed):
+            raise bad
+        for q in questions:
+            a = by_id[q.id]
+            if q.kind == "choice":
+                if a.choice not in q.choices or a.probability is not None or a.score is not None:
+                    raise bad
+            elif q.kind == "noul":
+                if a.probability is None or a.choice is not None or a.score is not None:
+                    raise bad
+            elif (
+                a.choice is not None
+                or a.probability is not None
+                or ((a.score is None) == (a.confidence is None))
+            ):
+                raise bad  # strict score 또는 legacy Groq confidence 중 하나
+            if any(
+                v is not None and (not math.isfinite(v) or not 0 <= v <= 1)
+                for v in (a.probability, a.confidence)
+            ):
+                raise bad
+        return [by_id[q.id] for q in questions]
+    except (ValidationError, ValueError, TypeError, KeyError, AttributeError):
+        raise bad from None
+
+
+def _ask(
+    *,
+    state: str,
+    questions: Sequence[JevQuestion],
+    client: JudgmentClient,
+    settings: Settings,
+) -> list[JevAnswer]:
+    safe = _safe_questions(questions, settings)
+    answers, _ = _retry(
+        lambda: client.ask(state=_safe_data(state, settings), questions=safe), settings
+    )
+    return _validate_answers(answers, safe)
 
 
 def ask_jev(
@@ -128,10 +236,62 @@ def ask_jev(
     settings: Settings | None = None,
     client: JudgmentClient | None = None,
 ) -> list[JevAnswer]:
-    """Jev 한 번 호출(질문 묶음). 허용 툴 안에서만. 실패하면 AI_UNAVAILABLE -> 규칙/Claude 대체."""
     ensure_ai_allowed()
-    jev = client if client is not None else get_jev_client(settings)
-    try:
-        return jev.ask(state=redact(state), questions=questions)
-    except NotImplementedError as exc:
-        raise DdakToolError(ErrorCode.AI_UNAVAILABLE, str(exc)) from exc
+    safe = _safe_questions(questions)
+    if not safe:
+        return []
+    cfg = settings or Settings.from_env()
+    return _ask(
+        state=state,
+        questions=safe,
+        client=client if client is not None else get_jev_client(cfg),
+        settings=cfg,
+    )
+
+
+class _ConnectionAnswer(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    ok: Literal[True]
+
+    @field_validator("ok", mode="before")
+    @classmethod
+    def true_only(cls, value: object) -> object:
+        if value is not True:
+            raise ValueError("connection acknowledgment must be true")
+        return value
+
+
+def _test_provider_connection(
+    *,
+    settings: Settings,
+    spec: ProviderSpec,
+    role: ProviderRole,
+) -> AIResponse:
+    """관리 테스트 전용 제한목적 예외. 입력/purpose/tool을 외부에서 받지 않는다."""
+    if role == "judgment" and spec.judgment_factory is not None:
+        client = spec.judgment_factory(settings)
+        _ask(
+            state="connection test",
+            questions=[
+                JevQuestion(id="connection", kind="noul", text="Is this a connection test?")
+            ],
+            client=client,
+            settings=settings,
+        )
+        source = getattr(client, "source", None)
+        return AIResponse(
+            text='{"ok":true}', source=source if isinstance(source, Source) else Source.FIXTURE
+        )
+    if spec.generation_factory is None:
+        raise DdakToolError(ErrorCode.CONFIG_INVALID, "연결 테스트 factory 없음")
+    req = _generation_request(
+        purpose="provider_connection_test",
+        instruction='Return exactly {"ok":true}.',
+        data="",
+        output_model=_ConnectionAnswer,
+        settings=settings,
+        prompt_version="connection-v1",
+        model=provider_model(settings, role, id=spec.id),
+    )
+    _, response = _generate(req, _ConnectionAnswer, spec.generation_factory(settings), settings)
+    return response

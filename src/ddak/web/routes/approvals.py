@@ -21,9 +21,7 @@ async def approval_page(request: Request, run_id: str):
         raise HTTPException(status_code=404, detail="실행을 찾을 수 없습니다") from exc
     except DdakToolError:
         return RedirectResponse(f"/runs/{run_id}/result", status_code=303)
-    patch = view.get("patch")
-    view = redact_obj(view)
-    view["patch"] = patch  # 승인한 diff를 잘라 보여 주지 않는다.
+    view = redact_obj({**view, "patch": None})  # 원문 대신 검증된 패턴·해시·키만 표시한다.
     token = csrf_token(request)
     response = templates.TemplateResponse(
         request=request,

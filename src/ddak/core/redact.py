@@ -54,6 +54,8 @@ _RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     # Anthropic / OpenAI 형식 키
     (re.compile(r"\bsk-ant-[A-Za-z0-9_-]{10,}"), REDACTED),
     (re.compile(r"\bsk-[A-Za-z0-9_-]{16,}"), REDACTED),
+    # Groq 키(생성·판단 두 경로에서 같은 공통 가림 적용)
+    (re.compile(r"\bgsk_[A-Za-z0-9_-]{16,}"), REDACTED),
     # GitHub 토큰
     (re.compile(r"\bgh[pousr]_[A-Za-z0-9]{30,}\b"), REDACTED),
     # Docker Hub 개인·조직 액세스 토큰(✅ 9/30: 이미지 저장소 기본 Docker Hub)

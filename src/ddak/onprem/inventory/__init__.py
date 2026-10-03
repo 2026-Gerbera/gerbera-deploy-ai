@@ -1,4 +1,4 @@
-"""onprem/inventory: 인벤토리(tier별 주소) 읽기. 담당 김준석(O2).
+"""onprem/inventory: 인벤토리(tier별 주소) 읽기. 담당 정준우(O1, O2 승계).
 
 공개 함수: load_inventory. 결과는 RunContext.platform["onprem"] 모양이다(모양은
 ddak.onprem.deploy provider docstring의 인벤토리 계약). 값·시크릿은 넣지 않는다.

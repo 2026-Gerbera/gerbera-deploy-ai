@@ -219,7 +219,7 @@ async def test_one_click_approval_start_wait_persists_patched_release(rig: Any) 
     run_id = prepare(service, source, patch=True)
     view = service.approval_view(run_id)
     assert set(view["subjects"]) == {"deploy", "patch"}
-    assert view["patch"] == PATCH.decode()
+    assert view["patch"] is None  # 수정11: 원문은 공개 승인 조회에 노출하지 않는다.
     assert calls.contexts == []
     records = service.approve(run_id, approver="operator")
     assert len({r.approval_id for r in records}) == 1
@@ -256,7 +256,9 @@ async def test_start_without_approval_has_zero_tool_effects(rig: Any) -> None:
         service.start(run_id)
     assert rejected.value.code is ErrorCode.APPROVAL_REQUIRED
     assert calls.contexts == []
-    assert service.events(run_id) == []
+    assert [(e["type"], e["preparation_stage"]) for e in service.events(run_id)] == [
+        ("stage.finished", "prepare")
+    ]  # 준비 계측만 있고 툴 실행 이벤트는 없다.
     assert service.store.environments("demo") == {}
     assert service.store.run(run_id)["status"] == "AWAITING_APPROVAL"
 
@@ -356,6 +358,45 @@ async def test_source_changed_after_approval_does_not_promote_any_environment(ri
     assert calls.contexts == []
     assert service.store.environments("demo") == previous
     assert service.store.run(run_id)["status"] == "FAILED_BEFORE_DEPLOY"
+
+
+@pytest.mark.parametrize("diagnostic", ["secret_assignment", "secret_json", "database_url"])
+async def test_error_json_redacts_diagnostics_before_persistence(rig, monkeypatch, diagnostic):
+    from ddak.core.redact import REDACTED
+    from ddak.executor import service as service_module
+
+    service, source, calls = rig
+    secret = "fixture-" + "private-value"
+    exposed = {
+        "secret_assignment": f"SECRET_KEY={secret}",
+        "secret_json": json.dumps({"api_key": secret, "operation": "materialize"}),
+        "database_url": f"mysql+pymysql://app:{secret}@db.invalid/app",
+    }[diagnostic]
+    # 예외 문구는 저장하지 않는다. 저장 가능한 type 필드에도 가림을 강제한다.
+    failure_type = type(f"FixtureError {exposed}", (RuntimeError,), {})
+
+    def failed_materialize(*args, **kwargs):
+        raise failure_type("unlabelled-fixture-private-message")
+
+    run_id = prepare(service, source)
+    service.approve(run_id, approver="operator")
+    monkeypatch.setattr(service_module, "materialize", failed_materialize)
+    service.start(run_id)
+    result = await asyncio.wait_for(service.wait(run_id), timeout=5)
+
+    raw = (service.root / "runs" / run_id / "error.json").read_text()
+    error = json.loads(raw)
+    assert result.status is RunStatus.FAILED_BEFORE_DEPLOY
+    assert calls.contexts == []
+    assert secret not in raw
+    assert "unlabelled-fixture-private-message" not in raw
+    assert REDACTED in error["type"]
+    assert error["detail"] == "실행 시작/기록 실패; 상태 확인 필요"
+    if diagnostic == "secret_json":
+        nested = json.loads(error["type"].removeprefix("FixtureError "))
+        assert nested == {"api_key": REDACTED, "operation": "materialize"}
+    if diagnostic == "database_url":
+        assert error["type"] == f"FixtureError mysql+pymysql://app:{REDACTED}@db.invalid/app"
 
 
 @pytest.mark.parametrize("verify_failed", [False, True])
@@ -650,7 +691,9 @@ async def test_shutdown_immediately_after_start_cancels_without_tools_or_retaine
     assert task.cancelled()
     assert service.store.run(run_id)["status"] == "CANCELLED"
     assert calls.contexts == []
-    assert service.events(run_id) == []
+    assert [(e["type"], e["preparation_stage"]) for e in service.events(run_id)] == [
+        ("stage.finished", "prepare")
+    ]  # 준비 계측만 있고 툴 실행 이벤트는 없다.
     assert service.store.environments("demo") == {}
     with service.store.connection() as db:
         assert db.execute("SELECT COUNT(*) FROM locks").fetchone()[0] == 0

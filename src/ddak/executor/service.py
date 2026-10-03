@@ -12,10 +12,11 @@ import fcntl
 import json
 import re
 import sqlite3
+import tempfile
 import threading
 import time
 import uuid
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Iterator, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from functools import partial
@@ -27,7 +28,7 @@ from ddak.core.config import AdapterMode
 from ddak.core.contracts.approval import ApprovalRecord
 from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.deploy_request import DeployRequest
-from ddak.core.contracts.enums import Effect, Layer, RunMode, Target
+from ddak.core.contracts.enums import Effect, Layer, RunMode, Stage, Target
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.contracts.events import EventType, RunEvent
 from ddak.core.contracts.infra_outputs import (
@@ -42,16 +43,24 @@ from ddak.core.contracts.release import (
     ReleaseArtifacts,
     SnapshotBinding,
 )
+from ddak.core.patch_ledger import guard_patch_loss, ledger, reuse_patches, save_ledger
 from ddak.core.project_settings import ProjectSettings
 from ddak.core.redact import redact, redact_obj
 from ddak.core.registry import Registry, UnknownToolError
 from ddak.core.runlog import run_dir, write_context
+from ddak.core.runtime_values import local_missing
 from ddak.core.snapshots import digest_bytes, digest_json, file_manifest, materialize, preview
 from ddak.core.store import Store, release_view
 from ddak.executor.approval_meta import check_infra_summary, encode_meta
 from ddak.executor.engine import Executor, RunResult, RunStatus, TrackStatus, check_signals
 from ddak.executor.events import EventBus
-from ddak.executor.images import carried_image_source, carried_images, locked_database
+from ddak.executor.images import (
+    carried_image_source,
+    carried_images,
+    guard_carried_trees,
+    locked_database,
+    tier_tree_hashes,
+)
 from ddak.executor.preparation import MissingToolsError, missing_track_tools
 from ddak.executor.selection import select_plan
 
@@ -90,6 +99,7 @@ def environment_release(
                     "source_sha": origin.get("source_sha"),
                     "candidate_sha": origin.get("candidate_sha"),
                     "snapshot": origin.get("source"),
+                    "tier_tree_hash": origin.get("tier_tree_hashes", {}).get(tier),
                     "artifact": artifacts.get("images", {}).get(tier),
                     "observation": artifacts.get("observations", {}).get(target, {}).get(tier),
                 }
@@ -148,6 +158,7 @@ class DeploymentService:
         self.repository_factory = repository_factory
         self.planning_flow = planning_flow
         self.build_preflight = build_preflight
+        self.onboarding: Any = None
         root.mkdir(parents=True, exist_ok=True)
         self._lease = (root / "controller.lock").open("a")
         try:
@@ -218,6 +229,32 @@ class DeploymentService:
         infra_summary: dict[str, Any] | None = None,
         expected_settings_version: int | None = None,
     ) -> str:
+        with self.preparation_stage(plan.run_id, "prepare"):
+            return self._prepare(
+                plan,
+                context,
+                source,
+                patch=patch,
+                subjects=subjects,
+                facts_reader=facts_reader,
+                patch_meta=patch_meta,
+                infra_summary=infra_summary,
+                expected_settings_version=expected_settings_version,
+            )
+
+    def _prepare(
+        self,
+        plan: Plan,
+        context: RunContext,
+        source: Path,
+        *,
+        patch: bytes | None = None,
+        subjects: Mapping[ApprovalKind, str] | None = None,
+        facts_reader: FactsReader | None = None,
+        patch_meta: dict[str, Any] | None = None,
+        infra_summary: dict[str, Any] | None = None,
+        expected_settings_version: int | None = None,
+    ) -> str:
         if source.expanduser().is_symlink():
             raise DdakToolError(ErrorCode.CONFIG_INVALID, "소스 심볼릭 링크는 지원하지 않는다")
         source = source.expanduser().resolve()
@@ -270,7 +307,13 @@ class DeploymentService:
                 raise DdakToolError(
                     ErrorCode.CONFIG_INVALID, "local 빌드 저장소와 사전 점검 연결이 필요하다"
                 )
-            context = replace(context, preparation_warnings=self.build_preflight(context) or [])
+            context = replace(
+                context,
+                preparation_warnings=[
+                    *context.preparation_warnings,
+                    *(self.build_preflight(context) or []),
+                ],
+            )
         if (
             context.adapter_mode is AdapterMode.REAL
             and plan.deploy.local.steps
@@ -291,6 +334,17 @@ class DeploymentService:
                     "온프렘 인벤토리 tier 누락: " + ", ".join(sorted(missing)),
                 )
         snapshot = preview(source, patch)
+        if (
+            patch
+            and context.project_settings.get("code_patch")
+            and (
+                (patch_meta or {}).get("passed") is not True
+                or (patch_meta or {}).get("patch_sha256") != snapshot.patch_sha256
+            )
+        ):
+            raise DdakToolError(
+                ErrorCode.PRECONDITION_FAILED, "패치 검사 결과와 승인 diff 해시가 필요하다"
+            )
         if patch and context.source_sha:
             repository = self.connect_repository(context)
             if repository is not None:
@@ -362,6 +416,13 @@ class DeploymentService:
                 **context.images,
             },
         )
+        with tempfile.TemporaryDirectory(prefix="ddak-approval-tree-") as tmp:
+            built = Path(tmp) / "source"
+            materialize(source, built, snapshot, patch)
+            guard_patch_loss(source, built, {t: previous[t] for t in selected if t in previous})
+            guard_carried_trees(
+                carried, previous, tier_tree_hashes(file_manifest(built), context.deploy_config)
+            )
         patch_meta_json = encode_meta(patch_meta)
         infra_summary_json = encode_meta(infra_summary, infra=True)
         if (patch_meta is not None and not patch) or (
@@ -378,7 +439,17 @@ class DeploymentService:
         if plan.toggles != dict(context.toggles):
             raise DdakToolError(ErrorCode.PLAN_INVALID, "계획과 컨텍스트 토글이 다르다")
         if patch and not context.toggles.get("code_patch"):
-            raise DdakToolError(ErrorCode.TOGGLE_OFF, "코드 수정이 꺼져 있다")
+            reused, _ = reuse_patches(
+                source, {t: previous[t] for t in selected if t in previous}, self.root / "runs"
+            )
+            if (
+                not (patch_meta or {}).get("reuse")
+                or not reused
+                or preview(source, reused).build_snapshot_hash != snapshot.build_snapshot_hash
+            ):
+                raise DdakToolError(
+                    ErrorCode.TOGGLE_OFF, "코드 수정 OFF는 성공 원장의 재사용만 허용한다"
+                )
         check_signals(plan)
         steps = [
             s
@@ -471,10 +542,16 @@ class DeploymentService:
             toggles=dict(context.toggles),
             project_settings=json.loads(json.dumps(context.project_settings)),
         )
+        if directory.exists() and any(p.name != "events.jsonl" for p in directory.iterdir()):
+            raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "기존 실행 산출물은 덮어쓸 수 없다")
         self.store.create_run(plan.run_id, plan.project, cast(str, plan.plan_hash))
-        directory.mkdir(parents=True, exist_ok=False)
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        directory.chmod(0o700)
         (directory / "plan.json").write_text(plan.model_dump_json(by_alias=True, indent=2) + "\n")
+        entries = save_ledger(directory, source, patch)
+        (directory / "patch-ledger.json").write_text(json.dumps(entries, sort_keys=True))
         if patch:
+            (directory / "approved.patch").touch(mode=0o600)
             (directory / "approved.patch").write_bytes(patch)
         (directory / "approval-meta.json").write_text(
             json.dumps(
@@ -535,6 +612,7 @@ class DeploymentService:
         context_data = dict(data["context"])
         context_data["adapter_mode"] = AdapterMode(context_data["adapter_mode"])
         context_data["mode"] = RunMode(context_data["mode"])
+        context_data["required_env_keys"] = tuple(context_data.get("required_env_keys", ()))
         if context_data.get("release_artifacts"):
             context_data["release_artifacts"] = ReleaseArtifacts.model_validate(
                 context_data["release_artifacts"]
@@ -671,6 +749,16 @@ class DeploymentService:
 
     def list_runs(self, limit: int = 20) -> list[dict[str, Any]]:
         return self.store.list_runs(limit)
+
+    def get_state(self, project: str) -> dict[str, Any]:
+        """감시 조립부에 전달하는 마지막 성공 존재 여부. intake 모듈을 import하지 않는다."""
+        environments = self.store.environments(project)
+        return {
+            "last_success": {
+                target: bool(row.get("current")) and row.get("status") != "NEEDS_HUMAN"
+                for target, row in environments.items()
+            }
+        }
 
     def get_environments(self, project: str) -> dict[str, Any]:
         return self.store.environments(project)
@@ -888,6 +976,103 @@ class DeploymentService:
             expected_version=expected_version,
         )
 
+    def _decision_basis(self, run_id: str, plan: dict[str, Any] | None) -> dict[str, Any]:
+        directory = run_dir(self.root / "runs", run_id)
+        facts = {}
+        try:
+            candidate = json.loads((directory / "facts.json").read_text())
+            if isinstance(candidate, dict):
+                facts = candidate
+        except (OSError, ValueError):
+            pass
+        sections = []
+        if plan:
+            sections = [
+                plan.get("build", {}),
+                *plan.get("deploy", {}).values(),
+                plan.get("verify", {}),
+            ]
+        by_provider: dict[str, list[dict[str, Any]]] = {}
+        for key in facts.get("env_keys", []):
+            if not isinstance(key, dict):
+                continue
+            safe = {
+                k: key.get(k)
+                for k in (
+                    "name",
+                    "kind",
+                    "by",
+                    "reason",
+                    "provider",
+                    "model",
+                    "source",
+                    "tier",
+                    "is_new",
+                )
+            }
+            by_provider.setdefault(key.get("provider") or "rule", []).append(safe)
+        return redact_obj(
+            {
+                "facts": {
+                    k: facts.get(k)
+                    for k in (
+                        "target",
+                        "changed",
+                        "new_migrations",
+                        "modified_migrations",
+                        "db_initialized",
+                        "infra_inputs_changed",
+                        "smoke_groups",
+                        "has_dockerfile",
+                        "code_patch",
+                    )
+                },
+                "planner": (plan or {}).get("planner"),
+                "steps": [
+                    {k: step.get(k) for k in ("id", "by", "reason", "evidence")}
+                    for section in sections
+                    for step in section.get("steps", [])
+                ],
+                "skipped": [step for section in sections for step in section.get("skipped", [])],
+                "invalidated": (plan or {}).get("invalidated", []),
+                "warnings": (plan or {}).get("warnings", []),
+                "env_classification": {"by_provider": by_provider, "facts_available": bool(facts)},
+            }
+        )
+
+    @contextlib.contextmanager
+    def preparation_stage(self, run_id: str, name: str) -> Iterator[None]:
+        started = time.perf_counter()
+        status = "succeeded"
+        try:
+            yield
+        except BaseException:
+            status = "failed"
+            raise
+        finally:
+            self.record_stage(run_id, name, round((time.perf_counter() - started) * 1000), status)
+
+    def record_stage(self, run_id: str, name: str, elapsed_ms: int, status: str) -> None:
+        """준비 단계 수치만 기록한다. 코드·오류·환경값은 이벤트에 넣지 않는다."""
+        if name not in {"intake", "detect", "analyze", "plan", "validate", "source", "prepare"}:
+            raise ValueError("알 수 없는 준비 단계")
+        directory = run_dir(self.root / "runs", run_id)
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        events = self.events(run_id)
+        event = RunEvent(
+            run_id=run_id,
+            seq=max((e["seq"] for e in events), default=-1) + 1,
+            type=EventType.STAGE_FINISHED,
+            ts=datetime.now(UTC).isoformat(timespec="milliseconds"),
+            stage=Stage.VALIDATE if name == "validate" else Stage.PLAN,
+            preparation_stage=name,
+            status=status,
+            elapsed_ms=elapsed_ms,
+            elapsed_s=elapsed_ms / 1000,
+        )
+        with (directory / "events.jsonl").open("a") as out:
+            out.write(event.model_dump_json() + "\n")
+
     def approval_view(self, run_id: str) -> dict[str, Any]:
         row = self.store.run(run_id)
         if row["status"] == "FAILED_BEFORE_DEPLOY" and (row.get("result") or {}).get("phase"):
@@ -900,7 +1085,9 @@ class DeploymentService:
             directory = run_dir(self.root / "runs", run_id)
             saved = directory / "approval-view.json"
             if saved.exists():
-                return json.loads(saved.read_text())
+                view = {**json.loads(saved.read_text()), "patch": None}
+                view["decision_basis"] = self._decision_basis(run_id, view.get("plan"))
+                return view
             # 신규 export가 없는 기존 실행은 원본 기록에서 조회용으로만 복원한다.
             records = self.store.approvals(run_id)
             release = self.store.release_record(run_id) or {}
@@ -908,7 +1095,6 @@ class DeploymentService:
             metadata = json.loads(metadata_path.read_text()) if metadata_path.exists() else {}
             plan_path = directory / "plan.json"
             restored_plan = json.loads(plan_path.read_text()) if plan_path.exists() else None
-            patch_path = directory / "approved.patch"
             snapshot = next(
                 (r.snapshot.model_dump(mode="json") for r in records if r.snapshot),
                 release.get("source"),
@@ -918,8 +1104,9 @@ class DeploymentService:
                 "project": self.store.run(run_id)["project"],
                 "subjects": {r.kind: r.bound_to for r in records},
                 "snapshot": snapshot,
-                "patch": patch_path.read_text() if patch_path.exists() else None,
+                "patch": None,
                 "plan": restored_plan,
+                "decision_basis": self._decision_basis(run_id, restored_plan),
                 "patch_meta": metadata.get("patch_meta"),
                 "infra_summary": metadata.get("infra_summary"),
                 "legacy_record": True,
@@ -946,17 +1133,30 @@ class DeploymentService:
             "build_backend": p.context.build_backend,
             "image_repository": p.context.image_repository,
             "source_checks": dict(p.context.source_checks),
+            "missing_env_keys": self._missing_env(p.context),
             "subjects": dict(p.requirements),
             "snapshot": p.snapshot.model_dump(mode="json"),
-            "patch": p.patch.decode() if p.patch else None,
+            "patch": None,  # 승인 화면에는 패턴·해시·키 이름만 제공한다.
             "plan": p.plan.model_dump(mode="json", by_alias=True),
+            "decision_basis": self._decision_basis(run_id, p.plan.model_dump(mode="json")),
             "patch_meta": json.loads(p.patch_meta_json),
             "infra_summary": json.loads(p.infra_summary_json),
         }
 
+    @staticmethod
+    def _missing_env(context: RunContext) -> list[str]:
+        if not context.required_env_keys or context.targets == "cloud":
+            return []
+        return local_missing(context.platform.get("onprem", {}), context.required_env_keys)
+
     def approve(self, run_id: str, *, approver: str, approved: bool = True) -> list[ApprovalRecord]:
         p = self._load_prepared(run_id)
+        if approved and self.onboarding is not None:
+            self.onboarding.require_ready(p.context.project, p.context.targets)
         if approved:
+            missing = self._missing_env(p.context)
+            if missing:
+                raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "값 필요: " + ", ".join(missing))
             self._check_meta(p)
         approval_id, now = uuid.uuid4().hex, datetime.now(UTC)
         records = [
@@ -1039,6 +1239,8 @@ class DeploymentService:
             raise DdakToolError(ErrorCode.LOCK_HELD, "동일 run은 한 번만 실행한다")
         p = self._load_prepared(run_id)
         self._check_approval(p)
+        if self.onboarding is not None:
+            self.onboarding.require_ready(p.context.project, p.context.targets)
         previous = {
             target: row["current"]
             for target, row in self.store.environments(p.plan.project).items()
@@ -1077,7 +1279,12 @@ class DeploymentService:
             ],
         )
         self._tokens[run_id] = token
-        task = asyncio.create_task(self._execute(p, token), name=f"deploy:{run_id}")
+        from ddak.core.tool_paths import managed_tools
+
+        tool_dir = p.context.platform.get("controller_tools", {}).get("tool_dir")
+        tool_dir = tool_dir or p.context.platform.get("local_build", {}).get("tool_dir")
+        with managed_tools(tool_dir):
+            task = asyncio.create_task(self._execute(p, token), name=f"deploy:{run_id}")
         self._tasks[run_id] = task
         return task
 
@@ -1132,7 +1339,8 @@ class DeploymentService:
             )
         bus = self._buses[p.plan.run_id]
         checks: dict[Target, set[str]] = {Target.LOCAL: set(), Target.CLOUD: set()}
-        last_seq = -1
+        last_seq = max((event["seq"] for event in self.events(ctx.run_id)), default=-1)
+        execution_offset = last_seq + 1
 
         async def persist(event: RunEvent) -> None:
             with (directory / "events.jsonl").open("a") as out:
@@ -1145,6 +1353,7 @@ class DeploymentService:
 
         async def forward(event: RunEvent) -> None:
             nonlocal last_seq
+            event = event.model_copy(update={"seq": event.seq + execution_offset})
             last_seq = event.seq
             if event.type is EventType.RUN_STATE and event.status in {s.value for s in RunStatus}:
                 event = event.model_copy(update={"status": "FINALIZING"})
@@ -1299,6 +1508,7 @@ class DeploymentService:
                     or updated.candidate_sha != current.candidate_sha
                     or updated.build_source != current.build_source
                     or updated.source_binding != current.source_binding
+                    or updated.required_env_keys != current.required_env_keys
                     or updated.build_backend != current.build_backend
                     or updated.image_repository != current.image_repository
                     or updated.preparation_failures != current.preparation_failures
@@ -1410,6 +1620,7 @@ class DeploymentService:
         heart = asyncio.create_task(heartbeat())
         result: RunResult
         build_files: dict[str, dict[str, Any]] = {}
+        patch_entries: dict[str, dict[str, Any]] = {}
         git_record: dict[str, Any] = {"status": "NOT_CONFIGURED"}
         merge_conflicts: list[str] = []
         candidate_stop = threading.Event()
@@ -1455,6 +1666,7 @@ class DeploymentService:
                 )
             materialize(p.source, directory / "build-source", p.snapshot, p.patch)
             build_files = file_manifest(directory / "build-source")
+            patch_entries, _ = ledger(p.source, directory / "build-source")
             ctx = replace(
                 ctx, build_source=str(directory / "build-source"), source_binding=p.snapshot
             )
@@ -1563,7 +1775,7 @@ class DeploymentService:
 
         except (Exception, asyncio.CancelledError) as exc:
             # 엔진 진입 전 실패는 대상 무변경. 엔진이 반환하지 못한 예외는 상태를 보수적으로 막는다.
-            unknown = (directory / "events.jsonl").exists()
+            unknown = last_seq >= execution_offset
             status = (
                 RunStatus.NEEDS_HUMAN
                 if unknown
@@ -1574,7 +1786,12 @@ class DeploymentService:
             result = RunResult(ctx.run_id, status, {}, [])
             (directory / "error.json").write_text(
                 json.dumps(
-                    {"type": type(exc).__name__, "detail": "실행 시작/기록 실패; 상태 확인 필요"}
+                    redact_obj(
+                        {
+                            "type": type(exc).__name__,
+                            "detail": "실행 시작/기록 실패; 상태 확인 필요",
+                        }
+                    )
                 )
             )
         finally:
@@ -1624,6 +1841,8 @@ class DeploymentService:
             "platform_outputs": platform_outputs(final_ctx),
             "source": p.snapshot.model_dump(mode="json"),
             "files": build_files,
+            "tier_tree_hashes": tier_tree_hashes(build_files, p.context.deploy_config),
+            "patch_ledger": patch_entries,
             "source_files": p.source_files,
             "images": dict(final_ctx.images),
             "artifacts": final_ctx.release_artifacts.model_dump(mode="json")

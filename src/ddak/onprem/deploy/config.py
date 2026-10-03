@@ -18,6 +18,7 @@ from ddak.cd.interface import ProviderResult
 from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.errors import ErrorCode
 from ddak.core.env_keys import check_runtime_keys
+from ddak.core.runtime_values import generated_secret
 from ddak.onprem.deploy.containers import fail
 
 if TYPE_CHECKING:
@@ -83,16 +84,18 @@ def _private_env(
                     values["DATABASE_URL"] = values["DATABASE_URL_MIGRATOR"]
                 if not values.get("DATABASE_URL"):
                     raise fail("마이그레이션 DB URL이 없다", ErrorCode.CONFIG_INVALID)
-            if any(key != "SECRET_KEY" and not values.get(key) for key in keys):
+            if any(not generated_secret(key) and not values.get(key) for key in keys):
                 raise fail("요청한 환경 키가 host env 파일에 없다", ErrorCode.CONFIG_INVALID)
-            if "SECRET_KEY" in keys:
-                if "SECRET_KEY" in values:
-                    if not re.fullmatch(r"[0-9a-f]{64}", values["SECRET_KEY"]):
+            for key in keys:
+                if not generated_secret(key):
+                    continue
+                if key in values:
+                    if not re.fullmatch(r"[0-9a-f]{64}", values[key]):
                         raise fail(
-                            "기존 SECRET_KEY는 64자리 hex여야 한다", ErrorCode.CONFIG_INVALID
+                            "기존 서명 비밀키는 64자리 hex여야 한다", ErrorCode.CONFIG_INVALID
                         )
                 else:
-                    values["SECRET_KEY"] = secrets.token_hex(32)
+                    values[key] = secrets.token_hex(32)
             if values != old_values:
                 lines = original.splitlines()
                 updated = [

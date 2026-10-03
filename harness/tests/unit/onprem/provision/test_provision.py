@@ -51,5 +51,5 @@ def test_real_mode_failure_reports_not_ok() -> None:
 
 
 def test_ensure_app_database_stays_unimplemented() -> None:
-    with pytest.raises(NotImplementedError, match="onprem/provision 미구현: 담당 김준석"):
+    with pytest.raises(NotImplementedError, match=r"onprem/provision 미구현: 담당 정준우\(O1\)"):
         ensure_app_database(RunContext("run-1"))

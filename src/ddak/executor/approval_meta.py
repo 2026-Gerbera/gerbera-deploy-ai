@@ -38,6 +38,12 @@ class _PatchMeta(_Meta):
     reason: Annotated[str, Field(min_length=1, max_length=200)]
     reuse: bool
     source: Source
+    passed: bool | None = None
+    patch_sha256: Sha256 | None = None
+    new_env_keys: list[str] = Field(default_factory=list)
+    gitleaks: str | None = None
+    patterns: list[str] = Field(default_factory=list)
+    target_hashes: dict[str, Sha256] = Field(default_factory=dict)
 
 
 class _Counts(_Meta):
@@ -88,7 +94,7 @@ def encode_meta(value: dict[str, Any] | None, *, infra: bool = False) -> str:
         if len(encoded.encode("utf-8")) > MAX_META_BYTES:
             raise ValueError("size")
         model = _InfraSummary if infra else _PatchMeta
-        data = model.model_validate_json(encoded).model_dump(mode="json")
+        data = model.model_validate_json(encoded).model_dump(mode="json", exclude_unset=True)
         checked = _redaction_input(data)
         if redact_obj(checked, max_len=MAX_META_BYTES) != checked:
             raise ValueError("redaction")

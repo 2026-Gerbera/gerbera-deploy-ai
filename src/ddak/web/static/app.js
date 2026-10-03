@@ -60,8 +60,8 @@
   const terminalStates = JSON.parse(progress.dataset.terminalStates || "[]");
   if (terminalStates.includes(progress.dataset.status)) return;
   const source = new EventSource(`/runs/${encodeURIComponent(progress.dataset.runId)}/events`);
-  const phases = ["plan", "infra", "build", "deploy", "verify"];
-  const maximum = { local: -1, cloud: -1 };
+  const activeWork = new Map();
+  const runningCells = new Map();
   const records = { local: {}, cloud: {} };
   const statusLabels = {
     APPROVED: "승인됨 · 곧 시작", RUNNING: "배포 중", DEPLOYING: "배포 중", FINALIZING: "마무리 중",
@@ -98,7 +98,6 @@
         ? ["local", "cloud"] : [];
     tracks.forEach((track) => {
       if (!records[track]) return;
-      maximum[track] = Math.max(maximum[track], phases.indexOf(phase));
       records[track][phase] ||= {};
       records[track][phase][step] = data.type === "step.started" ? "running" : data.status || "skipped";
     });
@@ -109,10 +108,11 @@
       if (!values.length) return;
       const failed = values.some((value) => ["failed", "check_failed"].includes(value));
       const running = values.includes("running");
-      node.textContent = failed ? "실패" : running ? "진행 중" : values.includes("succeeded") ? "단계 성공" : "건너뜀";
+      node.textContent = failed ? (running ? "일부 실패 · 진행 중" : "실패") : running ? "진행 중" : values.includes("succeeded") ? "수신 작업 성공" : "건너뜀";
       node.classList.toggle("failed", failed);
-      node.classList.toggle("active", !failed && phases.indexOf(node.dataset.phase) === maximum[track]);
-      node.classList.toggle("complete", !failed && !running && values.includes("succeeded"));
+      node.classList.toggle("active", running);
+      if (running) runningCells.set(node, failed);
+      else runningCells.delete(node);
     });
   };
   const seen = new Set();
@@ -139,12 +139,29 @@
       item.textContent = description;
       list.appendChild(item);
     }
-    if (data.type === "step.started") setText("current-activity", `${target} · ${step} 시작`);
+    progress.dataset.stream = "live";
+    setText("connection-state", `실시간 연결됨 · 최근 이벤트 ${time} (KST)`);
+    if (data.step && data.type === "step.started") activeWork.set(data.step, `${target} · ${step}`);
+    if (data.step && ["step.finished", "step.skipped"].includes(data.type)) activeWork.delete(data.step);
+    if (data.type === "rollback.started") activeWork.set(`rollback:${track}`, `${target} · 이전 배포로 복구 중`);
+    if (data.type === "rollback.finished") activeWork.delete(`rollback:${track}`);
+    setText("activity-title", activeWork.size ? "작업 진행 중" : "배포 처리 중");
+    setText("current-activity", activeWork.size
+      ? [...activeWork.values()].join(" / ")
+      : "다음 실행 상태를 기다리고 있습니다. 상세 로그는 작업 단위로 갱신됩니다.");
     if (data.type === "run.state") {
       progress.dataset.status = data.status;
       setText("progress-title", statusLabels[data.status] || data.status);
       if (terminalStates.includes(data.status)) {
         source.close();
+        progress.dataset.activity = "ended";
+        activeWork.clear();
+        runningCells.forEach((failed, node) => {
+          node.classList.remove("active");
+          node.textContent = failed ? "일부 실패 · 결과 확인" : "결과 확인";
+        });
+        runningCells.clear();
+        setText("activity-title", statusLabels[data.status] || data.status);
         document.getElementById("result-link")?.classList.remove("hidden");
         setText("connection-state", "실행 종료");
         setText("current-activity", "실행이 끝났습니다. 환경별 최종 상태는 결과 화면에서 확인하세요.");
@@ -152,6 +169,16 @@
     }
   };
   Object.keys(typeLabels).forEach((name) => source.addEventListener(name, append));
-  source.onopen = () => setText("connection-state", "실시간 연결됨 · 이벤트 시각은 KST");
-  source.onerror = () => setText("connection-state", "실시간 연결이 끊겨 다시 연결하는 중입니다.");
+  source.onopen = () => {
+    if (terminalStates.includes(progress.dataset.status)) return;
+    progress.dataset.stream = "live";
+    setText("activity-title", activeWork.size ? "작업 진행 중" : "배포 처리 중");
+    setText("connection-state", "실시간 연결됨 · 이벤트 시각은 KST");
+  };
+  source.onerror = () => {
+    if (terminalStates.includes(progress.dataset.status)) return;
+    progress.dataset.stream = "reconnecting";
+    setText("activity-title", "연결 재시도 중 · 실행 상태 확인 대기");
+    setText("connection-state", "실시간 연결이 끊겼습니다. 배포 중단 여부는 아직 확인되지 않았으며 자동으로 다시 연결합니다.");
+  };
 })();
