@@ -187,7 +187,8 @@ class Probe:
 
     client: HttpClient
     ctx: RunContext
-    title: str  # 이번 run이 만든 글 제목(표시: [smoke <run_id>])
+    title: str  # 이번 run이 만든 글 제목(퀴즈 문구 + 익명 tag, smoke_post)
+    body: str  # 이번 run이 만든 글 본문(정답·맞장구, run 고유값 없음)
     deadline: float  # smoke 실행 전체 마감(monotonic). ctx.deadline, 없으면 시작 + SMOKE_TOTAL_S
     host: str | None = (
         None  # 대상 호스트(리다이렉트 비교용). 모르면 절대 주소 Location은 외부로 본다
@@ -344,8 +345,86 @@ def b1_index(p: Probe) -> SmokeScenario:
     return _scenario("B1", ok, resp, f"목록 상태 {resp.status}", {"status": resp.status, **cookie})
 
 
+# B2.create가 남기는 글. 게시판에 계속 쌓이므로 테스트 표시 대신 실제 글처럼 보이는 넌센스
+# 퀴즈·한마디를 쓴다. 문구에 & < > " ' 를 넣지 않는다(템플릿 이스케이프로 바뀌면 목록 반영 판정의
+# 원문 비교가 깨진다). 가족 친화적인 내용만, 실존 인물·브랜드는 넣지 않는다.
+# (제목 앞부분, 정답) → 본문 "정답: …"
+_KO_QUIZ: tuple[tuple[str, str], ...] = (
+    ("세상에서 가장 빠른 닭은?", "후다닭"),
+    ("아몬드가 죽으면?", "다이아몬드"),
+    ("깨가 죽으면?", "주근깨"),
+    ("물고기 중 학벌이 제일 좋은 물고기는?", "고등어"),
+    ("세상에서 가장 착한 사자는?", "자원봉사자"),
+    ("진짜 새의 이름은?", "참새"),
+    ("왕이 궁에 들어가기 싫을 때 하는 말은?", "궁시렁궁시렁"),
+    ("소금의 유통기한은?", "천일"),
+    ("칼이 정색하면?", "검정색"),
+    ("세상에서 가장 지루한 중학교는?", "로딩중"),
+    ("펭귄이 다니는 중학교는?", "냉방중"),
+    ("세상에서 가장 뜨거운 과일은?", "천도복숭아"),
+    ("오리가 얼면?", "언덕"),
+    ("소가 웃으면?", "우하하"),
+    ("미소의 반대말은?", "당기소"),
+    ("반성문을 영어로 하면?", "글로벌"),
+    ("사과가 웃으면?", "풋사과"),
+    ("개 중에 가장 아름다운 개는?", "무지개"),
+    ("토끼가 쓰는 빗은?", "래빗"),
+    ("세상에서 가장 쉬운 숫자는?", "십구만"),
+    ("다리미가 좋아하는 음식은?", "피자"),
+    ("세상에서 가장 가난한 왕은?", "최저임금"),
+)
+# (한마디, 맞장구) → 본문은 맞장구 그대로
+_KO_LINE: tuple[tuple[str, str], ...] = (
+    ("다들 오늘도 수고 많으셨어요", "덕분에 힘이 나요"),
+    ("퇴근까지 조금만 더 힘내요", "같이 힘내요"),
+    ("창밖 하늘이 참 맑네요", "산책하기 딱 좋은 날이에요"),
+    ("주말에 뭐 하세요?", "푹 쉬는 게 최고예요"),
+)
+# (제목 앞부분, 答え) → 본문 "答え: …"
+_JA_QUIZ: tuple[tuple[str, str], ...] = (
+    ("パンはパンでも食べられないパンは?", "フライパン"),
+    ("逆立ちすると軽くなる動物は?", "イルカ"),
+    ("食べると安心するケーキは?", "ホットケーキ"),
+    ("冷蔵庫の中にいる大きな動物は?", "ゾウ"),
+    ("切っても切っても切れないものは?", "水"),
+    ("上は大水、下は大火事、なーんだ?", "お風呂"),
+)
+# (다쟈레·한마디, 맞장구) → 본문은 맞장구 그대로
+_JA_LINE: tuple[tuple[str, str], ...] = (
+    ("アルミ缶の上にあるミカン", "思わず笑っちゃいました"),
+    ("布団が吹っ飛んだ", "今日も平和ですね"),
+    ("電話に誰も出んわ", "あとでかけ直してみます"),
+    ("イクラはいくら", "お寿司が食べたくなりました"),
+    ("内容がないよう", "それもまた良しです"),
+    ("カエルが帰る", "気をつけて帰ってね"),
+    ("校長先生が絶好調", "今日も元気ですね"),
+    ("ダジャレを言うのは誰じゃ", "ちょっと寒いけど好きです"),
+    ("猫が寝転んだ", "かわいいですね"),
+    ("アイスを愛す", "わかります"),
+)
+# (제목 앞부분, 본문, 익명 표시)
+SMOKE_POSTS: tuple[tuple[str, str, str], ...] = (
+    *((q, f"정답: {a}", "익명") for q, a in _KO_QUIZ),
+    *((line, reply, "익명") for line, reply in _KO_LINE),
+    *((q, f"答え: {a}", "匿名") for q, a in _JA_QUIZ),
+    *((line, reply, "匿名") for line, reply in _JA_LINE),
+)
+
+
+def smoke_post(run_id: str) -> tuple[str, str]:
+    """run_id로 고른 (제목, 본문). 같은 run_id면 두 환경이 같은 글을 써서 화면 지문이 맞는다.
+
+    sha256 앞 8자리로 풀 항목을 고르고, 다음 6자리를 익명 tag로 제목에 붙인다. 제목에 run
+    고유값이 들어가야 목록 반영 판정(제목 원문 포함)과 normalize의 smoke 제목 치환이 이전 글과
+    섞이지 않는다. 본문에는 run 고유값을 넣지 않는다.
+    """
+    digest = hashlib.sha256(run_id.encode()).hexdigest()
+    text, body, handle = SMOKE_POSTS[int(digest[:8], 16) % len(SMOKE_POSTS)]
+    return f"{text} · {handle} {digest[8:14]}", body
+
+
 def b2_create(p: Probe) -> SmokeScenario:
-    resp = p.post("/create", {"title": p.title, "body": "smoke"})
+    resp = p.post("/create", {"title": p.title, "body": p.body})
     location = _location_path(resp, p.host)
     listed = p.get("/") if resp.status == 302 else None
     shown = listed is not None and listed.status == 200 and p.title in listed.body
@@ -498,10 +577,12 @@ def run_smoke(adapter: SmokeAdapter, inp: SmokeTestInput, ctx: RunContext) -> Sm
     started = time.monotonic()
     deadline = ctx.deadline if ctx.deadline is not None else started + SMOKE_TOTAL_S
     client = adapter.client(ctx)
+    title, body = smoke_post(ctx.run_id)
     probe = Probe(
         client=client,
         ctx=ctx,
-        title=f"[smoke {ctx.run_id}]",
+        title=title,
+        body=body,
         deadline=deadline,
         host=getattr(client, "host", None),
     )
