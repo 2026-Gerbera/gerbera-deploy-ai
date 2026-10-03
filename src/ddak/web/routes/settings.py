@@ -68,7 +68,7 @@ async def save_settings(request: Request):
         )
     except (DdakToolError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=redact(str(exc))) from exc
-    return RedirectResponse(f"/settings?project={project}", status_code=303)
+    return RedirectResponse(f"/settings?project={project}&saved=1", status_code=303)
 
 
 @router.post("/deploy")

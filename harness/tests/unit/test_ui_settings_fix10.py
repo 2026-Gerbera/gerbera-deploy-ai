@@ -169,7 +169,7 @@ async def test_save_onprem_without_domain(
     response = await settings.save_settings(request(service, form=form))
     saved = service.store.writes[0]
     assert response.status_code == 303
-    assert response.headers["location"] == f"/settings?project={expected}"
+    assert response.headers["location"] == f"/settings?project={expected}&saved=1"
     assert saved["project"] == expected
     assert saved["updated_by"] == "local-operator"
     assert saved["expected_version"] == 0
@@ -197,7 +197,7 @@ async def test_save_resolves_demo_and_keeps_version(service: Service) -> None:
             },
         )
     )
-    assert response.headers["location"] == "/settings?project=demo"
+    assert response.headers["location"] == "/settings?project=demo&saved=1"
     assert service.store.writes[0]["expected_version"] == 3
     with pytest.raises(HTTPException) as error:
         await settings.save_settings(request(service, form={"project": "demo", "version": "3"}))
