@@ -1,73 +1,36 @@
 {% extends "base.html" %}
+{% from '_status.html' import state as state_badge, target, duration %}
 {% block title %}배포 대시보드 · Gerbera{% endblock %}
 {% block breadcrumb %}Overview{% endblock %}
 {% block content %}
-{% if watch_warnings %}<section class="card"><div class="notice amber"><span>!</span><div><h2>자동 감시 경고</h2><ul>{% for warning in watch_warnings %}<li>{{ warning }}</li>{% endfor %}</ul></div></div></section>{% endif %}
-{% if preparations|selectattr('status', 'equalto', 'PREPARING')|list %}<meta http-equiv="refresh" content="2">{% endif %}
+{% set preparing = preparations|selectattr('status','equalto','PREPARING')|list %}
+{% set awaiting = runs|selectattr('status','equalto','AWAITING_APPROVAL')|list %}
+{% set active = runs|selectattr('status','in',('APPROVED','RUNNING'))|list %}
+{% set blocked = state.blocked_targets %}
+{% set current = 'detect' if preparing else 'approval' if awaiting else 'deploy' if active else 'result' if runs else 'merge' %}
 <section class="page-heading">
-  <div><p class="eyebrow">DEPLOYMENT OVERVIEW</p><h1>{{ project }}</h1><p>코드 변경부터 배포 검증까지 하나의 안전한 배포 흐름으로 관리합니다.</p></div>
-  <div class="heading-actions"><a class="button secondary" href="/settings?project={{ project|urlencode }}">프로젝트 설정</a>{% if settings and settings.repo_url %}<form method="post" action="/settings/deploy" data-deploy-form><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="project" value="{{ project }}"><button class="button" type="submit"><span>＋</span> 새 배포</button></form>{% endif %}</div>
-</section>
-
-<div class="deploy-loading" role="dialog" aria-modal="true" aria-labelledby="deploy-loading-title" aria-describedby="deploy-loading-description" data-deploy-loading hidden>
-  <div class="deploy-loading-card">
-    <div class="loading-orbit" aria-hidden="true"><span>G</span><i></i><b></b></div>
-    <p class="eyebrow live"><i></i>PREPARING DEPLOYMENT</p>
-    <h2 id="deploy-loading-title">새 배포를 준비하고 있어요</h2>
-    <p id="deploy-loading-description" data-loading-message>저장소의 최신 코드를 확인하고 있습니다.</p>
-    <div class="loading-progress" aria-hidden="true"><i></i></div>
-    <div class="loading-stages" aria-hidden="true">
-      <span class="active">소스 확인</span><span>변경 분석</span><span>계획 생성</span><span>승인 준비</span>
-    </div>
-    <small>요청이 접수되면 대시보드에 준비 상태가 표시됩니다. 준비가 끝나면 승인 링크가 나타납니다.</small>
-  </div>
-</div>
-
-{% include "_ops.html" %}
-{% include "_public_links.html" %}
-<section class="stats-grid">
-  <article class="stat-card"><div class="stat-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 17 9 13l3 3 7-8"/><path d="M14 8h5v5"/></svg></div><div><span>최근 배포</span><strong>{% if runs %}{{ runs[0].status }}{% else %}준비 중{% endif %}</strong><small>{% if runs %}{{ runs[0].run_id }}{% else %}첫 배포를 시작하세요{% endif %}</small></div></article>
-  <article class="stat-card"><div class="stat-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 18a4 4 0 0 1-.3-8A6 6 0 0 1 18 8.5 4.75 4.75 0 0 1 17.5 18H7Z"/></svg></div><div><span>배포 대상</span><strong>{{ settings.default_targets }}</strong><small>{% if settings.default_targets == "onprem" %}On-prem{% else %}AWS ap-northeast-2{% endif %}</small></div></article>
-  <article class="stat-card"><div class="stat-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3v12M18 9v12M6 7h8a4 4 0 0 1 4 4v1"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="6" r="3"/></svg></div><div><span>감시 브랜치</span><strong>{{ settings.watch_branch or 'prod' if settings else 'prod' }}</strong><small>{% if settings and settings.auto_detect %}자동 감지 사용 중{% else %}수동 배포{% endif %}</small></div></article>
-  <article class="stat-card"><div class="stat-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg></div><div><span>실행 기록</span><strong>{{ runs|length }}</strong><small>승인 및 검증 이력</small></div></article>
-</section>
-
-<section class="card journey-card">
-  <div class="card-header"><div><p class="section-kicker">DEPLOYMENT JOURNEY</p><h2>코드에서 검증까지, 한 번에</h2><p class="card-description">prod 변경을 감지한 뒤 모든 단계가 같은 승인 기록을 따라 움직입니다.</p></div><span class="live-chip"><i></i>Pipeline ready</span></div>
-  <div class="journey" aria-label="배포 파이프라인 흐름">
-    <div class="journey-step active"><span class="journey-node"><b>01</b><i></i></span><strong>변경 감지</strong><small>prod branch</small></div>
-    <span class="journey-line"><i></i></span>
-    <div class="journey-step"><span class="journey-node"><b>02</b><i></i></span><strong>AI 분석</strong><small>plan &amp; patch</small></div>
-    <span class="journey-line"><i></i></span>
-    <div class="journey-step"><span class="journey-node"><b>03</b><i></i></span><strong>사람 승인</strong><small>policy gate</small></div>
-    <span class="journey-line"><i></i></span>
-    <div class="journey-step"><span class="journey-node"><b>04</b><i></i></span><strong>이미지 빌드</strong><small>Image build</small></div>
-    <span class="journey-line"><i></i></span>
-    <div class="journey-step"><span class="journey-node"><b>05</b><i></i></span><strong>서비스 배포</strong><small>On-prem / ECS Fargate</small></div>
-    <span class="journey-line"><i></i></span>
-    <div class="journey-step"><span class="journey-node"><b>06</b><i></i></span><strong>안전 검증</strong><small>Health &amp; Smoke</small></div>
+  <div><h1>{{ project }}</h1><p>{% if settings.auto_detect %}{{ settings.watch_branch or 'prod' }} 브랜치에 PR을 merge하면 배포 준비를 시작합니다. 준비가 끝나면 여기서 승인합니다.{% else %}자동 감지가 꺼져 있습니다. 직접 배포를 준비할 수 있습니다.{% endif %}</p></div>
+  <div class="heading-actions">
+  {% if not settings.repo_url %}<a class="button" href="/settings?project={{ project|urlencode }}">저장소 연결하기</a>
+  {% elif blocked %}<a class="button secondary" href="/ops?project={{ project|urlencode }}">운영 상태 확인</a>
+  {% elif preparing %}<button class="button secondary" disabled>배포 준비 중</button>
+  {% elif awaiting %}<span class="note">아래 요청을 검토하세요.</span>
+  {% elif active %}<a class="button" href="{{ active[0].url }}">진행 보기</a>
+  {% else %}<form method="post" action="/settings/deploy" data-deploy-form><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="project" value="{{ project }}"><button class="button" type="submit">지금 배포 준비</button></form>{% endif %}
   </div>
 </section>
-
-<section class="content-grid">
-  <article class="card project-card">
-    <div class="card-header"><div><p class="section-kicker">PROJECT</p><h2>배포 연결 정보</h2></div><a class="text-link" href="/settings?project={{ project|urlencode }}">수정하기 →</a></div>
-    {% if settings and settings.repo_url %}
-    <div class="project-repo"><span class="repo-mark">⌘</span><div><strong>{{ settings.repo_url }}</strong><small>GitHub repository</small></div><span class="status ready"><i></i>Connected</span></div>
-    <dl class="detail-list"><div><dt>Production branch</dt><dd><span class="branch-chip">⑂ {{ settings.watch_branch or 'prod' }}</span></dd></div><div><dt>Public domain</dt><dd>{{ settings.cloud_domain or '미설정' }}</dd></div><div><dt>Trigger</dt><dd>{% if settings.auto_detect %}Polling · 자동{% else %}Manual approval{% endif %}</dd></div></dl>
-    {% else %}
-    <div class="empty-state compact"><span>⌘</span><h3>저장소를 연결하세요</h3><p>GitHub 저장소와 배포 도메인을 설정하면 실배포를 시작할 수 있습니다.</p><a class="button" href="/settings?project={{ project|urlencode }}">연결 설정</a></div>
-    {% endif %}
-  </article>
-  <article class="card pipeline-card">
-    <div class="card-header"><div><p class="section-kicker">SAFETY</p><h2>배포 안전장치</h2></div><span class="status ready"><i></i>Active</span></div>
-    <ol class="mini-pipeline"><li><span><i></i></span><div><strong>AI는 제안만</strong><small>분석·Terraform 초안을 생성합니다.</small></div></li><li><span><i></i></span><div><strong>사람이 최종 승인</strong><small>IAM·비용·패치를 직접 확인합니다.</small></div></li><li><span><i></i></span><div><strong>검증 실패 시 중단</strong><small>헬스·TLS 결과를 기록합니다.</small></div></li></ol>
-  </article>
-</section>
-
-<section class="card table-card"><div class="card-header"><div><p class="section-kicker">ACTIVITY</p><h2>최근 배포</h2></div><span class="muted">최근 {{ runs|length }}건</span></div>
-  {% if runs %}<div class="table-wrap"><table><thead><tr><th>Deployment</th><th>Project</th><th>Status</th><th></th></tr></thead><tbody>
-  {% for run in runs %}<tr><td><a class="run-link" href="{{ run.url }}"><span class="run-dot"></span><div><strong>{{ run.run_id }}</strong><small>Deployment run</small></div></a></td><td>{{ run.project }}</td><td><span class="status {{ run.status|lower }}"><i></i>{% if run.status == "SUPERSEDED" %}대체됨 · {% endif %}{{ run.status }}</span></td><td class="align-right"><a class="row-action" href="{{ run.url }}">보기 →</a></td></tr>{% endfor %}
-  </tbody></table></div>{% else %}<div class="empty-state"><span>↗</span><h3>아직 배포 기록이 없습니다</h3><p>프로젝트를 연결하고 첫 번째 배포 계획을 생성하세요.</p></div>{% endif %}
-</section>
+<p data-deploy-loading hidden role="status"><span data-loading-message>배포 준비 요청을 보내는 중입니다.</span></p>
+<ol class="journey" aria-label="배포 흐름">{% for key, label in (('merge','PR merge'),('detect','자동 감지'),('approval','승인'),('deploy','배포'),('result','결과')) %}<li{% if current == key %} aria-current="step"{% endif %}>{{ label }}{% if current == key %} · 현재{% endif %}</li>{% endfor %}</ol>
+{% if blocked %}<section class="notice failure"><h2>배포가 잠겨 있습니다</h2><p>{% for name in blocked %}{{ target(name) }}{% if not loop.last %}, {% endif %}{% endfor %}의 실제 상태를 확인한 뒤 운영 화면에서 잠금을 푸세요.</p></section>
+{% elif preparing %}<section class="notice running"><h2>배포 준비 중</h2><p>승인에 필요한 자료를 준비하고 있습니다. 새로고침하면 최신 상태를 확인할 수 있습니다.</p><a class="button secondary" href="/?project={{ project|urlencode }}">상태 새로고침</a></section>
+{% elif awaiting %}<section class="notice"><h2>{{ state_badge('AWAITING_APPROVAL') }}</h2><p>커밋 <code>{{ awaiting[0].sha }}</code> · {{ awaiting[0].ref }} · {{ target(awaiting[0].targets) }}. 변경 내용을 확인한 뒤 한 번 승인합니다.</p><a class="button" href="{{ awaiting[0].url }}">검토하고 승인</a></section>
+{% elif preparations and preparations[0].status == 'FAILED_BEFORE_DEPLOY' %}<section class="notice failure"><h2>배포 준비 실패</h2><p>{{ preparations[0].detail or '준비 기록에서 원인을 확인하세요.' }}</p>{% if preparations[0].url %}<a href="{{ preparations[0].url }}">자세히 보기</a>{% endif %}</section>{% endif %}
+{% if watch_warnings %}<section class="watch-warning"><h2>자동 감시 경고</h2><ul>{% for warning in watch_warnings %}<li>{{ warning }}</li>{% endfor %}</ul></section>{% endif %}
+<section class="section"><h2>최근 배포</h2>
+{% if runs %}<div class="table-wrap"><table class="history"><thead><tr><th scope="col">상태</th><th scope="col">커밋 · 브랜치</th><th scope="col">대상</th><th scope="col">방식</th><th scope="col">시작(KST)</th><th scope="col">소요</th></tr></thead><tbody>
+{% for run in runs %}<tr><td data-label="상태"><a href="{{ run.url }}">{{ state_badge(run.status) }}</a></td><td data-label="커밋"><a href="{{ run.url }}"><code>{{ run.sha }}</code></a><small>{{ run.ref }}</small></td><td data-label="대상">{{ target(run.targets) }}</td><td data-label="방식">{{ run.trigger }}</td><td data-label="시작"><span class="numeric">{{ run.started }}</span></td><td data-label="소요">{{ duration(run.duration) }}</td></tr>{% endfor %}
+</tbody></table></div>{% else %}<p>아직 실행 기록이 없습니다. 저장소를 연결한 뒤 배포를 준비하세요.</p>{% endif %}</section>
+{% include '_public_links.html' %}
+<section class="section"><div class="card-header"><h2>배포 연결 정보</h2><a href="/settings?project={{ project|urlencode }}">설정에서 바꾸기</a></div><dl class="detail-list"><div><dt>저장소</dt><dd>{{ settings.repo_url or '미설정' }}</dd></div><div><dt>배포 브랜치</dt><dd>{{ settings.watch_branch or 'prod' }}</dd></div><div><dt>배포 위치</dt><dd>{{ target(settings.default_targets or 'onprem') }}</dd></div><div><dt>서비스 도메인</dt><dd>{{ settings.cloud_domain or '미설정' }}</dd></div><div><dt>자동 감지</dt><dd>{% if settings.auto_detect %}켜짐 · 새 커밋이 반영되면 배포 준비{% else %}꺼짐 · 직접 준비{% endif %}</dd></div></dl></section>
+<details><summary>운영 도구</summary>{% include '_ops.html' %}</details>
 {% endblock %}
