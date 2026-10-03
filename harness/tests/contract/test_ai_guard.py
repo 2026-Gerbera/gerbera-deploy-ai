@@ -97,11 +97,21 @@ def test_data_cannot_close_the_untrusted_block() -> None:
 
 def test_invalid_ai_output_is_reported() -> None:
     with tool_context("generate_plan", "run-1"), pytest.raises(DdakToolError) as info:
-        _call(FakeProvider(["not json"]))
+        _call(FakeProvider(["not json", "still not json"]))
     assert info.value.code is ErrorCode.AI_OUTPUT_INVALID
 
 
-def test_unavailable_is_retried_once_then_raised() -> None:
+def test_invalid_ai_output_is_reprompted_without_raw_response() -> None:
+    provider = FakeProvider(['{"tiers": "web"}', '{"tiers": ["web"]}'])
+    with tool_context("generate_plan", "run-1"):
+        result = _call(provider)
+    assert result.value.tiers == ["web"]
+    assert result.attempts == 2
+    assert "previous_response_schema_errors=tiers:list_type" in provider.seen[1].user
+    assert '{"tiers": "web"}' not in provider.seen[1].user
+
+
+def test_unavailable_is_retried_once_then_raised(monkeypatch: pytest.MonkeyPatch) -> None:
     down = DdakToolError(ErrorCode.AI_UNAVAILABLE, "down")
     ok = FakeProvider([down, '{"tiers": []}'])
     with tool_context("generate_plan", "run-1"):
@@ -110,6 +120,14 @@ def test_unavailable_is_retried_once_then_raised() -> None:
     with tool_context("generate_plan", "run-1"), pytest.raises(DdakToolError) as info:
         _call(still_down)
     assert info.value.code is ErrorCode.AI_UNAVAILABLE
+
+    limited = DdakToolError(ErrorCode.AI_UNAVAILABLE, "limited")
+    limited.retry_after_s = 0.25  # type: ignore[attr-defined]
+    sleeps = []
+    monkeypatch.setattr("ddak.core.ai.gateway.time.sleep", sleeps.append)
+    with tool_context("generate_plan", "run-1"):
+        assert _call(FakeProvider([limited, '{"tiers": []}'])).attempts == 2
+    assert sleeps == [0.25]
 
 
 def test_jev_is_guarded_and_falls_back_when_unimplemented() -> None:

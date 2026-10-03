@@ -1148,10 +1148,13 @@ class DeploymentService:
                 else RunStatus.FAILED_BEFORE_DEPLOY
             )
             result = RunResult(ctx.run_id, status, {}, [])
+            detail = (
+                str(exc)
+                if isinstance(exc, DdakToolError)
+                else "실행 시작/기록 실패; 상태 확인 필요"
+            )
             (directory / "error.json").write_text(
-                json.dumps(
-                    {"type": type(exc).__name__, "detail": "실행 시작/기록 실패; 상태 확인 필요"}
-                )
+                json.dumps({"type": type(exc).__name__, "detail": detail})
             )
         finally:
             heartbeat_stop.set()

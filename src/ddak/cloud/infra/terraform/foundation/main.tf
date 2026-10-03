@@ -54,7 +54,7 @@ resource "aws_iam_policy" "app_boundary" {
       { Effect = "Allow", Action = "secretsmanager:GetSecretValue",
       Resource = "arn:aws:secretsmanager:ap-northeast-2:${var.account_id}:secret:ddak-platform/dockerhub-pull-??????" },
       { Effect = "Allow", Action = ["logs:CreateLogStream", "logs:PutLogEvents"],
-      Resource = "arn:aws:logs:ap-northeast-2:${var.account_id}:log-group:/ecs/ddak-*:*" },
+      Resource = "arn:aws:logs:ap-northeast-2:${var.account_id}:log-group:/aws/ecs/*:*" },
       { Effect = "Allow", Action = "secretsmanager:GetSecretValue",
         Resource = ["arn:aws:secretsmanager:ap-northeast-2:${var.account_id}:secret:ddak/*",
       "arn:aws:secretsmanager:ap-northeast-2:${var.account_id}:secret:rds!*"] },

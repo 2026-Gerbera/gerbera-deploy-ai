@@ -46,6 +46,88 @@ def _policy_view(policy: dict[str, Any]) -> list[dict[str, Any]]:
     return [safe({k: v for k, v in row.items() if k != "Sid"}) for row in statements(policy)]
 
 
+def _configured_role_addresses(raw: dict[str, Any]) -> dict[str, str]:
+    """plan에서 아직 unknown인 role ID를 코드의 직접 참조 주소로 해석한다."""
+    root = (raw.get("configuration") or {}).get("root_module") or {}
+    resources = root.get("resources") or []
+    if not isinstance(resources, list):
+        return {}
+    result: dict[str, str] = {}
+    for item in resources:
+        if not isinstance(item, dict) or item.get("type") != "aws_iam_role_policy":
+            continue
+        address = item.get("address")
+        role = (item.get("expressions") or {}).get("role") or {}
+        references = role.get("references") or []
+        if not isinstance(address, str) or not isinstance(references, list):
+            continue
+        matches = {
+            match.group(1)
+            for reference in references
+            if isinstance(reference, str)
+            and (
+                match := re.fullmatch(
+                    r"(aws_iam_role\.[A-Za-z][A-Za-z0-9_]*)\.(?:id|name)", reference
+                )
+            )
+        }
+        if len(matches) == 1:
+            result[address] = matches.pop()
+    return result
+
+
+def _configured_bucket_addresses(raw: dict[str, Any]) -> dict[str, str]:
+    """미확정 S3 종속 리소스의 bucket을 직접 참조한 버킷 주소로 해석한다."""
+    root = (raw.get("configuration") or {}).get("root_module") or {}
+    resources = root.get("resources") or []
+    if not isinstance(resources, list):
+        return {}
+    result: dict[str, str] = {}
+    for item in resources:
+        if not isinstance(item, dict) or not str(item.get("type", "")).startswith("aws_s3_bucket_"):
+            continue
+        address = item.get("address")
+        bucket = (item.get("expressions") or {}).get("bucket") or {}
+        references = bucket.get("references") or []
+        if not isinstance(address, str) or not isinstance(references, list):
+            continue
+        matches = {
+            match.group(1)
+            for reference in references
+            if isinstance(reference, str)
+            and (
+                match := re.fullmatch(
+                    r"(aws_s3_bucket\.[A-Za-z][A-Za-z0-9_]*)\.(?:id|bucket)", reference
+                )
+            )
+        }
+        if len(matches) == 1:
+            result[address] = matches.pop()
+    return result
+
+
+def _valid_plan_address(resource: dict[str, Any]) -> bool:
+    """일반 주소와 ACM DNS 검증 레코드의 제한된 for_each 주소만 허용한다."""
+    kind = resource.get("type")
+    name = resource.get("name")
+    address = resource.get("address")
+    if not isinstance(kind, str) or not isinstance(name, str) or not isinstance(address, str):
+        return False
+    base = f"{kind}.{name}"
+    if not re.fullmatch(r"aws_[a-z0-9_]+\.[A-Za-z][A-Za-z0-9_]*", base):
+        return False
+    if "index" not in resource:
+        return address == base
+    index = resource.get("index")
+    return (
+        kind == "aws_route53_record"
+        and name == "certificate_validation"
+        and isinstance(index, str)
+        and bool(re.fullmatch(r"[A-Za-z0-9*_.-]{1,253}", index))
+        and address == f"{base}[{json.dumps(index)}]"
+    )
+
+
 def summarize_plan(
     raw: dict[str, Any],
     *,
@@ -75,9 +157,21 @@ def summarize_plan(
     iam_diff: list[dict[str, Any]] = []
     errors = warnings = 0
     roles = {}
+    roles_by_address = {}
+    buckets_by_address = {}
+    configured_roles = _configured_role_addresses(raw)
+    configured_buckets = _configured_bucket_addresses(raw)
     for resource in changes:
+        if resource.get("type") == "aws_s3_bucket":
+            after = resource["change"].get("after") or {}
+            address = resource.get("address")
+            if isinstance(address, str):
+                buckets_by_address[address] = after
         if resource.get("type") == "aws_iam_role":
             after = resource["change"].get("after") or {}
+            address = resource.get("address")
+            if isinstance(address, str):
+                roles_by_address[address] = after
             if after.get("name"):
                 roles[after["name"]] = after
     for resource in changes:
@@ -85,21 +179,22 @@ def summarize_plan(
         require(kind in (APP_RESOURCE_TYPES if layer == "app" else RESOURCE_TYPES), "PLAN_RESOURCE")
         require(resource.get("mode") == "managed", "PLAN_RESOURCE_MODE")
         address = resource.get("address", "")
-        require(
-            bool(re.fullmatch(r"aws_[a-z0-9_]+\.[A-Za-z][A-Za-z0-9_]*", address)), "PLAN_ADDRESS"
-        )
+        require(_valid_plan_address(resource), "PLAN_ADDRESS")
         change = resource["change"]
         # no-op/삭제·이전 이름 변경도 코드 소유 기반 버킷에는 허용하지 않는다.
         if kind.startswith("aws_s3_bucket") and state_bucket is not None:
             if change.get("after") is not None:
+                after = change["after"]
+                if (change.get("after_unknown") or {}).get("bucket"):
+                    after = buckets_by_address.get(configured_buckets.get(address, ""))
+                require(isinstance(after, dict), "FOUNDATION_BUCKET_UNRESOLVED")
                 require(
-                    isinstance(change["after"].get("bucket"), str)
-                    and bool(change["after"]["bucket"])
-                    and not (change.get("after_unknown") or {}).get("bucket"),
+                    isinstance(after.get("bucket"), str) and bool(after["bucket"]),
                     "FOUNDATION_BUCKET_UNRESOLVED",
                 )
+                protect_platform_resource(kind, after, state_bucket)
             for value in (change.get("before"), change.get("after")):
-                if value:
+                if value and not (change.get("after_unknown") or {}).get("bucket"):
                     protect_platform_resource(kind, value, state_bucket)
         if kind == "aws_codebuild_project" and change.get("after"):
             protect_platform_resource(kind, change["after"], state_bucket)
@@ -134,7 +229,10 @@ def summarize_plan(
         if kind.startswith("aws_iam_"):
             require(action not in ("delete", "replace"), "IAM_DESTRUCTIVE")
             require(kind in ("aws_iam_role", "aws_iam_role_policy"), "IAM_RESOURCE")
-            role = after if kind == "aws_iam_role" else roles.get(after.get("role"))
+            role = after
+            role_address = address if kind == "aws_iam_role" else configured_roles.get(address)
+            if kind == "aws_iam_role_policy":
+                role = roles.get(after.get("role")) or roles_by_address.get(role_address or "")
             if not isinstance(role, dict):
                 raise PolicyViolation("IAM_ROLE_UNKNOWN")
             path = role.get("path")
@@ -219,8 +317,23 @@ def summarize_plan(
                                 )
                                 dbinit = (
                                     path == "/ddak/app/"
-                                    and role.get("name") == f"ddak-{project}-dbinit-exec"
-                                    and ref == rds_master_secret_arn
+                                    and role_address == "aws_iam_role.dbinit_execution"
+                                    and (
+                                        ref == rds_master_secret_arn
+                                        or (
+                                            not update
+                                            and bool(
+                                                re.fullmatch(
+                                                    re.escape(prefix)
+                                                    + (
+                                                        r"rds!db-\?{8}-\?{4}-\?{4}-"
+                                                        r"\?{4}-\?{12}-\?{6}"
+                                                    ),
+                                                    ref,
+                                                )
+                                            )
+                                        )
+                                    )
                                 )
                                 require(
                                     ref.startswith(prefix) and (own_app or pull or build or dbinit),

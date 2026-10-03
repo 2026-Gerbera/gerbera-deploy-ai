@@ -19,7 +19,11 @@ from ddak.core.snapshots import apply_diff, digest_bytes, excluded, file_manifes
 
 
 def _secret_name(path: Path) -> bool:
-    return path.name.lower() == ".env" or path.suffix.lower() in {".pem", ".key"}
+    # PEM은 개인키뿐 아니라 공개 CA 인증서 번들에도 쓰인다. 확장자만으로
+    # 차단하면 certs/global-bundle.pem 같은 정상적인 배포 입력도 후보 생성에서
+    # 거부된다. 개인키 확장자와 실제 .env만 여기서 제외하고, PEM 내부의
+    # 비밀키 여부는 커밋 직전 gitleaks 검사에서 내용 기반으로 차단한다.
+    return path.name.lower() == ".env" or path.suffix.lower() == ".key"
 
 
 def _dot_env(path: Path) -> bool:
@@ -193,6 +197,7 @@ def validate_candidate(
     workspace: Path,
     guard: Callable[[], None],
 ) -> None:
+    workspace = workspace.resolve()
     for branch in ("prod", "ai-prod"):
         repository.git(
             "fetch", "--no-tags", "origin", f"refs/heads/{branch}:refs/remotes/origin/{branch}"
@@ -224,6 +229,9 @@ def prepare_candidate(
     guard: Callable[[], None],
     approved_source: Path | None = None,
 ) -> dict[str, Any]:
+    workspace = workspace.resolve()
+    if approved_source is not None:
+        approved_source = approved_source.resolve()
     source_sha = git_sha(source_sha)
     repository.git("fetch", "--no-tags", "origin", "refs/heads/prod:refs/remotes/origin/prod")
     repository.git("merge-base", "--is-ancestor", source_sha, "refs/remotes/origin/prod")

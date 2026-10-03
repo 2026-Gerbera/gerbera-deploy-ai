@@ -77,7 +77,9 @@ def redact(text: str, *, max_len: int = MAX_LEN) -> str:
 
 
 _SECRET_KEY = re.compile(
-    r"(secret|token(?!s)|password|passwd|api_?key|access_?key|authorization|credential)",
+    r"(?:^|[_-])"
+    r"(?:secret(?!s)|token(?!s)|password|passwd|api_?key|access_?key|authorization|credential)"
+    r"(?:$|[_-])",
     re.IGNORECASE,
 )
 

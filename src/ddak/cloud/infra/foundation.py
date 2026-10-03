@@ -127,6 +127,7 @@ def apply_foundation(
             ("ddak-build-boundary", settings.build_boundary_arn, template["build_boundary"]),
         ]
         create_policies = []
+        update_policies = []
         for name, arn, document in policies:
             try:
                 policy = iam.get_policy(PolicyArn=arn)["Policy"]
@@ -134,9 +135,7 @@ def apply_foundation(
                     PolicyArn=arn, VersionId=policy["DefaultVersionId"]
                 )["PolicyVersion"]["Document"]
                 if canonical(current) != canonical(document):
-                    raise DdakToolError(
-                        ErrorCode.PRECONDITION_FAILED, "기존 권한 경계가 템플릿과 다르다"
-                    )
+                    update_policies.append((arn, document))
             except ClientError as exc:
                 if exc.response["Error"]["Code"] != "NoSuchEntity":
                     raise
@@ -194,6 +193,12 @@ def apply_foundation(
                 PolicyDocument=json.dumps(document),
                 Tags=[{"Key": k, "Value": v} for k, v in template["tags"].items()],
             )
+        for arn, document in update_policies:
+            iam.create_policy_version(
+                PolicyArn=arn,
+                PolicyDocument=json.dumps(document),
+                SetAsDefault=True,
+            )
         return {
             "state_bucket": settings.state_bucket,
             "app_boundary_arn": settings.boundary_arn,
@@ -202,7 +207,12 @@ def apply_foundation(
         }
     except DdakToolError:
         raise
-    except Exception:
+    except Exception as exc:
+        detail = type(exc).__name__
+        if isinstance(exc, ClientError):
+            error = exc.response.get("Error", {})
+            detail = f"{exc.operation_name}:{error.get('Code', 'Unknown')}"
         raise DdakToolError(
-            ErrorCode.ADAPTER_FAILED, "기반 준비 실패; 대상 상태 확인 후 다시 승인해야 한다"
+            ErrorCode.ADAPTER_FAILED,
+            f"기반 준비 실패({detail}); 대상 상태 확인 후 다시 승인해야 한다",
         ) from None

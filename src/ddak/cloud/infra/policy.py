@@ -15,17 +15,39 @@ from .providers.aws import APP_RESOURCE_TYPES, RESOURCE_TYPES
 
 # StartBuild의 코드 소유 buildspecOverride가 빠지면 앱 저장소 buildspec을 읽지 않고 실패한다.
 OVERRIDE_REQUIRED_BUILDSPEC = "version: 0.2\nphases:\n  build:\n    commands:\n      - exit 1\n"
+_GENERATED_VARIABLES = {
+    "account_id",
+    "app_boundary_arn",
+    "build_boundary_arn",
+    "project",
+}
 
 
-def protect_platform_resource(kind: str, body: dict[str, Any], state_bucket: str | None) -> None:
+def protect_platform_resource(
+    kind: str,
+    body: dict[str, Any],
+    state_bucket: str | None,
+) -> None:
     if kind.startswith("aws_s3_bucket") and state_bucket is not None:
-        require(body.get("bucket") != state_bucket, "FOUNDATION_BUCKET_OWNED_BY_CODE")
+        require(
+            body.get("bucket") != state_bucket,
+            "FOUNDATION_BUCKET_OWNED_BY_CODE",
+        )
+
     if kind == "aws_codebuild_project":
         source = body.get("source")
-        require(isinstance(source, list) and len(source) == 1, "CODEBUILD_SOURCE_REQUIRED")
+        require(
+            isinstance(source, list) and len(source) == 1,
+            "CODEBUILD_SOURCE_REQUIRED",
+        )
         require(
             source[0].get("buildspec") == OVERRIDE_REQUIRED_BUILDSPEC,
             "CODEBUILD_PLATFORM_BUILDSPEC_REQUIRED",
+        )
+        require(
+            isinstance(body.get("name"), str)
+            and bool(re.fullmatch(r"ddak-[a-z0-9][a-z0-9-]{0,46}-build", body["name"])),
+            "CODEBUILD_PROJECT_NAME_INVALID",
         )
 
 
@@ -142,6 +164,8 @@ def static_gate(
             require(bool(re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*\.tf", name)), "BUNDLE_FILENAME")
             require(len(source.encode()) <= 256 * 1024, "BUNDLE_SIZE")
             require("checkov:skip" not in source.lower(), "CHECKOV_SKIP_FORBIDDEN")
+            referenced_variables = set(re.findall(r"\bvar\.([A-Za-z][A-Za-z0-9_]*)", source))
+            require(referenced_variables <= _GENERATED_VARIABLES, "VARIABLE_NOT_ALLOWED")
             tree = parses(source)
             for node in tree.iter_subtrees():
                 # hcl2의 heredoc은 내부 보간식을 AST로 펼치지 않는다.
@@ -164,7 +188,7 @@ def static_gate(
                         require(address not in addresses, "DUPLICATE_RESOURCE")
                         addresses.add(address)
                         protect_platform_resource(kind, body, state_bucket)
-                        _resource(kind, body, layer)
+                        _resource(kind, label, body, layer)
         require(bool(addresses), "BUNDLE_REQUIRED")
         return GateResult(True)
     except PolicyViolation as exc:
@@ -174,7 +198,7 @@ def static_gate(
         return GateResult(False, "HCL_INVALID")
 
 
-def _resource(kind: str, body: dict[str, Any], layer: str) -> None:
+def _resource(kind: str, label: str, body: dict[str, Any], layer: str) -> None:
     forbidden = {
         "provisioner",
         "connection",
@@ -196,6 +220,17 @@ def _resource(kind: str, body: dict[str, Any], layer: str) -> None:
         "replica",
     }
     for key, value in _walk(body):
+        if key == "for_each":
+            certificate_records = (
+                kind == "aws_route53_record"
+                and label == "certificate_validation"
+                and isinstance(value, str)
+                and value.startswith("${{for ")
+                and " in aws_acm_certificate.main.domain_validation_options " in value
+                and not re.search(r"\b(?:path|terraform|data|module)\.", value)
+            )
+            require(certificate_records, "ATTRIBUTE_NOT_ALLOWED")
+            continue
         require(key not in forbidden, "ATTRIBUTE_NOT_ALLOWED")
         if isinstance(value, str):
             require(

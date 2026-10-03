@@ -39,7 +39,8 @@ def excluded(path: Path) -> bool:
     return any(p in EXCLUDED or p.startswith(".env") for p in path.parts) or path.suffix in {
         ".sqlite",
         ".sqlite3",
-        ".pem",
+        # 공개 인증서 번들도 PEM 확장자를 사용한다. PEM은 스냅샷에 포함하고
+        # 실제 개인키는 후보 커밋 직전 내용 기반 비밀값 검사로 차단한다.
         ".key",
     }
 

@@ -65,7 +65,10 @@ def build_boundary_document(account_id: str) -> dict:
             {
                 "Effect": "Allow",
                 "Action": ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"],
-                "Resource": f"arn:aws:logs:{REGION}:{account_id}:log-group:/aws/codebuild/ddak-*:*",
+                "Resource": [
+                    f"arn:aws:logs:{REGION}:{account_id}:log-group:/aws/codebuild/ddak-*",
+                    f"arn:aws:logs:{REGION}:{account_id}:log-group:/aws/codebuild/ddak-*:log-stream:*",
+                ],
             },
         ],
     }
@@ -85,7 +88,7 @@ def boundary_document(account_id: str) -> dict:
             {
                 "Effect": "Allow",
                 "Action": ["logs:CreateLogStream", "logs:PutLogEvents"],
-                "Resource": f"arn:aws:logs:{REGION}:{account_id}:log-group:/ecs/ddak-*:*",
+                "Resource": f"arn:aws:logs:{REGION}:{account_id}:log-group:/aws/ecs/*:*",
             },
             {
                 "Effect": "Allow",

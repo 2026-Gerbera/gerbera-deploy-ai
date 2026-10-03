@@ -174,9 +174,68 @@ def test_approved_v2_summary_and_apply(runtime):
         instance.apply(session=SESSION)
     assert sum(cmd[1] == "apply" for cmd, _ in fake.calls) == 1
     assert guard.call_count == 3
-    # fmt/init(validate)/validate/Checkov는 자격증명 없이 실행한다.
-    for _command, session in fake.calls[:4]:
+    # init(validate)/validate/Checkov는 자격증명 없이 실행한다.
+    for _command, session in fake.calls[:3]:
         assert session is None
+
+
+def test_plan_resolves_new_policy_role_from_configuration_reference():
+    raw = plan_json()
+    policy_change = raw["resource_changes"][2]["change"]
+    policy_change["after"]["role"] = None
+    policy_change["after_unknown"]["role"] = True
+    raw["configuration"] = {
+        "root_module": {
+            "resources": [
+                {
+                    "address": "aws_iam_role_policy.read",
+                    "mode": "managed",
+                    "type": "aws_iam_role_policy",
+                    "name": "read",
+                    "expressions": {
+                        "role": {"references": ["aws_iam_role.exec.id"]},
+                    },
+                }
+            ]
+        }
+    }
+
+    summary = summarize_plan(
+        raw,
+        layer="app",
+        project="flaskr",
+        plan_sha256=digest(b"unknown-role-id"),
+        exit_code=2,
+        account_id=ACCOUNT,
+        boundary_arn=SETTINGS.boundary_arn,
+        update=True,
+        analyzer=Mock(validate_policy=Mock(return_value={"findings": []})),
+        checkov={"passed": True, "failed": []},
+    )
+
+    assert summary["counts"]["update"] == 1
+    assert summary["iam_diff"][0]["address"] == "aws_iam_role_policy.read"
+
+
+def test_plan_rejects_unknown_policy_role_without_direct_reference():
+    raw = plan_json()
+    policy_change = raw["resource_changes"][2]["change"]
+    policy_change["after"]["role"] = None
+    policy_change["after_unknown"]["role"] = True
+
+    with pytest.raises(PolicyViolation, match="IAM_ROLE_UNKNOWN"):
+        summarize_plan(
+            raw,
+            layer="app",
+            project="flaskr",
+            plan_sha256=digest(b"unknown-role-id"),
+            exit_code=2,
+            account_id=ACCOUNT,
+            boundary_arn=SETTINGS.boundary_arn,
+            update=True,
+            analyzer=Mock(validate_policy=Mock(return_value={"findings": []})),
+            checkov={"passed": True, "failed": []},
+        )
 
 
 @pytest.mark.parametrize(
@@ -403,12 +462,56 @@ def test_review_fixes_static_codebuild_and_cidr():
         layer="platform",
     ).passed
     sg = """resource "aws_vpc_security_group_ingress_rule" "db" {
-    cidr_ipv4 = var.open_cidr
+    cidr_ipv4 = "not-a-cidr"
     from_port = 3306
     to_port = 3306
     ip_protocol = "tcp"
     }"""
     assert static_gate({"main.tf": sg}, layer="platform").detail == "CIDR_MUST_BE_LITERAL"
+
+
+def test_certificate_validation_is_the_only_allowed_for_each():
+    certificate_record = """resource "aws_route53_record" "certificate_validation" {
+  for_each = {
+    for d in aws_acm_certificate.main.domain_validation_options : d.domain_name => {
+      name = d.resource_record_name
+      type = d.resource_record_type
+      record = d.resource_record_value
+    }
+  }
+  zone_id = "Z123456"
+  name = each.value.name
+  type = each.value.type
+  records = [each.value.record]
+  ttl = 60
+}"""
+    assert static_gate({"main.tf": certificate_record}, layer="platform").passed
+    assert not static_gate(
+        {
+            "main.tf": certificate_record.replace(
+                'aws_route53_record" "certificate_validation', 'aws_route53_record" "app'
+            )
+        },
+        layer="platform",
+    ).passed
+    assert not static_gate(
+        {
+            "main.tf": certificate_record.replace(
+                "aws_acm_certificate.main.domain_validation_options", "var.records"
+            )
+        },
+        layer="platform",
+    ).passed
+
+
+def test_generated_bundle_rejects_variables_not_supplied_by_code():
+    allowed = 'resource "aws_s3_bucket" "source" { bucket = "${var.project}-source" }'
+    unsupported = allowed.replace("var.project", "var.region")
+
+    assert static_gate({"main.tf": allowed}, layer="platform").passed
+    result = static_gate({"main.tf": unsupported}, layer="platform")
+    assert not result.passed
+    assert result.detail == "VARIABLE_NOT_ALLOWED"
 
 
 def test_build_and_app_boundaries_are_distinct():
@@ -456,7 +559,13 @@ def test_expired_guard_does_not_mark_apply_started(runtime):
 
 
 @pytest.mark.parametrize(
-    "resource_address,passed", [("aws_security_group.alb", True), ("aws_security_group.db", False)]
+    "resource_address,passed",
+    [
+        ("aws_security_group.alb", True),
+        ("aws_vpc_security_group_ingress_rule.alb_http", True),
+        ("aws_security_group.db", False),
+        ("aws_vpc_security_group_ingress_rule.db_http", False),
+    ],
 )
 def test_checkov_exception_is_resource_and_check_specific(tmp_path, resource_address, passed):
     from dataclasses import replace
@@ -465,7 +574,13 @@ def test_checkov_exception_is_resource_and_check_specific(tmp_path, resource_add
     fake.check_result["results"]["failed_checks"] = [
         {"check_id": "CKV_AWS_260", "resource": resource_address}
     ]
-    settings = replace(SETTINGS, alb_security_group_addresses=("aws_security_group.alb",))
+    settings = replace(
+        SETTINGS,
+        alb_security_group_addresses=(
+            "aws_security_group.alb",
+            "aws_vpc_security_group_ingress_rule.alb_http",
+        ),
+    )
     runtime = InfraRuntime(
         root=tmp_path,
         run_id="run-1",

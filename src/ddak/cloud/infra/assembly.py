@@ -67,15 +67,10 @@ def create_binding(
             if credentials is None:
                 raise ValueError
             credentials = credentials.get_frozen_credentials()
-            if credentials.token:
-                return SessionKeys(
-                    credentials.access_key, credentials.secret_key, credentials.token
-                )
-            temporary = sdk.client("sts", config=config).get_session_token(DurationSeconds=3600)[
-                "Credentials"
-            ]
             return SessionKeys(
-                temporary["AccessKeyId"], temporary["SecretAccessKey"], temporary["SessionToken"]
+                credentials.access_key,
+                credentials.secret_key,
+                credentials.token,
             )
         except Exception:
             raise DdakToolError(
@@ -87,7 +82,7 @@ def create_binding(
         return boto3.Session(
             aws_access_key_id=keys.access_key,
             aws_secret_access_key=keys.secret_key,
-            aws_session_token=keys.token,
+            aws_session_token=keys.token or None,
             region_name=REGION,
         )
 
@@ -103,7 +98,10 @@ def create_binding(
         state_bucket=f"ddak-state-{account}-{sha256(ctx.project.encode()).hexdigest()[:16]}",
         layer=bundle.layer,
         outputs=bundle.outputs,
-        alb_security_group_addresses=("aws_security_group.alb",)
+        alb_security_group_addresses=(
+            "aws_security_group.alb",
+            "aws_vpc_security_group_ingress_rule.alb_http",
+        )
         if bundle.layer == "platform"
         else (),
         rds_master_secret_arn=ctx.platform.get("cloud", {}).get("rds_master_secret_arn"),

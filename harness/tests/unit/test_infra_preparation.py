@@ -180,6 +180,74 @@ async def test_generated_bundle_is_assembled_validated_approved_and_applied(
         unbind_infra(p.run_id)
 
 
+async def test_invalid_generated_bundle_is_regenerated_with_validator_feedback(rig, monkeypatch):
+    from dataclasses import dataclass
+
+    from ddak.core.contracts.enums import Source
+    from ddak.core.contracts.tools.generate_infra import GenerateInfraInput, GenerateInfraOutput
+    from ddak.core.snapshots import digest_bytes
+
+    service, _, _ = rig
+    names = ("generate_infra", "validate_infra", "plan_infra")
+    registry = Registry([*service.registry.specs, *(spec_for(name) for name in names)])
+    for name in service.registry.registered():
+        registry.tool(name)(service.registry.get(name).fn)
+
+    generated_contexts = []
+
+    @registry.tool("generate_infra")
+    def generate(inp: GenerateInfraInput, ctx: RunContext) -> GenerateInfraOutput:
+        generated_contexts.append(ctx)
+        source = 'resource "aws_s3_bucket" "source" {}\n'
+        directory = __import__("pathlib").Path(inp.directory)
+        (directory / "main.tf").write_text(source)
+        return GenerateInfraOutput(
+            directory=str(directory),
+            layer=inp.layer,
+            files={"main.tf": digest_bytes(source.encode())},
+            source=Source.FIXTURE,
+        )
+
+    validation_calls = 0
+
+    @registry.tool("validate_infra")
+    def validate(inp: ValidateInfraInput, ctx: RunContext) -> ValidateInfraOutput:
+        nonlocal validation_calls
+        validation_calls += 1
+        if validation_calls == 1:
+            return ValidateInfraOutput(passed=False, detail="HCL_INVALID")
+        return ValidateInfraOutput(passed=True)
+
+    @registry.tool("plan_infra")
+    def plan(inp: PlanInfraInput, ctx: RunContext) -> PlanInfraOutput:
+        return PlanInfraOutput(passed=True, plan_sha256=HASH, summary=summary())
+
+    @dataclass(frozen=True)
+    class Binding:
+        generation_source: Source | None = None
+
+    unbound = []
+    monkeypatch.setattr(app, "has_infra_binding", lambda _: False)
+    monkeypatch.setattr(app, "create_binding", lambda *args, **kwargs: Binding())
+    monkeypatch.setattr(app, "bind_infra", lambda _: None)
+    monkeypatch.setattr(app, "unbind_infra", unbound.append)
+    service.registry = registry
+    p = infra_plan("run-regenerate")
+    ctx = RunContext(p.run_id, project=p.project)
+
+    subjects, metadata = await app._infra_approval(service, p, ctx)
+
+    assert subjects == {"infra": HASH}
+    assert metadata == summary()
+    assert len(generated_contexts) == 2
+    assert generated_contexts[0].project_settings.get("_infra_validation_feedback") is None
+    assert generated_contexts[1].project_settings["_infra_validation_feedback"] == "HCL_INVALID"
+    first_directory = generated_contexts[1].project_settings["_infra_repair_directory"]
+    assert first_directory.endswith(p.run_id)
+    assert not first_directory.endswith("-retry-2")
+    assert unbound == [p.run_id]
+
+
 async def test_sync_generator_timeout_never_creates_binding(rig, monkeypatch):
     import time
 

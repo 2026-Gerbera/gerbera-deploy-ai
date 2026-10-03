@@ -29,16 +29,22 @@ from fastapi import FastAPI
 
 from ddak.cd import configure_cloud_tls
 from ddak.cloud.deploy import seed_registry_secrets
-from ddak.cloud.infra import bind_infra, create_binding, has_infra_binding, read_bundle
+from ddak.cloud.infra import (
+    bind_infra,
+    create_binding,
+    has_infra_binding,
+    read_bundle,
+    unbind_infra,
+)
 from ddak.cloud.tls import ensure_tls
 from ddak.core.ai.status import llm_status
 from ddak.core.app_repository import AppRepository, FakeAppRepository
 from ddak.core.config import AdapterMode, Settings
 from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.deploy_request import DeployRequest
-from ddak.core.contracts.enums import RunMode
+from ddak.core.contracts.enums import Layer, RunMode
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
-from ddak.core.contracts.plan import Plan, PlanStep
+from ddak.core.contracts.plan import Plan, PlanStep, SkippedStep
 from ddak.core.contracts.plan_facts import FileMeta
 from ddak.core.contracts.tools.generate_infra import GenerateInfraInput, GenerateInfraOutput
 from ddak.core.logging import get_logger
@@ -55,6 +61,7 @@ from ddak.plan.intake import FetchPolicy, Watcher, WatchTarget, load_watch_targe
 from ddak.web.app import create_app
 
 _log = get_logger("plan")
+_INFRA_GENERATION_ATTEMPTS = 3
 
 # 이 패키지들 바로 아래 <디렉토리>/tool.py를 자동 탐색한다(tool.py가 없는 디렉토리는 건너뜀).
 TOOL_PACKAGES = (
@@ -109,6 +116,36 @@ def _platform_bootstrap_plan(plan: Plan, ctx: RunContext, summary: dict | None) 
     return prepared
 
 
+def _drop_unavailable_optional(plan: Plan, registered: set[str]) -> Plan:
+    """구현되지 않은 선택 단계는 실행 실패 대신 명시적인 제외 기록으로 남긴다."""
+    prepared = plan.model_copy(deep=True, update={"plan_hash": None})
+    for section in (
+        prepared.build,
+        prepared.deploy.local,
+        prepared.deploy.cloud,
+        prepared.verify,
+    ):
+        kept: list[PlanStep] = []
+        for step in section.steps:
+            if step.tool in registered or step.layer is not Layer.OPTIONAL:
+                kept.append(step)
+                continue
+            section.skipped.append(
+                SkippedStep(
+                    id=step.id,
+                    tool=step.tool,
+                    target=step.target,
+                    tier=step.tier,
+                    layer=step.layer,
+                    by=step.by,
+                    reason="현재 실행기에 구현되지 않은 선택 기능",
+                    skip_rule="tool_unavailable",
+                )
+            )
+        section.steps[:] = kept
+    return prepared
+
+
 def _refresh_cloud_context(step: PlanStep, output: dict[str, Any], ctx: RunContext) -> RunContext:
     """Terraform 출력을 반영하고 첫 CodeBuild 전에 레지스트리 자격증명을 채운다."""
     updated = refresh_infra_context(step, output, ctx)
@@ -117,61 +154,117 @@ def _refresh_cloud_context(step: PlanStep, output: dict[str, Any], ctx: RunConte
     return updated
 
 
+async def _call_infra_tool(service: DeploymentService, name: str, ctx: RunContext):
+    tool = service.registry.get(name)
+    inp = tool.input_model.model_validate({"run_id": ctx.run_id})
+    bounded = replace(ctx, deadline=time.monotonic() + tool.spec.timeout_s)
+    if tool.is_async:
+        return await asyncio.wait_for(tool.fn(inp, bounded), tool.spec.timeout_s)
+    # 동기 실행기의 자식 프로세스 제한 시간은 C1 runtime이 관리한다.
+    return await asyncio.to_thread(tool.fn, inp, bounded)
+
+
+async def _generate_infra_binding(
+    service: DeploymentService,
+    ctx: RunContext,
+    *,
+    attempt: int,
+    validation_feedback: str | None,
+    repair_directory: Path | None,
+) -> Path:
+    if "generate_infra" not in service.registry.registered():
+        raise DdakToolError(ErrorCode.INFRA_MISSING, "generate_infra 툴이 등록되지 않았다")
+    tool = service.registry.get("generate_infra")
+    suffix = "" if attempt == 1 else f"-retry-{attempt}"
+    directory = (service.root / "infra-bundles" / f"{ctx.run_id}{suffix}").resolve()
+    directory.mkdir(parents=True, exist_ok=False, mode=0o700)
+    request = GenerateInfraInput(
+        run_id=ctx.run_id,
+        directory=str(directory),
+        layer="platform" if ctx.mode is RunMode.BOOTSTRAP else "app",
+    )
+    feedback_settings = dict(ctx.project_settings)
+    if validation_feedback:
+        feedback_settings["_infra_validation_feedback"] = validation_feedback
+    if repair_directory is not None:
+        feedback_settings["_infra_repair_directory"] = str(repair_directory)
+    generator_ctx = replace(ctx, project_settings=feedback_settings)
+    bounded = replace(generator_ctx, deadline=time.monotonic() + tool.spec.timeout_s)
+    try:
+        with tool_context("generate_infra", ctx.run_id):
+            result = await asyncio.wait_for(
+                tool.fn(request, bounded)
+                if tool.is_async
+                else asyncio.to_thread(tool.fn, request, bounded),
+                tool.spec.timeout_s,
+            )
+    except TimeoutError:
+        # 동기 생성기의 스레드를 강제 종료하지 않는다. 이 run 번들은 재사용/적용하지 않는다.
+        raise DdakToolError(
+            ErrorCode.ADAPTER_TIMEOUT, "generate_infra 제한 시간 초과; 생성 번들 격리"
+        ) from None
+    bundle = GenerateInfraOutput.model_validate(result)
+    if bundle.layer != request.layer:
+        raise DdakToolError(ErrorCode.CONFIG_INVALID, "생성 번들의 인프라 층이 다르다")
+    files = read_bundle(bundle, directory)
+    binding = await asyncio.to_thread(
+        create_binding,
+        bundle,
+        files,
+        ctx,
+        root=service.root / "infra",
+        approvals=lambda: service.store.approvals(ctx.run_id),
+        guard=lambda: service.guard_infra(ctx.run_id, ctx.project),
+    )
+    bind_infra(replace(binding, generation_source=bundle.source))
+    return directory
+
+
 async def _infra_approval(service: DeploymentService, plan: Plan, ctx: RunContext):
     if ctx.targets == "onprem" or not any(s.tool == "apply_infra" for s in plan.deploy.cloud.steps):
         return {}, None
-    if not has_infra_binding(ctx.run_id):
-        if "generate_infra" not in service.registry.registered():
-            raise DdakToolError(ErrorCode.INFRA_MISSING, "generate_infra 툴이 등록되지 않았다")
-        tool = service.registry.get("generate_infra")
-        directory = (service.root / "infra-bundles" / ctx.run_id).resolve()
-        directory.mkdir(parents=True, exist_ok=False, mode=0o700)
-        request = GenerateInfraInput(
-            run_id=ctx.run_id,
-            directory=str(directory),
-            layer="platform" if ctx.mode is RunMode.BOOTSTRAP else "app",
-        )
-        bounded = replace(ctx, deadline=time.monotonic() + tool.spec.timeout_s)
-        try:
-            with tool_context("generate_infra", ctx.run_id):
-                result = await asyncio.wait_for(
-                    tool.fn(request, bounded)
-                    if tool.is_async
-                    else asyncio.to_thread(tool.fn, request, bounded),
-                    tool.spec.timeout_s,
-                )
-        except TimeoutError:
-            # 동기 생성기의 스레드를 강제 종료하지 않는다. 이 run 번들은 재사용/적용하지 않는다.
-            raise DdakToolError(
-                ErrorCode.ADAPTER_TIMEOUT, "generate_infra 제한 시간 초과; 생성 번들 격리"
-            ) from None
-        bundle = GenerateInfraOutput.model_validate(result)
-        if bundle.layer != request.layer:
-            raise DdakToolError(ErrorCode.CONFIG_INVALID, "생성 번들의 인프라 층이 다르다")
-        files = read_bundle(bundle, directory)
-        binding = await asyncio.to_thread(
-            create_binding,
-            bundle,
-            files,
-            ctx,
-            root=service.root / "infra",
-            approvals=lambda: service.store.approvals(ctx.run_id),
-            guard=lambda: service.guard_infra(ctx.run_id, ctx.project),
-        )
-        bind_infra(replace(binding, generation_source=bundle.source))
-    output = {}
-    for name in ("validate_infra", "plan_infra"):
-        tool = service.registry.get(name)
-        inp = tool.input_model.model_validate({"run_id": ctx.run_id})
-        bounded = replace(ctx, deadline=time.monotonic() + tool.spec.timeout_s)
-        if tool.is_async:
-            result = await asyncio.wait_for(tool.fn(inp, bounded), tool.spec.timeout_s)
+    generated = not has_infra_binding(ctx.run_id)
+    validation = None
+    if generated:
+        feedback = None
+        feedback_history: list[str] = []
+        repair_directory = None
+        for attempt in range(1, _INFRA_GENERATION_ATTEMPTS + 1):
+            repair_directory = await _generate_infra_binding(
+                service,
+                ctx,
+                attempt=attempt,
+                validation_feedback=feedback,
+                repair_directory=repair_directory,
+            )
+            validation = await _call_infra_tool(service, "validate_infra", ctx)
+            tool = service.registry.get("validate_infra")
+            if isinstance(validation, tool.output_model) and validation.passed is True:
+                break
+            if not isinstance(validation, tool.output_model):
+                raise DdakToolError(ErrorCode.INTERNAL, "validate_infra 응답 형식 오류")
+            feedback = validation.detail or "VALIDATION_FAILED"
+            feedback_history.append(feedback)
+            feedback = ",".join(feedback_history)
+            unbind_infra(ctx.run_id)
         else:
-            # 동기 실행기의 자식 프로세스 제한 시간은 C1 runtime이 관리한다.
-            result = await asyncio.to_thread(tool.fn, inp, bounded)
-        if not isinstance(result, tool.output_model) or getattr(result, "passed", None) is not True:
-            raise DdakToolError(ErrorCode.INFRA_MISSING, f"{name} 검사 불합격")
-        output = result.model_dump(mode="json")
+            raise DdakToolError(
+                ErrorCode.AI_OUTPUT_INVALID,
+                f"Terraform 파일 교정 {_INFRA_GENERATION_ATTEMPTS}회 실패: {feedback}",
+            )
+    else:
+        validation = await _call_infra_tool(service, "validate_infra", ctx)
+        tool = service.registry.get("validate_infra")
+        if not isinstance(validation, tool.output_model) or validation.passed is not True:
+            detail = getattr(validation, "detail", "") or "VALIDATION_FAILED"
+            raise DdakToolError(ErrorCode.INFRA_MISSING, f"validate_infra 검사 불합격: {detail}")
+
+    result = await _call_infra_tool(service, "plan_infra", ctx)
+    tool = service.registry.get("plan_infra")
+    if not isinstance(result, tool.output_model) or result.passed is not True:
+        detail = getattr(result, "detail", "") or "PLAN_FAILED"
+        raise DdakToolError(ErrorCode.INFRA_MISSING, f"plan_infra 검사 불합격: {detail}")
+    output = result.model_dump(mode="json")
     digest = output["plan_sha256"]
     summary = output["summary"]
     check_infra_summary(encode_meta(summary, infra=True), digest)
@@ -395,6 +488,7 @@ async def _prepare_commit(
             raise
         phase = "prepare"
         plan = _platform_bootstrap_plan(bundle.plan, context, infra_summary)
+        plan = _drop_unavailable_optional(plan, set(service.registry.registered()))
         service.prepare(
             plan,
             context,

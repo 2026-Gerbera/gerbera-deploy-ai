@@ -32,10 +32,10 @@ class Settings:
     admin_port: int = 8765
     # ---- AI(call_ai, ✅ 장부 7) ----
     llm_backend: LLMBackend = LLMBackend.REPLAY  # 기본값은 호출이 일어나지 않는 replay
-    llm_model: str | None = None  # 💭 실측으로 선택. 모델 ID와 prompt 버전은 고정한다
+    llm_model: str | None = "claude-sonnet-5-5"
     claude_bin: str = "claude"
     llm_api_key: str | None = field(default=None, repr=False)  # api backend만
-    ai_timeout_s: float = 20.0
+    ai_timeout_s: float = 240.0
     ai_retries: int = 1
     ai_replay_dir: Path = Path("fixtures/ai_replay")
     jev_api_key: str | None = field(default=None, repr=False)
@@ -52,10 +52,10 @@ class Settings:
             log_level=env.get("DDAK_LOG_LEVEL", "INFO"),
             admin_port=int(env.get("DDAK_ADMIN_PORT", "8765")),
             llm_backend=LLMBackend(env.get("DDAK_LLM_BACKEND") or LLMBackend.REPLAY.value),
-            llm_model=env.get("DDAK_LLM_MODEL") or None,
+            llm_model=env.get("DDAK_LLM_MODEL") or "claude-sonnet-5-5",
             claude_bin=env.get("DDAK_CLAUDE_BIN") or "claude",
             llm_api_key=env.get("DDAK_LLM_API_KEY") or None,
-            ai_timeout_s=float(env.get("DDAK_AI_TIMEOUT_S") or "20"),
+            ai_timeout_s=float(env.get("DDAK_AI_TIMEOUT_S") or "240"),
             ai_retries=int(env.get("DDAK_AI_RETRIES") or "1"),
             ai_replay_dir=Path(env.get("DDAK_AI_REPLAY_DIR") or "fixtures/ai_replay"),
             jev_api_key=env.get("DDAK_JEV_API_KEY") or None,
