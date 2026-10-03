@@ -28,6 +28,7 @@ async def test_candidate_commit_reaches_build_and_actual_local_git_records(
         RunContext(p.run_id, project=p.project, source_sha=v1, toggles={"code_patch": True}),
         source,
         patch=candidate_tests.PATCH,
+        patch_meta=service_tests.patch_metadata(candidate_tests.PATCH),
     )
     service.approve(rid, approver="operator")
     service.start(rid)
@@ -68,6 +69,7 @@ async def test_candidate_cancellation_stops_next_commit_or_push(rig, repository,
         ),
         source,
         patch=candidate_tests.PATCH,
+        patch_meta=service_tests.patch_metadata(candidate_tests.PATCH),
     )
     # 승인 전 검사는 통과시키고 후보 생성 중의 검사만 정지시킨다.
     repo.secret_scan = scan
@@ -123,6 +125,7 @@ async def test_cancel_during_completed_push_keeps_candidate_sha(
         ),
         source,
         patch=candidate_tests.PATCH,
+        patch_meta=service_tests.patch_metadata(candidate_tests.PATCH),
     )
     service.approve(rid, approver="operator")
     task = service.start(rid)
@@ -169,6 +172,7 @@ async def test_parity_without_cloud_app_changes_preserves_cloud_and_main_refs(
         RunContext(p.run_id, project=p.project, source_sha=v1, toggles={"code_patch": True}),
         source,
         patch=candidate_tests.PATCH,
+        patch_meta=service_tests.patch_metadata(candidate_tests.PATCH),
     )
     service.approve(rid, approver="operator")
     service.start(rid)
@@ -206,6 +210,7 @@ async def test_merge_conflicts_are_available_in_sealed_release(rig, repository, 
         ),
         source,
         patch=patch,
+        patch_meta=service_tests.patch_metadata(patch),
     )
     service.approve(rid, approver="operator")
     service.start(rid)

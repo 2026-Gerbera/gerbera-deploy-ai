@@ -109,7 +109,11 @@ async def test_watch_manual_approval_git_roundtrip(
 
     for spec in registry.specs:
         if spec.kind is ToolKind.TOOL_FN:
-            registry.tool(spec.name)(fake_tool(spec.name))
+            registry.tool(spec.name)(
+                real_registry.get(spec.name).fn
+                if spec.name == "patch_config"
+                else fake_tool(spec.name)
+            )
 
     bare = tmp_path / "remote.git"
     git(tmp_path, "init", "--bare", str(bare))

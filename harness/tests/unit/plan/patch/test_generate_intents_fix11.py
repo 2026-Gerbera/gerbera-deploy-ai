@@ -36,7 +36,14 @@ ON = RunContext("run-intents", toggles={"code_patch": True})
 MARKER = "fixture-" + "private-value-" + "must-not-leave"
 REASON = "배포 설정을 필수 환경변수로 전환한다"
 DEFAULT_KEYS = frozenset(
-    {"SECRET_KEY", "APP_BASE_URL", "SESSION_COOKIE_SECURE", "PROXY_FIX_X_FOR", "PROXY_FIX_X_PROTO"}
+    {
+        "SECRET_KEY",
+        "APP_BASE_URL",
+        "DATABASE_URL",
+        "SESSION_COOKIE_SECURE",
+        "PROXY_FIX_X_FOR",
+        "PROXY_FIX_X_PROTO",
+    }
 )
 
 
@@ -121,7 +128,7 @@ def test_new_api_sends_only_positions_and_uses_real_renderer(source: Path, tmp_p
     assert provider.contexts == [("patch_config", ON.run_id)]
     request = provider.seen[0]
     assert request.purpose == "patch_config"
-    assert request.prompt_version == "patch_config-intents-v1"
+    assert request.prompt_version == "patch_config-intents-v2"
     assert request.model == CFG.llm_model
     assert set(request.json_schema["properties"]) == {"intents", "reason"}
     assert request.json_schema["additionalProperties"] is False
@@ -239,7 +246,6 @@ def test_warnings_are_not_sent_or_edited(source: Path) -> None:
         "reason_empty",
         "duplicate",
         "missing",
-        "empty",
         "unknown_file",
         "unknown_line",
         "unknown_pattern",
@@ -271,8 +277,6 @@ def test_invalid_output_retries_once_without_echoing_source(source: Path, invali
             bad["intents"].append(dict(item))
         elif invalid == "missing":
             bad["intents"].pop()
-        elif invalid == "empty":
-            bad["intents"] = []
         elif invalid == "unknown_file":
             item["file"] = "other.py"
         elif invalid == "unknown_line":
@@ -391,6 +395,8 @@ def test_old_and_new_public_exports_are_preserved_once() -> None:
         "render_intents",
         "propose_intents",
         "PatchPreparation",
+        "PatchSession",
+        "patch_session",
         "prepare_patch",
     }
     assert set(public.__all__) == expected

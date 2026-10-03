@@ -153,6 +153,17 @@ def test_manifest_rejects_symlinks(tmp_path: Path) -> None:
         scan_patch_targets(tmp_path, ())
 
 
+def test_wildcard_detection_keeps_literals_but_excludes_env_defaults(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "app.py",
+        'from os import *\nAPP_BASE_URL = "http://localhost:5000"\n'
+        'AUDIT = environ.get("AUDIT", "http://localhost:6000")\n',
+    )
+    found = scan_patch_targets(tmp_path, ())
+    assert [(t.line, t.pattern_id, t.key) for t in found] == [(2, "local_address", "APP_BASE_URL")]
+
+
 def test_contract_defaults_and_no_value_fields() -> None:
     assert EnvKey(name="PORT", kind="plain").required is True
     target = PatchTarget(

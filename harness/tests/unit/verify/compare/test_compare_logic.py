@@ -8,7 +8,13 @@ import pytest
 
 from ddak.core.contracts.release import ReleaseArtifacts
 from ddak.core.contracts.tools.smoke_test import SmokeScenario, SmokeTestOutput
-from ddak.verify.compare.logic import compare_env, compare_images, compare_smoke
+from ddak.verify.compare.logic import (
+    EXPECTED_DIFFS,
+    compare_db_fingerprint,
+    compare_env,
+    compare_images,
+    compare_smoke,
+)
 
 RUN = "run-cmp-1"
 AMD, ARM, INDEX, SRC = ("sha256:" + c * 64 for c in "abcd")
@@ -88,7 +94,11 @@ def test_same_app_passes_with_expected_env_differences() -> None:
 def test_expected_diff_hides_values_in_report() -> None:
     result = compare_env(smoke("local"), smoke("cloud"))
     row = next(c for c in result.to_dict()["checks"] if c["id"] == "S0.version.app_env")  # type: ignore[union-attr]
-    assert row == {"id": "S0.version.app_env", "verdict": "expected_diff"}
+    assert row == {
+        "id": "S0.version.app_env",
+        "verdict": "expected_diff",
+        "reason": "예상된 차이: 환경 이름(onprem/cloud)",
+    }
 
 
 @pytest.mark.parametrize(
@@ -100,6 +110,7 @@ def test_expected_diff_hides_values_in_report() -> None:
         ({"B2.create": {"location": "/auth/login"}}, "B2.create.location"),
         ({"B1": {"cookie": "session"}}, "B1.cookie"),
         ({"B1.ok": False}, "B1.ok"),
+        ({"B2.create": {"page.head": "sha256:" + "1" * 16}}, "B2.create.page.head"),
     ],
 )
 def test_unexpected_difference_fails(overrides: dict[str, Any], check_id: str) -> None:
@@ -154,3 +165,55 @@ def test_empty_comparison_does_not_pass() -> None:
     empty_local = smoke("local").model_copy(update={"scenarios": []})
     empty_cloud = smoke("cloud").model_copy(update={"scenarios": []})
     assert compare_env(empty_local, empty_cloud).passed is False
+
+
+def test_must_match_keys_are_never_expected_differences() -> None:
+    # O3 문서 5-5 표 오른쪽(다르면 실패)은 예상된 차이 목록에 들어가면 안 된다
+    must_match = {"release_id", "schema_expected", "db.dialect", "status", "page.head", "page.post"}
+    assert must_match.isdisjoint(EXPECTED_DIFFS)
+
+
+FP = {
+    "version": "8.4.6",
+    "sql_mode": "STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION",
+    "collation": "utf8mb4_0900_ai_ci",
+    "time_zone": "SYSTEM",
+    "ssl_version": "",
+}
+
+
+def test_db_fingerprint_same_engine_settings_pass() -> None:
+    cloud = {
+        **FP,
+        "version": "8.4.7",
+        "sql_mode": "NO_ENGINE_SUBSTITUTION,STRICT_TRANS_TABLES",  # 순서만 다름
+        "time_zone": "UTC",
+        "ssl_version": "TLSv1.3",
+    }
+    v = verdicts(compare_db_fingerprint({"local": FP, "cloud": cloud}))
+    assert v == {
+        "db.sql_mode": "match",
+        "db.collation": "match",
+        "db.version": "expected_diff",
+        "db.time_zone": "expected_diff",
+        "db.ssl": "expected_diff",
+    }
+
+
+def test_db_fingerprint_non_strict_cloud_or_plain_connection_fails() -> None:
+    cloud = {**FP, "sql_mode": "NO_ENGINE_SUBSTITUTION", "ssl_version": ""}
+    result = compare_env(
+        smoke("local"), smoke("cloud"), db_fingerprints={"local": FP, "cloud": cloud}
+    )
+    assert result.passed is False
+    v = verdicts(result.checks)
+    assert v["db.sql_mode"] == "mismatch" and v["db.ssl"] == "mismatch"
+    other_major = {**FP, "version": "8.0.39", "ssl_version": "TLSv1.3"}
+    assert verdicts(compare_db_fingerprint({"local": FP, "cloud": other_major}))["db.version"] == (
+        "mismatch"
+    )
+
+
+def test_db_fingerprint_is_skipped_without_both_results() -> None:
+    assert verdicts(compare_db_fingerprint(None)) == {"db.fingerprint": "skipped"}
+    assert verdicts(compare_db_fingerprint({"local": FP})) == {"db.fingerprint": "skipped"}

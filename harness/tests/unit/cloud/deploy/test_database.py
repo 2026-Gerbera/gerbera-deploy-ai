@@ -85,9 +85,19 @@ def _definition(e: Stubber, log: bool = True) -> None:
     )
 
 
-def _phase(e: Stubber, lg: Stubber, n: int, result: dict[str, Any] | None, exit_code: int = 0):
-    task_id = f"task{n}"
-    phase = result["phase"] if result else "precheck"
+COMMAND = [
+    "sh",
+    "-c",
+    "python -m flaskr.migrate precheck --json && python -m flaskr.migrate up --json"
+    " && python -m flaskr.migrate verify --json",
+]
+
+
+def _task(
+    e: Stubber, lg: Stubber, results: list[dict[str, Any]] | None, exit_code: int = 0
+) -> None:
+    """태스크 하나가 세 단계를 차례로 돌고 단계마다 MIGRATE_RESULT 한 줄을 남긴다."""
+    task_id = "task1"
     e.add_response(
         "run_task",
         {"tasks": [{"taskArn": f"arn:aws:ecs:ap-northeast-2:111122223333:task/ddak/{task_id}"}]},
@@ -104,11 +114,7 @@ def _phase(e: Stubber, lg: Stubber, n: int, result: dict[str, Any] | None, exit_
                     "assignPublicIp": "ENABLED",
                 }
             },
-            "overrides": {
-                "containerOverrides": [
-                    {"name": "was", "command": ["python", "-m", "flaskr.migrate", phase, "--json"]}
-                ]
-            },
+            "overrides": {"containerOverrides": [{"name": "was", "command": COMMAND}]},
         },
     )
     e.add_response(
@@ -125,9 +131,10 @@ def _phase(e: Stubber, lg: Stubber, n: int, result: dict[str, Any] | None, exit_
         },
         {"cluster": "ddak", "tasks": [task_id]},
     )
-    if result is None:
+    if results is None:
         return
-    events = [{"message": "connecting"}, {"message": "MIGRATE_RESULT " + json.dumps(result)}]
+    events = [{"message": "connecting"}]
+    events += [{"message": "MIGRATE_RESULT " + json.dumps(r)} for r in results]
     lg.add_response(
         "get_log_events",
         {"events": events, "nextForwardToken": "f/1"},
@@ -150,11 +157,12 @@ def _run(ecs: Any, logs: Any, migrations: list[str], clock: float = 0.0) -> dict
     )
 
 
-def test_runs_three_phases_and_returns_onprem_shape(ecs: Any, logs: Any, stubs: Any) -> None:
+def test_runs_three_phases_in_one_task_and_returns_onprem_shape(
+    ecs: Any, logs: Any, stubs: Any
+) -> None:
     e, lg = stubs
     _definition(e)
-    for n, phase in enumerate(("precheck", "up", "verify"), 1):
-        _phase(e, lg, n, _result(phase))
+    _task(e, lg, [_result(p) for p in ("precheck", "up", "verify")])
 
     got = _run(ecs, logs, ["0002"])
 
@@ -167,9 +175,7 @@ def test_runs_three_phases_and_returns_onprem_shape(ecs: Any, logs: Any, stubs: 
 def test_verify_mismatch_fails(ecs: Any, logs: Any, stubs: Any) -> None:
     e, lg = stubs
     _definition(e)
-    _phase(e, lg, 1, _result("precheck"))
-    _phase(e, lg, 2, _result("up"))
-    _phase(e, lg, 3, _result("verify", current="0001"))
+    _task(e, lg, [_result("precheck"), _result("up"), _result("verify", current="0001")])
     with pytest.raises(DdakToolError) as err:
         _run(ecs, logs, ["0002"])
     assert err.value.code is ErrorCode.ADAPTER_FAILED
@@ -178,19 +184,60 @@ def test_verify_mismatch_fails(ecs: Any, logs: Any, stubs: Any) -> None:
 def test_nonzero_exit_fails(ecs: Any, logs: Any, stubs: Any) -> None:
     e, lg = stubs
     _definition(e)
-    _phase(e, lg, 1, None, exit_code=1)
+    _task(e, lg, None, exit_code=1)
     with pytest.raises(DdakToolError) as err:
         _run(ecs, logs, ["0002"])
     assert err.value.code is ErrorCode.ADAPTER_FAILED
 
 
-def test_phase_not_ok_fails(ecs: Any, logs: Any, stubs: Any) -> None:
+def test_failed_task_reports_reason_and_partial_results(ecs: Any, logs: Any, stubs: Any) -> None:
     e, lg = stubs
     _definition(e)
-    _phase(e, lg, 1, _result("precheck", ok=False))
+    _task(e, lg, [_result("precheck", ok=False, current=None)], exit_code=1)
+    with pytest.raises(DdakToolError) as err:
+        _run(ecs, logs, ["0002"])
+    message = str(err.value)
+    assert "exit=1" in message
+    assert "precheck ok=False current=None expected=0002" in message
+
+
+def test_secret_pull_failure_reason_hides_identifiers(ecs: Any, logs: Any, stubs: Any) -> None:
+    e, _lg = stubs
+    _definition(e)
+    arn = "arn:aws:secretsmanager:ap-northeast-2:111122223333:secret:ddak/flaskr/DB-AbCdEf"
+    e.add_response(
+        "run_task",
+        {"tasks": [{"taskArn": "arn:aws:ecs:ap-northeast-2:111122223333:task/ddak/task1"}]},
+        None,
+    )
+    e.add_response(
+        "describe_tasks",
+        {
+            "tasks": [
+                {
+                    "lastStatus": "STOPPED",
+                    "stoppedReason": f"ResourceInitializationError: unable to pull secrets {arn}",
+                    "containers": [{"name": "was"}],
+                }
+            ]
+        },
+        None,
+    )
+    with pytest.raises(DdakToolError) as err:
+        _run(ecs, logs, ["0002"])
+    message = str(err.value)
+    assert "ResourceInitializationError" in message
+    assert "111122223333" not in message and "arn:aws" not in message
+
+
+def test_phase_order_or_not_ok_fails(ecs: Any, logs: Any, stubs: Any) -> None:
+    e, lg = stubs
+    _definition(e)
+    _task(e, lg, [_result("precheck", ok=False), _result("up"), _result("verify")])
     with pytest.raises(DdakToolError) as err:
         _run(ecs, logs, ["0002"])
     assert err.value.code is ErrorCode.ADAPTER_FAILED
+    assert "precheck" in str(err.value)
 
 
 def test_requires_awslogs(ecs: Any, logs: Any, stubs: Any) -> None:

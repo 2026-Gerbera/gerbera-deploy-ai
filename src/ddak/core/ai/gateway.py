@@ -28,7 +28,7 @@ from ddak.core.config import Settings
 from ddak.core.contracts.base import AIUsage
 from ddak.core.contracts.enums import Source
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
-from ddak.core.redact import redact
+from ddak.core.redact import MAX_LEN, redact
 from ddak.core.registry import ai_tools
 
 DATA_OPEN = "<untrusted_data>"
@@ -54,7 +54,9 @@ def ensure_ai_allowed() -> str:
     return tool
 
 
-def _safe_data(text: str, settings: Settings | None = None) -> str:
+def _safe_data(
+    text: str, settings: Settings | None = None, *, max_len: int | None = MAX_LEN
+) -> str:
     if settings is not None:
         secrets = [
             *settings.provider_keys.values(),
@@ -65,11 +67,11 @@ def _safe_data(text: str, settings: Settings | None = None) -> str:
         ]
         for secret in sorted((s for s in secrets if s), key=len, reverse=True):
             text = text.replace(secret, "[REDACTED]")
-    return redact(text).replace(DATA_CLOSE, "")
+    return redact(text, max_len=max_len).replace(DATA_CLOSE, "")
 
 
 def build_user_prompt(instruction: str, data: str, *, operator_message: str | None = None) -> str:
-    parts = [redact(instruction)]
+    parts = [redact(instruction, max_len=None)]
     if operator_message:
         parts.append(f"운영자 요청: {redact(operator_message)}")
     parts.append(f"{DATA_OPEN}\n{_safe_data(data)}\n{DATA_CLOSE}")
@@ -105,7 +107,7 @@ def _generation_request[M: BaseModel](
         purpose=purpose,
         system=SYSTEM_GUARD,
         user=build_user_prompt(
-            _safe_data(instruction, settings),
+            _safe_data(instruction, settings, max_len=None),
             _safe_data(data, settings),
             operator_message=_safe_data(operator_message, settings) if operator_message else None,
         ),

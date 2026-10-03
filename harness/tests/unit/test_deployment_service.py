@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import sqlite3
 import threading
@@ -181,6 +182,17 @@ def plan(run_id: str = "run-2", *, patch: bool = False) -> Plan:
     )
 
 
+def patch_metadata(patch: bytes = PATCH, **overrides: Any) -> dict[str, Any]:
+    return {
+        "passed": True,
+        "patch_sha256": "sha256:" + hashlib.sha256(patch).hexdigest(),
+        "reason": "승인된 설정 패치 fixture",
+        "reuse": False,
+        "source": "fixture",
+        **overrides,
+    }
+
+
 def prepare(service: DeploymentService, source: Path, *, patch: bool = False) -> str:
     p = plan(patch=patch)
     return service.prepare(
@@ -188,6 +200,7 @@ def prepare(service: DeploymentService, source: Path, *, patch: bool = False) ->
         RunContext(p.run_id, project=p.project, toggles=p.toggles),
         source,
         patch=PATCH if patch else None,
+        patch_meta=patch_metadata() if patch else None,
     )
 
 

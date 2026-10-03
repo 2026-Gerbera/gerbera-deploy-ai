@@ -1,0 +1,417 @@
+{
+  "$defs": {
+    "AIUsage": {
+      "additionalProperties": false,
+      "description": "AI 툴 출력에 붙이는 사용량. 💭 필드 확정은 계약 문서(TODO(contract)).",
+      "properties": {
+        "cost_usd": {
+          "minimum": 0,
+          "title": "Cost Usd",
+          "type": "number"
+        },
+        "input_tokens": {
+          "minimum": 0,
+          "title": "Input Tokens",
+          "type": "integer"
+        },
+        "latency_ms": {
+          "minimum": 0,
+          "title": "Latency Ms",
+          "type": "integer"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "output_tokens": {
+          "minimum": 0,
+          "title": "Output Tokens",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "model",
+        "input_tokens",
+        "output_tokens",
+        "cost_usd",
+        "latency_ms"
+      ],
+      "title": "AIUsage",
+      "type": "object"
+    },
+    "By": {
+      "description": "결정 주체. 계획 step·패치 등을 규칙이 정했는지 AI가 정했는지 표시한다.",
+      "enum": [
+        "rule",
+        "ai"
+      ],
+      "title": "By",
+      "type": "string"
+    },
+    "EnvKey": {
+      "additionalProperties": false,
+      "properties": {
+        "by": {
+          "$ref": "#/$defs/By",
+          "default": "rule"
+        },
+        "is_new": {
+          "default": true,
+          "title": "Is New",
+          "type": "boolean"
+        },
+        "kind": {
+          "enum": [
+            "plain",
+            "secret"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model"
+        },
+        "name": {
+          "pattern": "^[A-Z][A-Z0-9_]{0,63}$",
+          "title": "Name",
+          "type": "string"
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "maxLength": 100,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "required": {
+          "default": true,
+          "title": "Required",
+          "type": "boolean"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Source"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "tier": {
+          "anyOf": [
+            {
+              "description": "deploy.yaml에 정의된 tier",
+              "pattern": "^[a-z][a-z0-9_-]{0,31}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tier"
+        }
+      },
+      "required": [
+        "name",
+        "kind"
+      ],
+      "title": "EnvKey",
+      "type": "object"
+    },
+    "PatchMeta": {
+      "additionalProperties": false,
+      "description": "최상위 passed·patch_sha256과 함께 실행기 patch_meta로 연결한다.",
+      "properties": {
+        "gitleaks": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Gitleaks"
+        },
+        "patterns": {
+          "items": {
+            "enum": [
+              "secret_key",
+              "local_address",
+              "cookie_secure",
+              "proxy_fix"
+            ],
+            "type": "string"
+          },
+          "title": "Patterns",
+          "type": "array"
+        },
+        "reason": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        },
+        "reuse": {
+          "title": "Reuse",
+          "type": "boolean"
+        },
+        "source": {
+          "$ref": "#/$defs/Source"
+        }
+      },
+      "required": [
+        "reason",
+        "reuse",
+        "source"
+      ],
+      "title": "PatchMeta",
+      "type": "object"
+    },
+    "PatchViolation": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "maxLength": 40,
+          "minLength": 1,
+          "title": "Code",
+          "type": "string"
+        },
+        "file": {
+          "default": "",
+          "maxLength": 200,
+          "title": "File",
+          "type": "string"
+        },
+        "line": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Line"
+        }
+      },
+      "required": [
+        "code"
+      ],
+      "title": "PatchViolation",
+      "type": "object"
+    },
+    "Source": {
+      "description": "AI 결과의 출처. live가 아니면 관리 페이지가 라벨을 표시한다(목업은 목업이라고 밝힘).",
+      "enum": [
+        "live",
+        "cache",
+        "fixture",
+        "replay"
+      ],
+      "title": "Source",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "status별 채워지는 칸.\n\n- proposed·reused: patch·patch_sha256·meta가 있고 passed=True. prepare에 넘긴다.\n- no_targets: 패치 없음. 성공 원장의 손실 관문을 통과한 원본으로 진행한다.\n- rejected: 새 제안 실패. patch=None, passed=False, 경고를 남긴다.\n  실패한 diff를 prepare에 넘기지 않는다.",
+  "properties": {
+    "ai_usage": {
+      "items": {
+        "$ref": "#/$defs/AIUsage"
+      },
+      "maxItems": 2,
+      "title": "Ai Usage",
+      "type": "array"
+    },
+    "attempts": {
+      "default": 0,
+      "maximum": 2,
+      "minimum": 0,
+      "title": "Attempts",
+      "type": "integer"
+    },
+    "changed_files": {
+      "items": {
+        "maxLength": 200,
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Changed Files",
+      "type": "array"
+    },
+    "env_keys": {
+      "items": {
+        "$ref": "#/$defs/EnvKey"
+      },
+      "title": "Env Keys",
+      "type": "array"
+    },
+    "env_vars": {
+      "items": {
+        "pattern": "^[A-Z][A-Z0-9_]{1,63}$",
+        "type": "string"
+      },
+      "maxItems": 10,
+      "title": "Env Vars",
+      "type": "array"
+    },
+    "meta": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PatchMeta"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "passed": {
+      "title": "Passed",
+      "type": "boolean"
+    },
+    "patch": {
+      "anyOf": [
+        {
+          "maxLength": 65536,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Patch"
+    },
+    "patch_sha256": {
+      "anyOf": [
+        {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Patch Sha256"
+    },
+    "run_id": {
+      "description": "실행 ID. 모든 툴의 필수 입력",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+      "title": "Run Id",
+      "type": "string"
+    },
+    "source": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Source"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "status": {
+      "enum": [
+        "proposed",
+        "reused",
+        "no_targets",
+        "rejected"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "target_hashes": {
+      "additionalProperties": {
+        "pattern": "^sha256:[0-9a-f]{64}$",
+        "type": "string"
+      },
+      "propertyNames": {
+        "maxLength": 200,
+        "minLength": 1
+      },
+      "title": "Target Hashes",
+      "type": "object"
+    },
+    "targets": {
+      "additionalProperties": {
+        "items": {
+          "enum": [
+            "secret_key",
+            "local_address",
+            "cookie_secure",
+            "proxy_fix"
+          ],
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "propertyNames": {
+        "maxLength": 200,
+        "minLength": 1
+      },
+      "title": "Targets",
+      "type": "object"
+    },
+    "violations": {
+      "items": {
+        "$ref": "#/$defs/PatchViolation"
+      },
+      "maxItems": 50,
+      "title": "Violations",
+      "type": "array"
+    },
+    "warnings": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Warnings",
+      "type": "array"
+    }
+  },
+  "required": [
+    "run_id",
+    "status",
+    "passed"
+  ],
+  "title": "PatchConfigOutput",
+  "type": "object"
+}

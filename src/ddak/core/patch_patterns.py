@@ -15,9 +15,19 @@ from ddak.core.contracts.plan_facts import PatchTarget
 from ddak.core.pem import UnsupportedPemError
 from ddak.core.snapshots import excluded
 
-__all__ = ["PATTERNS", "iter_source_texts", "scan_patch_targets"]
+__all__ = [
+    "DATABASE_SETTINGS",
+    "PATTERNS",
+    "address_env_key",
+    "environment_reads",
+    "iter_source_texts",
+    "scan_patch_targets",
+]
 
 MAX_SCAN_BYTES = 1024 * 1024
+DATABASE_SETTINGS = frozenset(
+    {"DATABASE", "DATABASE_URL", "SQLALCHEMY_DATABASE_URI", "DB_URL", "DB_URI"}
+)
 
 # 검사기의 줄 규칙과 분석기의 pattern_id는 이 레지스트리만 사용한다.
 PATTERNS: dict[str, re.Pattern[str]] = {
@@ -148,11 +158,109 @@ def _numeric_literal(node: ast.AST) -> bool:
     return isinstance(node, ast.Constant) and type(node.value) in (int, float)
 
 
+def address_env_key(name: str, value: str) -> str | None:
+    """앱의 DB 설정 이름과 런타임 주입 이름을 구분한다. 값은 반환하지 않는다."""
+    scheme = value.partition("://")[0].partition("+")[0].lower() if "://" in value else ""
+    if name in DATABASE_SETTINGS or scheme in {
+        "mysql",
+        "mariadb",
+        "postgres",
+        "postgresql",
+        "sqlite",
+    }:
+        return "DATABASE_URL"
+    return name if _ENV_NAME.fullmatch(name) else None
+
+
+def environment_reads(
+    tree: ast.AST, *, strict: bool = True
+) -> Iterator[tuple[ast.AST, ast.AST | None]]:
+    """별칭을 따라 읽기를 찾는다. 탐지는 별표 import를 허용하고 편집은 거부한다."""
+    os_names = {"os"}
+    environ_names: set[str] = set()
+    getenv_names = {"getenv", "require_env", "env_bool", "env_int"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            os_names.update(a.asname or "os" for a in node.names if a.name == "os")
+        elif isinstance(node, ast.ImportFrom) and node.module == "os":
+            if any(a.name == "*" for a in node.names):
+                if strict:
+                    raise ValueError("os 별표 import의 환경키 사용을 검증할 수 없다")
+                environ_names.add("environ")
+            environ_names.update(a.asname or a.name for a in node.names if a.name == "environ")
+            getenv_names.update(a.asname or a.name for a in node.names if a.name == "getenv")
+
+    def is_environ(node: ast.AST) -> bool:
+        return (isinstance(node, ast.Name) and node.id in environ_names) or (
+            isinstance(node, ast.Attribute)
+            and node.attr == "environ"
+            and isinstance(node.value, ast.Name)
+            and node.value.id in os_names
+        )
+
+    def is_reader(node: ast.AST) -> bool:
+        return (isinstance(node, ast.Name) and node.id in getenv_names) or (
+            isinstance(node, ast.Attribute)
+            and (
+                (
+                    is_environ(node.value)
+                    and node.attr in {"get", "setdefault", "pop", "__getitem__"}
+                )
+                or (
+                    node.attr == "getenv"
+                    and isinstance(node.value, ast.Name)
+                    and node.value.id in os_names
+                )
+            )
+        )
+
+    # 모듈·environ·읽기 함수의 정적 별칭 체인도 빠뜨리지 않는다.
+    while True:
+        previous = (set(os_names), set(environ_names), set(getenv_names))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                value, targets = node.value, node.targets
+            elif isinstance(node, ast.AnnAssign) and node.value is not None:
+                value, targets = node.value, [node.target]
+            else:
+                continue
+            bound = {t.id for t in targets if isinstance(t, ast.Name)}
+            if isinstance(value, ast.Name) and value.id in os_names:
+                os_names.update(bound)
+            if is_environ(value):
+                environ_names.update(bound)
+            if is_reader(value):
+                getenv_names.update(bound)
+        if previous == (os_names, environ_names, getenv_names):
+            break
+
+    for node in ast.walk(tree):
+        key: ast.AST | None = None
+        read = False
+        if isinstance(node, ast.Subscript) and is_environ(node.value):
+            key, read = node.slice, True
+        elif isinstance(node, ast.Call):
+            read = is_reader(node.func)
+            if read:
+                key = (
+                    node.args[0]
+                    if node.args
+                    else next((kw.value for kw in node.keywords if kw.arg == "key"), None)
+                )
+        if read:
+            yield node, key
+
+
 def _scan_file(tree: ast.AST) -> Iterator[tuple[int, str, Literal["patch", "warning"], str | None]]:
+    env_nodes = {
+        node for read, _ in environment_reads(tree, strict=False) for node in ast.walk(read)
+    }
     names: dict[ast.AST, str] = {}
     for name, value in _settings(tree):
         for child in ast.walk(value):
             names[child] = name
+        if value in env_nodes:
+            continue
         if name.lower() == "secret_key" and _string(value) is not None:
             yield value.lineno, "secret_key", "patch", "SECRET_KEY"
         elif (
@@ -175,6 +283,8 @@ def _scan_file(tree: ast.AST) -> Iterator[tuple[int, str, Literal["patch", "warn
         if isinstance(node, ast.ImportFrom) and node.module == "werkzeug.middleware.proxy_fix":
             proxy_names.update(a.asname or a.name for a in node.names if a.name == "ProxyFix")
     for node in ast.walk(tree):
+        if node in env_nodes:
+            continue
         if (
             isinstance(node, ast.Constant)
             and node not in docstrings
@@ -186,7 +296,7 @@ def _scan_file(tree: ast.AST) -> Iterator[tuple[int, str, Literal["patch", "warn
                 node.lineno,
                 "local_address",
                 severity,
-                name if _ENV_NAME.fullmatch(name) else None,
+                address_env_key(name, value),
             )
         if isinstance(node, ast.Call) and (
             (isinstance(node.func, ast.Name) and node.func.id in proxy_names)

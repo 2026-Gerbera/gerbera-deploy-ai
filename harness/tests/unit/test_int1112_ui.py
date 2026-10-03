@@ -1,6 +1,7 @@
 """B안 통합 이후에도 설정·승인 기능은 같은 데이터와 POST 경계를 쓴다."""
 
 from ddak.web.dependencies import templates
+from tests.unit.test_deployment_service import patch_metadata
 from tests.unit.test_deployment_service import rig as rig
 from tests.unit.test_setup_web_fix11 import FakeCoordinator
 from tests.unit.test_ui_integration_fix10 import PROJECT, client_for, post, prepare
@@ -54,9 +55,8 @@ def test_patch_explanation_and_decision_basis_display_without_raw_diff(rig):
         patch="private-" + "source-sentinel",
         missing_env_keys=["APP_BASE_URL"],
         patch_meta={
-            "passed": True,
+            **patch_metadata(reason="개발 설정을 필수 환경변수로 전환"),
             "gitleaks": "passed",
-            "reason": "개발 설정을 필수 환경변수로 전환",
             "new_env_keys": ["APP_BASE_URL"],
             "patterns": ["loopback"],
             "target_hashes": {"app.py": "b" * 64},

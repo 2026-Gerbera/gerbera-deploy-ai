@@ -12,7 +12,7 @@ from unittest.mock import Mock
 import pytest
 
 from ddak.core.registry import REGISTRY
-from ddak.core.snapshots import digest_json, file_manifest
+from ddak.core.snapshots import digest_bytes, digest_json, file_manifest
 from ddak.core.store import Store
 from ddak.executor.service import DeploymentService
 from tests.support import REPO_ROOT, load_script
@@ -53,6 +53,16 @@ def test_three_independent_v2_rounds_verify_gates_artifacts_and_rollback(tmp_pat
         assert len({record.approval_id for record in approvals}) == 1
         assert all(record.decision == "approved" for record in approvals)
         run = root / "runs" / v2
+        patch = (demo.FIXTURES / "v2.patch").read_bytes()
+        assert (run / "approved.patch").read_bytes() == patch
+        patch_meta = json.loads((run / "approval-meta.json").read_text())["patch_meta"]
+        assert patch_meta["passed"] is True
+        assert (
+            patch_meta["patch_sha256"] == digest_bytes(patch) == summary["snapshot"]["patch_sha256"]
+        )
+        assert patch_meta["reuse"] is False
+        assert patch_meta["source"] == "fixture"
+        assert "fixture" in patch_meta["reason"]
         assert json.loads((run / "build-source" / "app.json").read_text())["version"] == "v2"
         release = json.loads((run / "release.json").read_text())
         assert release["artifacts"]["snapshot"] == summary["snapshot"]

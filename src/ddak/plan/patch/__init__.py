@@ -1,14 +1,8 @@
-"""plan/patch: AI 코드 수정 P0(토글 ON 전용). 담당 장민영(O3).
+"""설정 패치 공개 API. 제품은 tool.py에 한 번 등록된 patch_config를 호출한다.
 
-공개 함수: patch_config, patch_db_access, patch_storage(툴 자리, 빈 구현),
-propose_intents(제품용 위치 의도 생성), propose_config_patch(기존 제안 API),
-render_intents(결정적 렌더러), prepare_patch(검사·원장 파이프라인).
-다른 디렉토리는 이 파일의 공개 이름만 쓴다.
-AI 호출은 ddak.core.ai(call_ai, ask_jev)로만 한다(허용 디렉토리, import-linter 계약 2).
-툴 입출력 계약이 정해지면 이 디렉토리에 tool.py를 만들고 @tool("patch_config")으로 등록한다
-(시그니처: inp: <Tool>Input, ctx: RunContext -> <Tool>Output, 모델은 ddak.core.contracts.tools).
-제품은 patch_config 호출자 문맥에서 propose_intents를 prepare_patch에 주입한다.
-propose_config_patch API는 호환용으로 유지한다.
+등록 툴은 intents 생성과 검사·성공 원장 재사용을 함께 수행한다.
+patch_session은 조립부의 실행별 설정·경로만 주입하며 툴을 직접 호출하지 않는다.
+propose_config_patch는 이전 제안 API 호환용이다.
 """
 
 from __future__ import annotations
@@ -20,11 +14,12 @@ from ddak.plan.patch.generate import (
     PatchProposal,
     PreviousPatch,
     find_targets,
+    patch_config,
     propose_config_patch,
     propose_intents,
 )
 from ddak.plan.patch.intents import EditIntent, render_intents
-from ddak.plan.patch.pipeline import PatchPreparation, prepare_patch
+from ddak.plan.patch.pipeline import PatchPreparation, PatchSession, patch_session, prepare_patch
 
 __all__ = [
     "EditIntent",
@@ -32,10 +27,12 @@ __all__ = [
     "PatchEdit",
     "PatchPreparation",
     "PatchProposal",
+    "PatchSession",
     "PreviousPatch",
     "find_targets",
     "patch_config",
     "patch_db_access",
+    "patch_session",
     "patch_storage",
     "prepare_patch",
     "propose_config_patch",
@@ -46,17 +43,12 @@ __all__ = [
 _TODO = "plan/patch 미구현: 담당 장민영"
 
 
-def patch_config(inp: object, ctx: RunContext) -> object:
-    """patch_config 빈 구현.
-
-    입력(모델 미정): 분석 결과 + 대상 파일(신뢰하지 않는 입력). 출력: 빌드 사본에 적용할 diff
-    제안 + 원본·diff·수정본 해시. ctx.toggles["code_patch"]가 True일 때만, 사람 승인 뒤 적용한다.
-    """
-    raise NotImplementedError(_TODO)
-
-
 def patch_db_access(inp: object, ctx: RunContext) -> object:
-    """patch_db_access 빈 구현. 입출력은 patch_config와 같은 모양(DB 접근 패턴)."""
+    """patch_db_access: patch_config로 흡수했다(10/3 O3). 등록하지 않는다.
+
+    범위(공통 계약: 설정 주소만, SQL 변환 제외)가 patch_config의 local_address 패턴과 같다.
+    코드에 박힌 DB 접속 주소(localhost·127.0.0.1)는 patch_config가 DATABASE_URL 읽기로 고친다.
+    """
     raise NotImplementedError(_TODO)
 
 

@@ -333,18 +333,14 @@ class DeploymentService:
                     ErrorCode.CONFIG_INVALID,
                     "온프렘 인벤토리 tier 누락: " + ", ".join(sorted(missing)),
                 )
-        snapshot = preview(source, patch)
-        if (
-            patch
-            and context.project_settings.get("code_patch")
-            and (
-                (patch_meta or {}).get("passed") is not True
-                or (patch_meta or {}).get("patch_sha256") != snapshot.patch_sha256
-            )
+        if patch and (
+            (patch_meta or {}).get("passed") is not True
+            or (patch_meta or {}).get("patch_sha256") != digest_bytes(patch)
         ):
             raise DdakToolError(
                 ErrorCode.PRECONDITION_FAILED, "패치 검사 결과와 승인 diff 해시가 필요하다"
             )
+        snapshot = preview(source, patch)
         if patch and context.source_sha:
             repository = self.connect_repository(context)
             if repository is not None:

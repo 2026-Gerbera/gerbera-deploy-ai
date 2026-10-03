@@ -8,7 +8,8 @@
 - 근거(evidence)에는 위치만 남긴다(log#줄 번호, smoke:시나리오 id, diff:검사 id).
   일치한 원문은 싣지 않는다(비밀값·접속 문자열이 섞일 수 있다).
 - 판정 순서: 로그 시그니처(구체적인 원인) → smoke 신호 → 비교 불일치 → unknown(가설).
-- 아직 툴로 등록하지 않는다. 입출력 계약 모델(core/contracts)은 정준우 확인 뒤에 만든다.
+- 툴 진입점은 advisory.py(diagnose_parity_gap), 등록은 tool.py다.
+  범주 목록은 계약 모델에서 가져온다.
 """
 
 from __future__ import annotations
@@ -19,20 +20,9 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from ddak.core.contracts.tools.compare_env_results import CompareEnvResultsOutput
+from ddak.core.contracts.tools.diagnose_parity_gap import Category
 from ddak.core.contracts.tools.smoke_test import SmokeTestOutput
 
-Category = Literal[
-    "secret_missing",
-    "db_schema",
-    "db_conn",
-    "db_tls",
-    "image_pull",
-    "health_timeout",
-    "config_mismatch",
-    "tls",
-    "parity_diff",
-    "unknown",
-]
 EvidenceSource = Literal["log", "smoke", "diff"]
 
 MAX_LOG_CHARS = 64 * 1024  # 로그 하나에서 보는 양(끝부분). 앞부분은 버린다

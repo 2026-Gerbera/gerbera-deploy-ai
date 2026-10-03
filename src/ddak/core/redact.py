@@ -113,12 +113,12 @@ _RULES: tuple[tuple[re.Pattern[str], _Replacement], ...] = (
 )
 
 
-def redact(text: str, *, max_len: int = MAX_LEN) -> str:
-    """문자열 안의 비밀값 모양을 가리고 max_len 글자로 자른다."""
+def redact(text: str, *, max_len: int | None = MAX_LEN) -> str:
+    """비밀값 모양을 가린다. max_len이 None이면 길이를 제한하지 않는다."""
     out = text
     for pattern, replacement in _RULES:
         out = pattern.sub(replacement, out)
-    if len(out) > max_len:
+    if max_len is not None and len(out) > max_len:
         cut = len(out) - max_len
         out = f"{out[:max_len]}...[truncated {cut} chars]"
     return out

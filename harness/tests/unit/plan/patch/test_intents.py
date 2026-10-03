@@ -193,6 +193,7 @@ def test_existing_os_import_is_reused(source: Path, tmp_path: Path, os_import: s
         "match {}:\n    case {**os}: pass",
         "del os",
         "from package import *",
+        "from os import *",
         "def f():\n    HOST = 'localhost'\n    import os",
     ],
 )
@@ -233,6 +234,14 @@ def test_dynamic_envkey_fails_closed(source: Path) -> None:
     write(source, "import os\nOTHER = os.environ[name]\n", "other.py")
     t = target()
     with pytest.raises(ValueError, match="동적 환경키"):
+        render_intents(source, [t], [intent(t)])
+
+
+def test_wildcard_in_other_file_still_prevents_unverified_edit(source: Path) -> None:
+    write(source, "HOST = 'localhost'\n")
+    write(source, "from os import *\n", "other.py")
+    t = target()
+    with pytest.raises(ValueError, match="별표 import"):
         render_intents(source, [t], [intent(t)])
 
 

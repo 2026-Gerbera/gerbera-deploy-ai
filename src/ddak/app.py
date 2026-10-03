@@ -57,6 +57,7 @@ from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.contracts.plan import Plan, PlanStep
 from ddak.core.contracts.plan_facts import FileMeta
 from ddak.core.contracts.tools.generate_infra import GenerateInfraInput, GenerateInfraOutput
+from ddak.core.contracts.tools.patch_config import PatchConfigInput, PatchConfigOutput
 from ddak.core.logging import get_logger
 from ddak.core.project_settings import ProjectSettings, watch_source
 from ddak.core.redact import redact_obj
@@ -91,7 +92,7 @@ from ddak.plan.intake import (
     load_watch_targets,
     resolve_head,
 )
-from ddak.plan.patch import prepare_patch, propose_intents
+from ddak.plan.patch import PatchPreparation, PatchSession, patch_session
 from ddak.web.app import create_app
 
 _log = get_logger("plan")
@@ -352,9 +353,22 @@ def _attach_watch(app: FastAPI, settings: Settings) -> None:
     app.router.lifespan_context = lifespan
 
 
-def _propose_patch(source, targets, ctx, *, settings):
-    with tool_context("patch_config", ctx.run_id):
-        return propose_intents(source, targets, ctx, settings=settings)
+def _prepare_config_patch(service, source, facts, ctx, *, settings, source_root, selected):
+    previous = {
+        target: row["current"]
+        for target, row in service.store.environments(ctx.project).items()
+        if target in selected and row.get("current")
+    }
+    ctx = replace(ctx, previous_release=previous)
+    inp = PatchConfigInput(run_id=ctx.run_id, source_dir=source.relative_to(source_root).as_posix())
+    session = PatchSession(ctx.run_id, source_root, service.root / "runs", facts, settings)
+    registered = service.registry.get("patch_config")
+    with patch_session(session), tool_context("patch_config", ctx.run_id):
+        output = registered.fn(inp, ctx)
+    out = PatchConfigOutput.model_validate(output)
+    if out.run_id != ctx.run_id:
+        raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "패치 툴 응답의 run ID가 다르다")
+    return PatchPreparation.from_output(out)
 
 
 async def _prepare_commit_inner(
@@ -483,19 +497,14 @@ async def _prepare_commit_inner(
             fetch_policy=policy,
             **({"jev_client": get_jev_client(settings)} if service.onboarding is not None else {}),
             previous_manifests=lambda project: _previous_manifests(service.store, project),
-            patch_preparer=lambda source, facts, ctx: prepare_patch(
+            patch_preparer=lambda source, facts, ctx: _prepare_config_patch(
+                service,
                 source,
                 facts,
                 ctx,
-                previous={
-                    t: row["current"]
-                    for t, row in service.store.environments(ctx.project).items()
-                    if t in selected and row.get("current")
-                },
-                runs_root=service.root / "runs",
-                proposer=lambda root, targets, ctx: _propose_patch(
-                    root, targets, ctx, settings=settings
-                ),
+                settings=settings,
+                source_root=policy.root,
+                selected=selected,
             ),
             record_stage=lambda name, ms, status: service.record_stage(run_id, name, ms, status),
             cloud_domain=context.cloud_domain,

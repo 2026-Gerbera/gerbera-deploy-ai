@@ -30,7 +30,7 @@ from ddak.core.contracts.errors import DdakToolError
 from ddak.core.contracts.plan import DeploySections, Plan, Planner, PlanStep, Section
 from ddak.core.contracts.release import ImageArtifact, ImageObservation, ReleaseArtifacts
 from ddak.core.registry import CATALOG, Registry
-from ddak.core.snapshots import digest_json
+from ddak.core.snapshots import digest_bytes, digest_json
 from ddak.executor.service import DeploymentService
 from ddak.onprem.deploy import preflight_inventory, reset_demo
 
@@ -259,11 +259,25 @@ async def run_fixture(
                 adapter_mode=AdapterMode.FAKE,
                 toggles=plan.toggles,
             )
+            patch = (FIXTURES / "v2.patch").read_bytes() if version == "v2" else None
+            # fixture 전용 검사 대역이며 실제 앱의 패치 검사 결과로 사용하지 않는다.
+            patch_meta = (
+                {
+                    "passed": True,
+                    "patch_sha256": digest_bytes(patch),
+                    "reason": "fixture v2 패치 검사 대역",
+                    "reuse": False,
+                    "source": "fixture",
+                }
+                if patch is not None
+                else None
+            )
             service.prepare(
                 plan,
                 context,
                 FIXTURES / "source",
-                patch=(FIXTURES / "v2.patch").read_bytes() if version == "v2" else None,
+                patch=patch,
+                patch_meta=patch_meta,
             )
             view = service.approval_view(run_id)
             runtime.views[run_id] = view

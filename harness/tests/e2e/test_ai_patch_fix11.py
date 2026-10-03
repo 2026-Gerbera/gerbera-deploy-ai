@@ -27,7 +27,7 @@ from ddak.core.snapshots import digest_bytes, file_manifest, preview
 from ddak.executor.engine import RunStatus
 from ddak.executor.service import DeploymentService
 from ddak.plan.intake import FetchPolicy, WatchTarget
-from ddak.plan.patch import pipeline
+from ddak.plan.patch import generate
 from ddak.verify.smoke.fake import FakeSmokeAdapter
 from ddak.verify.smoke.logic import run_smoke
 from tests.unit.core.test_app_repository import git
@@ -49,7 +49,7 @@ class FixtureProvider:
 
     def complete(self, request: AIRequest) -> AIResponse:
         assert request.purpose == "patch_config"
-        assert request.prompt_version == "patch_config-intents-v1"
+        assert request.prompt_version == "patch_config-intents-v2"
         data = json.loads(
             request.user.split("<untrusted_data>", 1)[1].split("</untrusted_data>")[0]
         )
@@ -157,12 +157,13 @@ def rig(tmp_path, monkeypatch):
     settings = Settings(run_dir=tmp_path / "state/runs", ai_retries=0)
     policy = FetchPolicy(allowed_schemes=("file",), allowed_hosts=None, root=tmp_path / "intake")
     provider = FixtureProvider()
-    real_proposer = app.propose_intents
+    real_proposer = generate.propose_intents
 
-    def propose(root, targets, ctx, *, settings):
-        return real_proposer(root, targets, ctx, settings=settings, provider=provider)
+    def propose(root, targets, ctx, **kwargs):
+        kwargs["provider"] = provider
+        return real_proposer(root, targets, ctx, **kwargs)
 
-    monkeypatch.setattr(app, "propose_intents", propose)
+    monkeypatch.setattr(generate, "propose_intents", propose)
     scans = []
 
     def scan_patch(root, patch):
@@ -170,13 +171,12 @@ def rig(tmp_path, monkeypatch):
         scans.append({"source": "fixture", "kind": "patch"})
 
     # scanner 인자로 전달하므로 승인 메타에도 gitleaks=fixture가 남는다.
-    real_prepare_patch = app.prepare_patch
+    real_prepare_patch = generate.prepare_patch
 
     def prepare_patch(*args, **kwargs):
         return real_prepare_patch(*args, **kwargs, scanner=scan_patch)
 
-    monkeypatch.setattr(app, "prepare_patch", prepare_patch)
-    monkeypatch.setattr(pipeline, "strict_patch_scan", scan_patch)
+    monkeypatch.setattr(generate, "prepare_patch", prepare_patch)
     bundles = []
     real_plan = app.plan_deployment
 
@@ -199,7 +199,8 @@ def rig(tmp_path, monkeypatch):
         connected.secret_scan = scan_source
         return connected
 
-    registry = Registry(app.load_tools().specs)
+    loaded = app.load_tools()
+    registry = Registry(loaded.specs)
     calls = []
     service = DeploymentService(registry, tmp_path / "state", repository_factory=repository)
     result = Rig(
@@ -273,7 +274,10 @@ def rig(tmp_path, monkeypatch):
 
     for spec in registry.specs:
         if spec.kind is ToolKind.TOOL_FN:
-            registry.tool(spec.name)(fixture_tool(spec.name))
+            registry.tool(spec.name)(
+                loaded.get(spec.name).fn if spec.name == "patch_config" else fixture_tool(spec.name)
+            )
+    assert registry.get("patch_config").fn is loaded.get("patch_config").fn
     service.save_project_settings(
         "demo",
         {"repo_url": url, "watch_branch": "prod", "default_targets": "onprem", "code_patch": True},
@@ -417,7 +421,7 @@ async def test_two_file_patch_off_reuses_same_tree_regardless_of_diff_order(
         assert len(rig.provider.requests) == 1
         assert {t["file"] for t in rig.provider.requests[0]["targets"]} == {APP_FILE, extra_file}
         assert list(release["patch_ledger"]) == [APP_FILE, extra_file]
-        real_prepare = app.prepare_patch
+        real_prepare = generate.prepare_patch
 
         def prepare_with_fixture_order(source, facts, ctx, **kwargs):
             result = real_prepare(source, facts, ctx, **kwargs)
@@ -444,7 +448,7 @@ async def test_two_file_patch_off_reuses_same_tree_regardless_of_diff_order(
                 },
             )
 
-        monkeypatch.setattr(app, "prepare_patch", prepare_with_fixture_order)
+        monkeypatch.setattr(generate, "prepare_patch", prepare_with_fixture_order)
         rig.toggle(False)
         reused, reuse_release = await deploy(rig)
         prepared = rig.service._load_prepared(reused)

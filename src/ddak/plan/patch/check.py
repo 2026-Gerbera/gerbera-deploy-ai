@@ -13,7 +13,8 @@ AI가 만든 unified diff는 신뢰하지 않는 입력이다. 사람 승인 화
    추가한 줄의 패턴·환경변수 읽기는 주석과 문자열을 뺀 코드에서만 찾는다
    (주석에 패턴 단어만 넣는 우회 방지)
 4. 비밀값 리터럴: 추가한 줄에 비밀 이름(SECRET·PASSWORD·TOKEN·API_KEY…)이 있으면 그 줄의 문자열은
-   환경변수를 읽는 자리의 키만 허용한다(대문자 값도 거부). 개발값 기본값도 남기지 않는다
+   키 자리(환경변수 키, 첨자 키, 딕셔너리 키)만 허용한다(대문자 값도 거부).
+   개발값 기본값도 남기지 않는다
 5. 적용·문법: O1과 같은 core.snapshots.apply_diff로 임시 사본에 적용하고, 바뀐 .py를 ast로 파싱
 6. 적용 후 AST 비교(문자열 이어붙이기·여러 줄 나누기로 줄 검사를 피하는 경우): 원본에 없던 호출은
    허용 목록(환경변수 읽기, ProxyFix, 형 변환)만, 원본에 없던 import는 os·ProxyFix·앱 자체 모듈만
@@ -55,6 +56,7 @@ _ENV_KEY_BEFORE = re.compile(
 )
 # 첨자 키 자리(app.config["SECRET_KEY"]): 이름·]·) 바로 뒤의 [. 리스트 리터럴 ["..."]은 아니다
 _SUBSCRIPT_KEY_BEFORE = re.compile(r"[\w\])]\s*\[\s*$")
+# 딕셔너리 키 자리({"SECRET_KEY": ...}): 앞이 줄 시작·{·, 이고 바로 뒤가 :
 _DICT_KEY_BEFORE = re.compile(r"(?:^|[{,])\s*$")
 _DICT_KEY_AFTER = re.compile(r"^\s*:")
 _STRUCTURAL = re.compile(r"^\s*[()\[\]{},:]*\s*$")
@@ -307,7 +309,8 @@ def _is_blank_or_comment(line: str) -> bool:
 def _secret_literal(line: str) -> bool:
     """비밀 이름이 있는 줄에 키 자리가 아닌 문자열이 있으면 True(대문자 값 포함).
 
-    키 자리는 환경변수 키와 첨자 키(app.config["SECRET_KEY"])다. 값은 AST 비교가 다시 본다.
+    키 자리는 환경변수 키, 첨자 키(app.config["SECRET_KEY"]), 딕셔너리 키({"SECRET_KEY": ...})다.
+    값은 AST 비교가 다시 본다.
     """
     if not _SECRET_NAME.search(line):
         return False

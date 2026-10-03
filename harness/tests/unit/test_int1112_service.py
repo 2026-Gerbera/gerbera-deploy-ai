@@ -24,6 +24,7 @@ async def test_restart_approval_preserves_basis_without_raw_patch(rig, legacy):
         RunContext(plan.run_id, project=plan.project, toggles=plan.toggles),
         source,
         patch=support.PATCH,
+        patch_meta=support.patch_metadata(),
     )
     directory = service.root / "runs" / plan.run_id
     assert stat.S_IMODE(directory.stat().st_mode) == 0o700

@@ -279,6 +279,7 @@ def test_patch_approval_binds_private_diff_without_showing_source_lines(rig):
         RunContext(plan.run_id, project=plan.project, toggles=plan.toggles),
         source,
         patch=support.PATCH,
+        patch_meta=support.patch_metadata(),
     )
     with client_for(service) as client:
         response = client.get(f"/runs/{plan.run_id}/approval")

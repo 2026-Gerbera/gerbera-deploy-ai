@@ -1,0 +1,189 @@
+{
+  "$defs": {
+    "AIUsage": {
+      "additionalProperties": false,
+      "description": "AI 툴 출력에 붙이는 사용량. 💭 필드 확정은 계약 문서(TODO(contract)).",
+      "properties": {
+        "cost_usd": {
+          "minimum": 0,
+          "title": "Cost Usd",
+          "type": "number"
+        },
+        "input_tokens": {
+          "minimum": 0,
+          "title": "Input Tokens",
+          "type": "integer"
+        },
+        "latency_ms": {
+          "minimum": 0,
+          "title": "Latency Ms",
+          "type": "integer"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "output_tokens": {
+          "minimum": 0,
+          "title": "Output Tokens",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "model",
+        "input_tokens",
+        "output_tokens",
+        "cost_usd",
+        "latency_ms"
+      ],
+      "title": "AIUsage",
+      "type": "object"
+    },
+    "DiagnoseEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "ref": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Ref",
+          "type": "string"
+        },
+        "source": {
+          "enum": [
+            "log",
+            "smoke",
+            "diff"
+          ],
+          "title": "Source",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "ref"
+      ],
+      "title": "DiagnoseEvidence",
+      "type": "object"
+    },
+    "Source": {
+      "description": "AI 결과의 출처. live가 아니면 관리 페이지가 라벨을 표시한다(목업은 목업이라고 밝힘).",
+      "enum": [
+        "live",
+        "cache",
+        "fixture",
+        "replay"
+      ],
+      "title": "Source",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "ai_usage": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AIUsage"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "category": {
+      "enum": [
+        "secret_missing",
+        "db_schema",
+        "db_conn",
+        "db_tls",
+        "image_pull",
+        "health_timeout",
+        "config_mismatch",
+        "tls",
+        "parity_diff",
+        "unknown"
+      ],
+      "title": "Category",
+      "type": "string"
+    },
+    "evidence": {
+      "items": {
+        "$ref": "#/$defs/DiagnoseEvidence"
+      },
+      "maxItems": 5,
+      "title": "Evidence",
+      "type": "array"
+    },
+    "is_hypothesis": {
+      "title": "Is Hypothesis",
+      "type": "boolean"
+    },
+    "matched_rules": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 20,
+      "title": "Matched Rules",
+      "type": "array"
+    },
+    "reason": {
+      "enum": [
+        "parity_failed",
+        "track_failed"
+      ],
+      "title": "Reason",
+      "type": "string"
+    },
+    "rule": {
+      "anyOf": [
+        {
+          "maxLength": 64,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Rule"
+    },
+    "run_id": {
+      "description": "실행 ID. 모든 툴의 필수 입력",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+      "title": "Run Id",
+      "type": "string"
+    },
+    "source": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Source"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "suggested_next": {
+      "maxLength": 200,
+      "title": "Suggested Next",
+      "type": "string"
+    },
+    "summary": {
+      "maxLength": 400,
+      "minLength": 1,
+      "title": "Summary",
+      "type": "string"
+    }
+  },
+  "required": [
+    "run_id",
+    "reason",
+    "category",
+    "summary",
+    "suggested_next",
+    "is_hypothesis"
+  ],
+  "title": "DiagnoseParityGapOutput",
+  "type": "object"
+}

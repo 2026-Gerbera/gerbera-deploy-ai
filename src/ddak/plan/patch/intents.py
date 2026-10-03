@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ddak.core.contracts.plan_facts import EnvKey, PatchTarget
-from ddak.core.patch_patterns import PATTERNS
+from ddak.core.patch_patterns import DATABASE_SETTINGS, PATTERNS, address_env_key, environment_reads
 from ddak.core.snapshots import file_manifest
 from ddak.plan.patch.check import build_patch
 
@@ -22,7 +22,6 @@ __all__ = ["EditIntent", "render_intents"]
 
 _ENV_KEY = re.compile(r"[A-Z][A-Z0-9_]{0,63}\Z")
 _SECRET = re.compile(r"SECRET|PASSWORD|PASSWD|TOKEN|PRIVATE|CREDENTIAL|API_KEY|_KEY$")
-_DATABASE = frozenset({"DATABASE", "DATABASE_URL", "SQLALCHEMY_DATABASE_URI", "DB_URL", "DB_URI"})
 
 
 def _safe_file(value: str) -> str:
@@ -126,7 +125,7 @@ def _loopback(value: str) -> bool:
 
 
 def _dev_database(name: str, value: str) -> bool:
-    return name in _DATABASE and (
+    return name in DATABASE_SETTINGS and (
         value.startswith(("sqlite:///", "sqlite+pysqlite:///"))
         or value == ":memory:"
         or ("://" not in value and value.endswith((".sqlite", ".sqlite3", ".db")))
@@ -137,9 +136,12 @@ def _sites(tree: ast.Module) -> list[_Site]:
     sites: list[_Site] = []
     names: dict[ast.AST, str] = {}
     development: set[ast.AST] = set()
+    excluded = {node for read, _ in environment_reads(tree) for node in ast.walk(read)}
     for name, value in _settings(tree):
         for child in ast.walk(value):
             names[child] = name
+        if value in excluded:
+            continue
         if (text := _string(value)) is not None and _dev_database(name, text):
             development.add(value)
         if name.lower() == "secret_key" and _string(value) is not None:
@@ -151,10 +153,6 @@ def _sites(tree: ast.Module) -> list[_Site]:
         ):
             sites.append(_Site(value, "cookie_secure", name, "bool"))
 
-    excluded: set[ast.AST] = set()
-    for key in _environment_reads(tree):
-        if key is not None:
-            excluded.update(ast.walk(key))
     proxy_names = {"ProxyFix"}
     for node in ast.walk(tree):
         if (
@@ -172,12 +170,12 @@ def _sites(tree: ast.Module) -> list[_Site]:
             proxy_names.update(a.asname or a.name for a in node.names if a.name == "ProxyFix")
 
     for node in ast.walk(tree):
-        if node not in excluded and (value := _string(node)) is not None:
+        if node in excluded:
+            continue
+        if (value := _string(node)) is not None:
             name = names.get(node, "")
             if _loopback(value) or node in development:
-                sites.append(
-                    _Site(node, "local_address", name if _ENV_KEY.fullmatch(name) else None)
-                )
+                sites.append(_Site(node, "local_address", address_env_key(name, value)))
         if isinstance(node, ast.Call) and (
             (isinstance(node.func, ast.Name) and node.func.id in proxy_names)
             or (isinstance(node.func, ast.Attribute) and node.func.attr == "ProxyFix")
@@ -238,85 +236,10 @@ def _check_bindings(tree: ast.Module, *, needs_int: bool) -> bool:
     return bool(imports)
 
 
-def _environment_reads(tree: ast.Module) -> Iterator[ast.AST | None]:
-    """정적 import/대입 별칭을 따라 환경키 인자 AST를 찾는다."""
-    os_names = {"os"}
-    environ_names: set[str] = set()
-    getenv_names = {"getenv", "require_env", "env_bool", "env_int"}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            os_names.update(a.asname or "os" for a in node.names if a.name == "os")
-        elif isinstance(node, ast.ImportFrom) and node.module == "os":
-            if any(a.name == "*" for a in node.names):
-                raise ValueError("os 별표 import의 환경키 사용을 검증할 수 없다")
-            environ_names.update(a.asname or a.name for a in node.names if a.name == "environ")
-            getenv_names.update(a.asname or a.name for a in node.names if a.name == "getenv")
-
-    def is_environ(node: ast.AST) -> bool:
-        return (isinstance(node, ast.Name) and node.id in environ_names) or (
-            isinstance(node, ast.Attribute)
-            and node.attr == "environ"
-            and isinstance(node.value, ast.Name)
-            and node.value.id in os_names
-        )
-
-    def is_reader(node: ast.AST) -> bool:
-        return (isinstance(node, ast.Name) and node.id in getenv_names) or (
-            isinstance(node, ast.Attribute)
-            and (
-                (
-                    is_environ(node.value)
-                    and node.attr in {"get", "setdefault", "pop", "__getitem__"}
-                )
-                or (
-                    node.attr == "getenv"
-                    and isinstance(node.value, ast.Name)
-                    and node.value.id in os_names
-                )
-            )
-        )
-
-    # 모듈·environ·읽기 함수의 정적 별칭 체인도 빠뜨리지 않는다.
-    while True:
-        previous = (set(os_names), set(environ_names), set(getenv_names))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Assign):
-                value, targets = node.value, node.targets
-            elif isinstance(node, ast.AnnAssign) and node.value is not None:
-                value, targets = node.value, [node.target]
-            else:
-                continue
-            bound = {t.id for t in targets if isinstance(t, ast.Name)}
-            if isinstance(value, ast.Name) and value.id in os_names:
-                os_names.update(bound)
-            if is_environ(value):
-                environ_names.update(bound)
-            if is_reader(value):
-                getenv_names.update(bound)
-        if previous == (os_names, environ_names, getenv_names):
-            break
-
-    for node in ast.walk(tree):
-        key: ast.AST | None = None
-        read = False
-        if isinstance(node, ast.Subscript) and is_environ(node.value):
-            key, read = node.slice, True
-        elif isinstance(node, ast.Call):
-            read = is_reader(node.func)
-            if read:
-                key = (
-                    node.args[0]
-                    if node.args
-                    else next((kw.value for kw in node.keywords if kw.arg == "key"), None)
-                )
-        if read:
-            yield key
-
-
 def _env_keys(tree: ast.Module) -> set[str]:
     """동적 키는 기존 키와의 충돌을 증명할 수 없어 거부한다."""
     keys: set[str] = set()
-    for key in _environment_reads(tree):
+    for _, key in environment_reads(tree):
         value = _string(key)
         if value is None:
             raise ValueError("동적 환경키가 있어 키 충돌을 검증할 수 없다")
@@ -375,6 +298,7 @@ def render_intents(
     used: set[int] = set()
     planned: dict[str, list[tuple[PatchTarget, EditIntent]]] = {}
     keys: set[str] = set()
+    shared_db = False  # 알려진 DB 설정 별칭만 공통 DATABASE_URL을 함께 읽을 수 있다.
     for intent in edits:
         matches = [
             index
@@ -388,8 +312,13 @@ def render_intents(
         target = allowed[index]
         if target.severity != "patch":
             raise ValueError("warning 대상은 변경할 수 없다")
-        if index in used or intent.key in keys:
+        database = (
+            intent.key == target.key == "DATABASE_URL" and target.pattern_id == "local_address"
+        )
+        if index in used or (intent.key in keys and not (database and shared_db)):
             raise ValueError("중복 의도 또는 환경키 충돌이다")
+        if database and intent.key not in keys:
+            shared_db = True
         used.add(index)
         keys.add(intent.key)
         planned.setdefault(intent.file, []).append((target, intent))
@@ -434,19 +363,25 @@ def render_intents(
                 and site.key in {None, intent.key}
                 and (target.key is None or site.key == target.key)
             ]
-            if len(matches) != 1:
+            shared_database = (
+                target.pattern_id == "local_address"
+                and target.key == intent.key == "DATABASE_URL"
+                and matches
+                and all(site.key == "DATABASE_URL" and site.conversion == "str" for site in matches)
+            )
+            if len(matches) != 1 and not shared_database:
                 raise ValueError("위치가 하나의 지원 리터럴과 대응하지 않는다")
-            site = matches[0]
-            span = _span(site.node, offsets)
-            if span in replacements:
-                raise ValueError("같은 리터럴을 두 번 편집할 수 없다")
-            value = f"os.environ['{intent.key}']"
-            if site.conversion == "bool":
-                value = f"({value}.lower() == 'true')"
-            elif site.conversion == "int":
-                value = f"int({value})"
-                needs_int = True
-            replacements[span] = value.encode("ascii")
+            for site in matches:
+                span = _span(site.node, offsets)
+                if span in replacements:
+                    raise ValueError("같은 리터럴을 두 번 편집할 수 없다")
+                value = f"os.environ['{intent.key}']"
+                if site.conversion == "bool":
+                    value = f"({value}.lower() == 'true')"
+                elif site.conversion == "int":
+                    value = f"int({value})"
+                    needs_int = True
+                replacements[span] = value.encode("ascii")
             env.append(
                 EnvKey(name=intent.key, kind="secret" if _SECRET.search(intent.key) else "plain")
             )
@@ -479,4 +414,6 @@ def render_intents(
         except (SyntaxError, ValueError):
             raise ValueError("렌더 결과가 유효한 Python 소스가 아니다") from None
         changes[file] = (data.decode("utf-8"), rendered.decode("utf-8"))
-    return build_patch(changes), tuple(sorted(env, key=lambda item: item.name))
+    return build_patch(changes), tuple(
+        sorted({key.name: key for key in env}.values(), key=lambda item: item.name)
+    )

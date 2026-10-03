@@ -16,13 +16,14 @@ EditIntent와 reason을 받은 뒤 결정적 render_intents로 diff를 만든다
   가림이 줄 수를 바꾸면(여러 줄 비밀값) 줄 번호가 어긋나므로 AI 없이 rejected다.
 - 결과의 patch·meta는 실행기 prepare(patch=, patch_meta=)에 그대로 넘길 수 있는 모양이다
   (meta = reason·reuse·source, executor/approval_meta의 _PatchMeta).
-- 툴 등록과 입출력 계약(core/contracts)은 아직 없다(NEEDS_CONTEXT, 정준우).
-  그 전에는 이 함수를 쓴다.
+- 제품은 등록된 patch_config가 intents·원장 파이프라인을 실행한다.
+  propose_config_patch는 기존 제안 API 호환용이며 제품에서 직접 호출하지 않는다.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -39,7 +40,14 @@ from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.enums import Source
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.contracts.plan_facts import EnvKey, PatchTarget
+from ddak.core.contracts.tools.patch_config import (
+    PatchConfigInput,
+    PatchConfigOutput,
+    PatchMeta,
+    PatchViolation,
+)
 from ddak.core.env_keys import is_migration_key
+from ddak.core.patch_patterns import scan_patch_targets
 from ddak.core.redact import redact
 from ddak.core.snapshots import digest_bytes
 from ddak.plan.patch.check import (
@@ -53,8 +61,9 @@ from ddak.plan.patch.check import (
     check_patch,
 )
 from ddak.plan.patch.intents import EditIntent, render_intents
+from ddak.plan.patch.pipeline import current_patch_session, prepare_patch
 
-PROMPT_VERSION = "patch_config-v1"
+PROMPT_VERSION = "patch_config-v2"  # v2: DB 접속 주소 안내(patch_db_access 흡수), 빈 edits 허용
 MAX_SOURCE_BYTES = 64 * 1024  # 대상 파일 하나의 크기 상한(검사기의 패치 상한과 같다)
 MAX_SCAN_FILES = 500
 MAX_ATTEMPTS = 2  # 처음 + 위반 코드를 알려 주고 다시 묻기 1회
@@ -63,7 +72,14 @@ _ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]{1,63}$")
 _SCALAR_VALUE = re.compile(r"[=:]\s*(?:-?\d+|True|False)\b")
 _EXAMPLE_NAME = re.compile(r"^\s*(?:export\s+)?([A-Z][A-Z0-9_]{0,63})\s*=")
 _DEFAULT_INTENT_KEYS = frozenset(
-    {"SECRET_KEY", "APP_BASE_URL", "SESSION_COOKIE_SECURE", "PROXY_FIX_X_FOR", "PROXY_FIX_X_PROTO"}
+    {
+        "SECRET_KEY",
+        "APP_BASE_URL",
+        "DATABASE_URL",
+        "SESSION_COOKIE_SECURE",
+        "PROXY_FIX_X_FOR",
+        "PROXY_FIX_X_PROTO",
+    }
 )
 
 INSTRUCTION = """\
@@ -72,7 +88,8 @@ INSTRUCTION = """\
 목표: 환경마다 달라야 하는 값이 코드에 박혀 있는 줄을 환경변수에서 읽도록 고친다.
 대상 패턴(이것만 고친다):
 - secret_key: 서명 키(SECRET_KEY) 하드코딩 → os.environ["SECRET_KEY"]처럼 환경변수에서 읽기
-- local_address: 코드 안 localhost·127.0.0.1 주소 → 환경변수(예: APP_BASE_URL)에서 읽기
+- local_address: 코드 안 localhost·127.0.0.1 주소 → 환경변수에서 읽기
+  (앱 주소면 APP_BASE_URL, DB 접속 주소면 DATABASE_URL)
 - cookie_secure: SESSION_COOKIE_SECURE 고정값 → 환경변수에서 읽어 bool로
 - proxy_fix: ProxyFix 신뢰 hop 수 고정값
   → 환경변수(PROXY_FIX_X_FOR, PROXY_FIX_X_PROTO)에서 읽어 int로
@@ -89,11 +106,12 @@ INSTRUCTION = """\
 - env_vars: 패치가 새로 읽는 환경변수 이름 목록.
 """
 
-_INTENTS_PROMPT_VERSION = "patch_config-intents-v1"
+_INTENTS_PROMPT_VERSION = "patch_config-intents-v2"
 _INTENTS_INSTRUCTION = """\
 너는 배포 설정의 편집 위치만 선택한다. 데이터는 targets와 allowed_keys이며 원문과 값은 없다.
 intents와 reason만 JSON으로 반환한다.
 - 모든 target에 정확히 하나의 intent를 지정한다. file, line, pattern_id를 그대로 유지한다.
+- 고칠 대상이 없다고 판단하면 intents를 빈 목록으로 둔다.
 - 각 intent의 필드는 file, line, pattern_id, key뿐이다. 코드·값·diff·줄 내용은 쓰지 않는다.
 - key는 반드시 allowed_keys에서 고른다. target.key가 있으면 그대로 쓴다.
   target.key가 없으면 allowed_keys에서 서로 중복되지 않는 이름을 고른다. 새 키를 만들지 않는다.
@@ -108,7 +126,7 @@ class _IntentDraft(BaseModel):
 
     model_config = ConfigDict(strict=True, extra="forbid", hide_input_in_errors=True)
 
-    intents: list[EditIntent] = Field(min_length=1)
+    intents: list[EditIntent]
     reason: str = Field(min_length=1, max_length=200)
 
 
@@ -160,6 +178,7 @@ class PatchProposal:
     env_vars: list[str] = field(default_factory=list)
     attempts: int = 0  # AI 호출 수
     usage: list[AIUsage] = field(default_factory=list)
+    source: Source | None = None  # 마지막 AI 결과의 출처(AI를 안 불렀으면 None)
 
 
 # ---- 1. 대상 찾기 ----------------------------------------------------------------
@@ -352,6 +371,7 @@ def propose_intents(
     *,
     settings: Settings | None = None,
     provider: LLMProvider | None = None,
+    trace: PatchProposal | None = None,
 ) -> tuple[bytes, tuple[EnvKey, ...], str]:
     """위치 의도를 한 번 생성하고, 잘못된 출력만 한 번 재요청한다.
 
@@ -398,6 +418,8 @@ def propose_intents(
     )
     feedback = ""
     for _ in range(MAX_ATTEMPTS):
+        if trace is not None:
+            trace.attempts += 1
         try:
             result = call_ai(
                 instruction=_INTENTS_INSTRUCTION + feedback,
@@ -407,6 +429,12 @@ def propose_intents(
                 settings=settings,
                 provider=provider,
             )
+            if trace is not None:
+                trace.source = result.source
+                if result.usage is not None:
+                    trace.usage.append(result.usage)
+            if not result.value.intents:
+                return b"", (), result.source.value
             if any(i.key not in allowed_keys for i in result.value.intents):
                 raise ValueError("허용목록에 없는 환경키")
             patch, env_keys = render_intents(source, allowed, result.value.intents)
@@ -507,6 +535,7 @@ def propose_config_patch(
             continue
         if result.usage is not None:
             proposal.usage.append(result.usage)
+        proposal.source = result.source
         draft = result.value
         if not draft.edits:
             proposal.status, proposal.patch, proposal.check = "no_targets", None, None
@@ -536,3 +565,109 @@ def propose_config_patch(
             "규칙을 지켜 다시 쓴다."
         )
     return proposal
+
+
+# ---- 툴 입출력(core/contracts/tools/patch_config.py 초안) -----------------------------
+
+
+def _source_root(source_dir: str, root: Path | None) -> Path:
+    """analyze_project와 같은 규칙: DDAK_SOURCES_DIR(기본 var/sources) 아래 상대 경로만."""
+    relative = Path(source_dir)
+    if (
+        relative.is_absolute()
+        or ".." in relative.parts
+        or relative.as_posix() != source_dir
+        or any(c in source_dir for c in "\\\0\r\n")
+    ):
+        raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "source_dir 형식이 올바르지 않다")
+    base = root if root is not None else Path(os.environ.get("DDAK_SOURCES_DIR") or "var/sources")
+    path = base / source_dir
+    if base.is_symlink() or any((base / p).is_symlink() for p in (relative, *relative.parents)):
+        raise DdakToolError(
+            ErrorCode.PRECONDITION_FAILED, "원본 스냅샷 심볼릭 링크는 허용하지 않는다"
+        )
+    if not path.is_dir():
+        raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "원본 스냅샷이 없다")
+    return path
+
+
+def patch_config(
+    inp: PatchConfigInput,
+    ctx: RunContext,
+    *,
+    root: Path | None = None,
+    policy: PatchPolicy | None = None,
+    provider: LLMProvider | None = None,
+    settings: Settings | None = None,
+) -> PatchConfigOutput:
+    """등록 툴의 단일 경로: intents → 검사·원장 재사용 → 승인용 출력."""
+    if inp.run_id != ctx.run_id:
+        raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "패치 요청의 run ID가 다르다")
+    session = current_patch_session(ctx.run_id)
+    source = _source_root(inp.source_dir, session.source_root if session else root)
+    _ensure_patch_context()
+    if ctx.previous_release and session is None:
+        raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "성공 원장의 실행 경로 연결이 필요하다")
+    facts = session.facts if session else None
+    if facts is not None and facts.code_patch != ctx.toggles.get("code_patch", False):
+        raise DdakToolError(ErrorCode.PRECONDITION_FAILED, "패치 토글과 분석 결과가 다르다")
+    targets = facts.patch_targets if facts else scan_patch_targets(source, ())
+    chosen: dict[str, list[str]] = {}
+    for target in targets:
+        if target.severity == "patch":
+            chosen.setdefault(target.file, []).append(target.pattern_id)
+    chosen = {name: sorted(set(patterns)) for name, patterns in chosen.items()}
+    trace = PatchProposal(status="no_targets")
+    result = prepare_patch(
+        source,
+        facts,
+        ctx,
+        previous=ctx.previous_release,
+        runs_root=session.runs_root if session else source.parent,
+        proposer=lambda tree, active, context: propose_intents(
+            tree,
+            active,
+            context,
+            settings=session.settings if session else settings,
+            provider=provider,
+            trace=trace,
+        ),
+        approved_patch=inp.previous.patch.encode("utf-8") if inp.previous else None,
+    )
+    if result.patch and policy is not None:
+        check = check_patch(source, result.patch, policy)
+        if not check.passed:
+            return PatchConfigOutput(
+                run_id=inp.run_id,
+                status="rejected",
+                passed=False,
+                violations=[
+                    PatchViolation(code=v.code, file=v.file, line=v.line) for v in check.violations
+                ][:50],
+                warnings=["패치 정책 검사 불합격"],
+            )
+    meta = result.meta or {}
+    return PatchConfigOutput(
+        run_id=inp.run_id,
+        status=("reused" if meta.get("reuse") else "proposed")
+        if result.patch
+        else ("rejected" if result.warnings else "no_targets"),
+        passed=bool(result.patch) and meta.get("passed") is True,
+        patch=result.patch.decode("utf-8") if result.patch else None,
+        patch_sha256=meta.get("patch_sha256"),
+        meta=PatchMeta.model_validate(
+            {key: value for key, value in meta.items() if key in PatchMeta.model_fields}
+        )
+        if result.patch
+        else None,
+        env_vars=meta.get("new_env_keys", []),
+        targets=chosen,  # type: ignore[arg-type]
+        target_hashes={name: digest_bytes((source / name).read_bytes()) for name in chosen},
+        violations=[PatchViolation(code="PATCH_REJECTED")] if result.warnings else [],
+        attempts=trace.attempts,
+        source=trace.source,
+        ai_usage=trace.usage,
+        env_keys=list(result.env_keys),
+        changed_files=list(result.changed_files),
+        warnings=list(result.warnings),
+    )
