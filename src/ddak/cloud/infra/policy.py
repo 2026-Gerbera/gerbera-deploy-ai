@@ -112,6 +112,7 @@ def inspect_policy(
     trust: bool = False,
     account: str = "${var.account_id}",
     platform: bool = False,
+    project: str = "${var.project}",
 ) -> None:
     for stmt in statements(policy):
         require(not {"NotAction", "NotResource", "NotPrincipal"} & stmt.keys(), "IAM_NEGATED_RULE")
@@ -147,6 +148,43 @@ def inspect_policy(
                 all(not re.search(r"\$\{(?:aws_|module\.)", r) for r in resources),
                 "IAM_COMPUTED_RESOURCE",
             )
+            if any(action.lower().startswith("logs:") for action in actions):
+                require(
+                    isinstance(project, str)
+                    and (
+                        project == "${var.project}"
+                        or bool(re.fullmatch(r"[a-z][a-z0-9-]{0,39}", project))
+                    ),
+                    "IAM_LOG_SCOPE",
+                )
+                require(
+                    isinstance(account, str)
+                    and (
+                        account == "${var.account_id}" or bool(re.fullmatch(r"[0-9]{12}", account))
+                    ),
+                    "IAM_LOG_SCOPE",
+                )
+                prefix = re.escape(f"arn:aws:logs:ap-northeast-2:{account}:log-group:")
+                ddak_group = (
+                    r"ddak-\*(?::\*)?"
+                    r"|ddak-[A-Za-z0-9_./#-]+(?::\*|\*)?"
+                    + r"|ddak-"
+                    + re.escape(project)
+                    + r"[A-Za-z0-9_./#-]*(?::\*|\*)?"
+                )
+                scope = (
+                    prefix
+                    + r"(?:/aws/ecs/"
+                    + re.escape(project)
+                    + r"(?::\*|\*)?"
+                    + r"|/aws/(?:ecs|codebuild)/(?:"
+                    + ddak_group
+                    + r"))"
+                )
+                require(
+                    all(re.fullmatch(scope, ref) is not None for ref in resources),
+                    "IAM_LOG_SCOPE",
+                )
 
 
 def rds_wildcard_statements(policy: dict[str, Any]) -> list[dict[str, Any]]:

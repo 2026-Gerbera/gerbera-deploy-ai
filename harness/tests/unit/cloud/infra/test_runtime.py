@@ -563,7 +563,7 @@ def test_build_and_app_boundaries_are_distinct():
         {"main.tf": build.replace("var.app_boundary_arn", "var.build_boundary_arn")},
         layer="platform",
     ).passed
-    assert "dockerhub-push" not in json.dumps(boundary_document(ACCOUNT))
+    assert "dockerhub-push" not in json.dumps(boundary_document(ACCOUNT, SETTINGS.project))
     assert "dockerhub-push" in json.dumps(build_boundary_document(ACCOUNT))
     assert SETTINGS.boundary_arn != SETTINGS.build_boundary_arn
 

@@ -48,7 +48,7 @@ def foundation_template(settings: AwsSettings) -> dict[str, Any]:
                 }
             ],
         },
-        "boundary": boundary_document(settings.account_id),
+        "boundary": boundary_document(settings.account_id, settings.project),
         "boundary_arn": settings.boundary_arn,
         "build_boundary": build_boundary_document(settings.account_id),
         "build_boundary_arn": settings.build_boundary_arn,

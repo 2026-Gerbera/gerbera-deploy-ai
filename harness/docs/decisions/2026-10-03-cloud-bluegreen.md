@@ -44,6 +44,8 @@
 - 블루그린 전용 인프라 출력 키는 추가하지 않는다. 실행 시 `DescribeServices`의 `advancedConfiguration`에서 필요한 값을 읽는다.
 - ECS 인프라 역할은 foundation 코드가 멱등하게 생성한다. IAM path는 `/ddak/infra/`, 이름은 `ddak-ecs-infra-elb`, 신뢰 주체는 `ecs.amazonaws.com`이며 AWS 관리형 `AmazonECSInfrastructureRolePolicyForLoadBalancers`를 연결한다. 이 역할과 설정을 foundation 승인 해시 및 승인 화면에 포함한다. AI HCL은 `var.account_id` 기반 고정 역할 ARN만 참조한다. AI 게이트의 역할 신뢰 주체·경로·관리형 정책 금지 조건은 바꾸지 않는다.
 - 플랫폼 층도 `app_secret_arn_<KEY>` 형식의 시크릿 ARN 출력을 허용한다. 기존 `IMAGE_REPOSITORY_PATTERN` 검사와 `checked_cloud_outputs`의 재검증 경로는 유지한다.
+- **로그 범위 정정(10/3):** ECS 앱 권한 경계는 프로젝트 설정에서 만든 `/aws/ecs/<project>:*`와 기존 `/aws/ecs/ddak-*:*`를 함께 허용한다. SDK와 참조 Terraform의 범위를 동일하게 유지한다. HCL 게이트는 `${var.project}`, plan 게이트는 실제 프로젝트 이름을 기준으로 검사하며, 변경 없는 `no-op` 로그 정책도 검사한다. 프로젝트 접두사 뒤의 `:*` 또는 `*`만 허용하고, `/aws/ecs/*` 전체·다른 프로젝트·다른 계정/리전은 거부한다. CodeBuild의 기존 `/aws/codebuild/ddak-*` 범위는 보존한다. 게이트가 `<project>*`를 허용해도 앱 권한 경계는 `<project>:*`로 제한한다. `ddak-*`는 기존 공용 예외다.
+- 로그 범위가 바뀐 foundation 템플릿은 새 승인 해시에 반영된다. 이미 생성된 경계가 새 템플릿과 다르면 기존대로 중단하며 자동 교체하지 않는다. 경계 이름이 계정 안에서 고정되어 있으므로 같은 계정의 다른 프로젝트와도 충돌할 수 있다. 기존 경계 전환과 실제 AWS 적용은 별도 확인 대상이다.
 - `generate_infra` 툴 제한 시간은 600초, `prepare_db`는 300초다. AI 전체 호출 제한은 20초로 유지하며, `generate_infra`에만 툴 내부 확장 설정을 둔다. 타임아웃 변경은 툴 실행 상한이며 시연 시간 보장이 아니다.
 - Anthropic SDK 의존성은 추가하지 않는다. 수정 11의 표준 라이브러리 provider 경로로 통일한다.
 

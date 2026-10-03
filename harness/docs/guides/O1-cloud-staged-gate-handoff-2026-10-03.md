@@ -1,6 +1,6 @@
 # 대회 rolling 게이트와 배포 결정 정정 인계 — 2026-10-03
 
-상태: **DONE**. 정준우의 10/3 14:35 결정에 따른 rolling 게이트·문서 정정·로컬 검증을 완료했다. 실제 배포 리허설은 별도다.
+상태: **BLOCKED — 전체 CI의 로컬 소켓 권한 제한**. 14:35 rolling 작업 뒤 로그 그룹 범위 수정과 회귀 검증을 진행했다. 전체 CI의 HTTP 테스트 서버가 샌드박스에서 바인딩을 거부당해 요청한 `0 failed`를 충족하지 못했다. 아래 후속 절의 최신 결과를 따른다. 실제 AWS 배포 리허설은 별도다.
 
 ## 작업 위치와 기준
 
@@ -15,7 +15,7 @@
 - src/ddak/cloud/infra/plan.py: 검증한 after/unknown을 이용해 같은 전략 범위를 적용.
 - harness/tests/unit/cloud/infra/test_staged_deployment_policy.py: rolling 회귀 33개.
 - harness/tests/unit/cloud/infra/test_bluegreen_policy.py: 이제 허용하는 rolling·전략 생략의 과거 거부 기대를 잘못된 전략·블록·null 거부로 정정. 기존 BLUE_GREEN 통과/위반 검사 내용은 보존.
-- providers·foundation·ECS 배포 코드·서윤님 prompt.md·공유 계약·의존성 파일은 변경하지 않았다.
+- 14:35 rolling 작업에서는 providers·foundation·ECS 배포 코드·서윤님 prompt.md·공유 계약·의존성 파일을 변경하지 않았다. 이후 로그 범위 수정은 아래 후속 절에 별도로 기록한다.
 
 ## 최종 결정과 구현
 
@@ -62,7 +62,7 @@
 
 O1·O2 가이드 및 runbook을 포함한 나머지 대상 파일은 검색 결과 현행 블루그린 강제 문장이 없어 불필요하게 고치지 않았다. single-app/dev-docs에서는 10/2 변경 요약의 과거 검토 시점에 대체 표시를 붙였다.
 
-## 검증
+## 14:35 rolling 작업 검증 — 이전 결과
 
 모든 Python 검사에 적용한 환경:
 
@@ -88,6 +88,48 @@ UV_NO_SYNC=1 PYTHONPATH=/Users/joonwoojung/Desktop/01_workspace/04_SoftBank_hack
 - 로그 위치: harness/var/validation/cloud-staged-20261003/. 추적하지 않는 검증 산출물이다.
 - 최초 14:20 작업 중 인프라 검사 659개가 통과했으나, 14:35 중단 지시 후 새 블루그린 관련 테스트 확대분은 제거하고 rolling 회귀와 기존 블루그린 회귀만 남겼다.
 - 사전 독립 검토에서 공통 검사 우회·listener 전략 범위·비율 검사 공백을 지적받아 반영했다. 사후 독립 소스·문서 검토는 PASS다. 검토자는 테스트를 실행하지 않았으며 부모가 수행한 CI 결과와 구분한다. 외부 Claude 호출은 사용자 금지로 수행하지 않았다.
+
+## 로그 그룹 이름 불일치 후속 수정 — 10/3
+
+- 문제: 앱 권한 경계는 `/aws/ecs/ddak-*:*`만 허용했으나 생성 프롬프트와 배포 대상은 `/aws/ecs/${var.project}`를 사용했다. 또한 기존 게이트에는 로그 Resource 접두사를 전용으로 검사하는 규칙이 없었다.
+- SDK foundation은 `settings.project`를 전달해 `/aws/ecs/<project>:*`와 `/aws/ecs/ddak-*:*`를 함께 생성한다. 참조 Terraform도 `var.project`로 같은 범위를 만든다. Flaskr 이름을 코드에 고정하지 않는다.
+- HCL은 `${var.project}`, plan은 실행 설정의 실제 프로젝트 이름으로 허용 접두사를 확인한다. 전체 와일드카드·다른 프로젝트·다른 계정/리전·허용/금지 Resource 혼합을 거부하며, `no-op` 정책에도 같은 검사를 적용한다. 기존 CodeBuild 로그 범위는 유지한다.
+- 게이트가 허용하는 `<project>*`는 같은 접두사의 이름까지 표현할 수 있지만, 앱 권한 경계는 `<project>:*`로 제한한다. 기존 `ddak-*`는 공용 예외이므로 모든 프로젝트 간 격리를 제공한다는 뜻은 아니다.
+- 정책 문서 변경은 foundation 및 결합 infra 승인 해시에 반영된다. 기존 경계가 새 문서와 다르면 `PRECONDITION_FAILED`로 중단하고 자동 교체하지 않는다. 고정 경계 이름을 사용하는 같은 계정의 다른 프로젝트도 불일치로 중단할 수 있다. 기존 AWS 경계의 전환 및 실제 배포 검증은 이번 수정에 포함하지 않았다.
+- 블루그린 휴면 분기·ECS 배포 실행 코드·생성 프롬프트·공유 계약·의존성은 변경하지 않는다.
+- 변경 파일: `src/ddak/cloud/infra/{providers/aws.py,foundation.py,policy.py,plan.py,terraform/foundation/main.tf}`, `harness/tests/unit/cloud/infra/{test_log_scope_policy.py,test_bluegreen_foundation.py,test_bootstrap_dbinit_policy.py,test_runtime.py}`, 중앙 결정 기록 및 이 인계서. 총 11개이며, 시작 전부터 있던 `.venv` 링크는 변경하지 않았다.
+
+### 후속 검증 환경과 차단 원인
+
+저장소 루트에서 아래 환경을 사용했다. 기본 uv 캐시 접근이 거부되어 캐시만 이 작업 트리의 검증 디렉토리로 옮겼다. 의존성 동기화는 하지 않았다.
+
+```sh
+export UV_CACHE_DIR="$PWD/harness/var/validation/cloud-log-scope-20261003/uv-cache"
+export UV_NO_SYNC=1 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$PWD/src"
+make -C harness ci
+```
+
+- 수정 전 인프라 회귀: 649 passed. 최초 실패 재현은 foundation 범위 2개 assertion 실패, 로그 게이트 64 failed / 31 passed였다. 기존 `ddak-<project>-was` 변수형과 `ddak-existing_logs` 호환도 추가 재현해 8 failed / 119 passed를 확인했다.
+- 첫 전체 CI: lint/type/boundary/contracts PASS, **2 failed, 2581 passed, 1 skipped, 4 deselected, 6 errors**, make exit 2. 테스트 156.42초, 전체 158.5초.
+- 최종 코드 검증: `make -C harness test ARGS='tests/unit/cloud/infra -q'` → **779 passed, 0 failed**, exit 0, 2.19초. Flaskr·두 번째 프로젝트·기존 ddak 이름·CodeBuild 허용과 다른 프로젝트·전체 와일드카드·계정/리전·혼합 배열 거부를 HCL 및 plan(create/no-op)에서 검사했다.
+- 최종 `make -C harness ci` 재실행: lint/type/boundary/contracts PASS, **2 failed, 2599 passed, 1 skipped, 4 deselected, 6 errors**, make exit 2. 테스트 162.19초, 전체 164.1초. 원문은 `ci-final.log`이며 첫 실행과 동일한 소켓 바인딩 제한이다.
+- 실패·오류 8개는 모두 수정하지 않은 `tests/unit/verify/smoke/test_smoke.py`에서 `ThreadingHTTPServer(("127.0.0.1", 0), ...)`의 `socket.bind`가 `PermissionError: [Errno 1] Operation not permitted`로 거부된 결과다. 테스트 삭제·skip·마커 변경으로 숨기지 않았다. 이 실행 환경에서는 권한 상승 실행도 허용되지 않는다. 따라서 전체 CI 통과 및 작업 전체 완료로 보고하지 않는다.
+- 로그 위치: `harness/var/validation/cloud-log-scope-20261003/`. 이전 rolling 검증 로그와 분리했으며 Git에 추적하지 않는다.
+
+| 비밀값·차이 검사 | 결과 |
+|---|---|
+| 아래 `gitleaks git` 이력 명령 | exit 0, 187 commits / 약 7.15 MB, 발견 없음 (`gitleaks-git.log`) |
+| `gitleaks git --pre-commit --redact --no-banner .` | exit 0, 추적 중인 미커밋 변경분 발견 없음 (`gitleaks-diff.log`) |
+| `gitleaks dir --redact --no-banner harness/var/validation/cloud-log-scope-20261003/changed-files` | exit 0, 신규 테스트를 포함한 최종 변경 파일 11개 전체 사본에서 발견 없음 (`gitleaks-files.log`) |
+| `git diff --check` | exit 0 |
+
+이력 스캔에서는 읽기 금지 경로를 pathspec으로 제외했다. 작업 트리 스캔은 지정한 변경 파일 11개만 복사해 검사했으며 `.venv`와 민감 경로를 포함하지 않았다.
+
+```sh
+gitleaks git --redact --no-banner --log-opts='HEAD -- . :(exclude)**/.env :(exclude)**/.env.* :(exclude)**/.secrets/** :(exclude)**/*.tfstate :(exclude)**/*.tfstate.* :(exclude)**/.aws/** :(exclude)**/.ssh/** :(exclude)**/.claude/**' .
+```
+
+독립 사전 검토의 로그 검사 누락·no-op 누락·기존 정책 불일치 조건을 반영했다. 커밋·push·PR·태그·git config 변경과 실제 AWS·Terraform·VM·Docker·claude 호출은 수행하지 않았다. 완료 조건으로 남은 것은 로컬 소켓을 허용하는 실행 환경에서 동일한 전체 CI가 통과하는지 확인하는 일이다.
 
 ## 남은 확인
 

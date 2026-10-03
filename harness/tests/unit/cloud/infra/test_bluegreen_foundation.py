@@ -505,7 +505,8 @@ def test_approval_metadata_preserves_role_information_and_masks_account(tmp_path
     assert_no_sdk_writes(sdk)
 
 
-def test_sdk_and_reference_hcl_app_log_scope_match_narrow_ecs_prefix():
+@pytest.mark.parametrize("project", ["flaskr", "inventory-api"])
+def test_sdk_and_reference_hcl_app_log_scope_match_narrow_ecs_prefix(project):
     source = Path(foundation.__file__).parent / "terraform" / "foundation" / "main.tf"
     parsed = loads(source.read_text())
     app = next(
@@ -514,11 +515,14 @@ def test_sdk_and_reference_hcl_app_log_scope_match_narrow_ecs_prefix():
         if "app_boundary" in item.get("aws_iam_policy", {})
     )
     hcl_document = policy_json(app["policy"])
-    sdk_document = boundary_document(f.ACCOUNT)
+    sdk_document = boundary_document(f.ACCOUNT, project)
     expected = {
         "Effect": "Allow",
         "Action": ["logs:CreateLogStream", "logs:PutLogEvents"],
-        "Resource": f"arn:aws:logs:ap-northeast-2:{f.ACCOUNT}:log-group:/aws/ecs/ddak-*:*",
+        "Resource": [
+            f"arn:aws:logs:ap-northeast-2:{f.ACCOUNT}:log-group:/aws/ecs/{project}:*",
+            f"arn:aws:logs:ap-northeast-2:{f.ACCOUNT}:log-group:/aws/ecs/ddak-*:*",
+        ],
     }
     for document in (hcl_document, sdk_document):
         logs = [
@@ -531,8 +535,25 @@ def test_sdk_and_reference_hcl_app_log_scope_match_narrow_ecs_prefix():
         ]
         assert len(logs) == 1
         normalized = dict(logs[0])
-        normalized["Resource"] = normalized["Resource"].replace("${var.account_id}", f.ACCOUNT)
+        assert isinstance(normalized["Resource"], list)
+        normalized["Resource"] = [
+            ref.replace("${var.account_id}", f.ACCOUNT).replace("${var.project}", project)
+            for ref in normalized["Resource"]
+        ]
         assert normalized == expected
+
+
+@pytest.mark.parametrize("project", ["flaskr", "inventory-api"])
+def test_foundation_template_derives_log_scope_from_settings_project(project):
+    template = foundation.foundation_template(replace(SETTINGS, project=project))
+    logs = [
+        row for row in template["boundary"]["Statement"] if "logs:PutLogEvents" in row["Action"]
+    ]
+    assert len(logs) == 1
+    assert logs[0]["Resource"] == [
+        f"arn:aws:logs:ap-northeast-2:{f.ACCOUNT}:log-group:/aws/ecs/{project}:*",
+        f"arn:aws:logs:ap-northeast-2:{f.ACCOUNT}:log-group:/aws/ecs/ddak-*:*",
+    ]
 
 
 @pytest.mark.parametrize("boundary", ["boundary", "build_boundary"])
