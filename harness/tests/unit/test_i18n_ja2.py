@@ -129,7 +129,7 @@ def review_view():
         "items": [
             {
                 "id": "entry",
-                "title": "원문 보존 제목",
+                "title": "Existing proposal",
                 "reason": "원문 보존 근거",
                 "revision": 1,
                 "changes": [],

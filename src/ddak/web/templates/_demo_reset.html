@@ -6,14 +6,14 @@
   <p class="note">PR merge만으로 초기화가 끝나지 않습니다. 아래에서 선택한 모든 환경의 ‘v1 배포 완료’를 확인하세요. 승인 대기 중에는 다음 PR을 merge하지 마세요.</p>
   <div class="ops-forms">
     <div><form method="post" action="/ops/demo/reset-v1">{{ form_fields('demo-reset-v1') }}
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="project" value="{{ project }}">
+      <input type="hidden" name="csrf_token" value="{{ (csrf_token)|e }}"><input type="hidden" name="project" value="{{ (project)|e }}">
       <button type="submit" class="button secondary">v1으로 되돌리기</button>
     </form>{{ form_error('demo-reset-v1') }}</div>
     <div><form method="post" action="/ops/demo/prepare-v2">{{ form_fields('demo-prepare-v2') }}
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="project" value="{{ project }}">
+      <input type="hidden" name="csrf_token" value="{{ (csrf_token)|e }}"><input type="hidden" name="project" value="{{ (project)|e }}">
       <button type="submit" class="button secondary">v2 시연 PR 준비</button>
     </form>{{ form_error('demo-prepare-v2') }}</div>
-    <div><form method="post" action="/ops/demo/prepare-v3">{{ form_fields('demo-prepare-v3') }}<input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="project" value="{{ project }}"><button id="demo-prepare-v3" type="submit" class="button secondary" disabled>v3 태그 확인 중</button></form>{{ form_error('demo-prepare-v3') }}</div>
+    <div><form method="post" action="/ops/demo/prepare-v3">{{ form_fields('demo-prepare-v3') }}<input type="hidden" name="csrf_token" value="{{ (csrf_token)|e }}"><input type="hidden" name="project" value="{{ (project)|e }}"><button id="demo-prepare-v3" type="submit" class="button secondary" disabled>v3 태그 확인 중</button></form>{{ form_error('demo-prepare-v3') }}</div>
   </div>
   <div id="demo-state" data-url="/ops/demo/status?project={{ project|urlencode }}" aria-live="polite"><p>서비스 버전·시연 PR 상태 확인 중…</p></div>
   <noscript><a href="/ops/demo/status?project={{ project|urlencode }}">서비스 버전·시연 상태 확인</a></noscript>

@@ -3,8 +3,8 @@
 {% block title %}관리자 환경 준비 · Gerbera{% endblock %}
 {% block breadcrumb %}관리자 환경 준비{% endblock %}
 {% macro fields() -%}
-<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-<input type="hidden" name="project" value="{{ project }}">
+<input type="hidden" name="csrf_token" value="{{ (csrf_token)|e }}">
+<input type="hidden" name="project" value="{{ (project)|e }}">
 {%- endmacro %}
 {% block content %}
 {% set labels = {'AWAITING_APPROVAL': '승인 대기', 'RUNNING': '실행 중', 'SUCCEEDED': '준비 완료', 'NEEDS_HUMAN': '사람 확인 필요', 'CANCELLED': '중단됨', 'SUPERSEDED': '새 계획으로 대체됨', 'REPLAN_REQUIRED': '재계획 필요'} %}
@@ -23,7 +23,7 @@
 <section class="card"><div class="card-header"><h2>변경 요약과 승인 기록</h2></div><div class="form-body">
 {% for action in actions|reverse %}
 <article data-action="{{ action.id }}"><table><tbody><tr><th>작업</th><td>{{ 'DB 초기 준비' if action.kind == 'database' else '소유권 이전' }}</td></tr><tr><th>상태</th><td data-status="{{ action.status }}">{{ labels.get(action.status, '확인 필요') }} · {{ action.detail }}</td></tr><tr><th>승인 해시</th><td><code style="overflow-wrap:anywhere">{{ action.hash }}</code></td></tr><tr><th>변경 요약</th><td><pre style="white-space:pre-wrap;overflow-wrap:anywhere">{{ action.summary|e }}</pre></td></tr></tbody></table>
-{% if action.status == 'AWAITING_APPROVAL' %}<form method="post" action="/setup/actions/apply">{{ form_fields("action-apply-" ~ action.id) }}{{ fields() }}<input type="hidden" name="id" value="{{ action.id }}"><input type="hidden" name="approved_hash" value="{{ action.hash }}"><button class="button" type="submit">이 요약과 해시를 승인하고 실행</button></form>{% endif %}{{ form_error("action-apply-" ~ action.id) }}
+{% if action.status == 'AWAITING_APPROVAL' %}<form method="post" action="/setup/actions/apply">{{ form_fields("action-apply-" ~ action.id) }}{{ fields() }}<input type="hidden" name="id" value="{{ (action.id)|e }}"><input type="hidden" name="approved_hash" value="{{ (action.hash)|e }}"><button class="button" type="submit">이 요약과 해시를 승인하고 실행</button></form>{% endif %}{{ form_error("action-apply-" ~ action.id) }}
 </article>
 {% else %}<p>아직 준비 계획이 없습니다. 위에서 대상과 이름을 입력해 현재 환경의 변경 계획을 확인하세요.</p>{% endfor %}
 </div></section>

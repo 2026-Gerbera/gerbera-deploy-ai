@@ -1,7 +1,7 @@
 {% from '_status.html' import error_box %}
 {% macro form_fields(id) -%}
-<input type="hidden" name="_form_id" value="{{ id }}">
-<input type="hidden" name="_return_to" value="{{ form_return_to(request) if form_return_to is defined and request.scope is defined else '' }}">
+<input type="hidden" name="_form_id" value="{{ (id)|e }}">
+<input type="hidden" name="_return_to" value="{{ (form_return_to(request) if form_return_to is defined and request.scope is defined else '')|e }}">
 {%- endmacro %}
 {% macro form_error(id, fallback=None) -%}
 {{ error_box((form_error_for(request, id) if form_error_for is defined and request.scope is defined else None) or fallback) }}
