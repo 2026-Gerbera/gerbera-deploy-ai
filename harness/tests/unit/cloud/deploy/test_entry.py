@@ -538,3 +538,21 @@ def test_one_update_service_per_run(monkeypatch: pytest.MonkeyPatch) -> None:
     assert (first.changed, second.changed) == (True, False)
     assert ecs.updates == 1
     assert ecs.desired == 2  # 첫 배포는 0 → 2
+
+
+def test_service_reads_optional_target_group() -> None:
+    from ddak.cloud.deploy import _platform
+
+    assert _platform.service(_ctx()).target_group is None
+    group = "arn:aws:elasticloadbalancing:ap-northeast-2:111122223333:targetgroup/flaskr/abc"
+    platform = {"cloud": {**PLATFORM["cloud"], "target_group_arn": group}}
+    assert _platform.service(_ctx(platform=platform)).target_group == group
+
+
+def test_previous_images_are_cloud_containers_only() -> None:
+    previous = {"cloud": {"images": {"web": NEW_WEB, "was": OLD_WAS, "db": "mysql@x"}}}
+    assert entry_module._previous_images(_ctx(previous_release=previous)) == {
+        "web": NEW_WEB,
+        "was": OLD_WAS,
+    }
+    assert entry_module._previous_images(_ctx()) is None  # 첫 배포는 확인하지 않는다

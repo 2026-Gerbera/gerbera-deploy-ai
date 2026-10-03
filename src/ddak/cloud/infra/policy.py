@@ -344,16 +344,40 @@ def _elb_reference(value: Any, kind: str, *, hcl: bool) -> bool:
     )
 
 
+def _shape(value: Any) -> str:
+    """진단용: 값이 아니라 모양만(자료형·개수·strategy)."""
+    if isinstance(value, list):
+        inner = [
+            {k: (v if k == "strategy" else type(v).__name__) for k, v in item.items()}
+            if isinstance(item, dict)
+            else type(item).__name__
+            for item in value[:3]
+        ]
+        return f"list[{len(value)}]{inner}"
+    return type(value).__name__
+
+
 def _ecs_deployment(body: dict[str, Any]) -> dict[str, Any]:
     deployment = body.get("deployment_configuration")
     if deployment in (None, []):
         return {}
+    if not (
+        isinstance(deployment, list) and len(deployment) == 1 and isinstance(deployment[0], dict)
+    ):
+        raise PolicyViolation(f"ECS_DEPLOYMENT_STRATEGY: {_shape(deployment)}"[:300])
     deployment = _blocks(deployment, "ECS_DEPLOYMENT_STRATEGY", count=1)[0]
-    require(
-        deployment.get("strategy", "ROLLING") in ("ROLLING", "BLUE_GREEN"),
-        "ECS_DEPLOYMENT_STRATEGY",
-    )
-    return deployment
+    strategy = deployment.get("strategy", "ROLLING")
+    if strategy in (None, ""):
+        # 기존 롤링 서비스의 plan은 생략한 strategy를 null·""로 채운다. 블루그린 흔적
+        # (load_balancer.advanced_configuration)이 없을 때만 생략과 같이 ROLLING으로 본다.
+        advanced = any(
+            isinstance(lb, dict) and lb.get("advanced_configuration") not in (None, [])
+            for lb in body.get("load_balancer") or []
+        )
+        strategy = "ROLLING" if not advanced else strategy
+    if strategy not in ("ROLLING", "BLUE_GREEN"):
+        raise PolicyViolation(f"ECS_DEPLOYMENT_STRATEGY: strategy={strategy!r}"[:300])
+    return {**deployment, "strategy": strategy}
 
 
 def bluegreen_listener_addresses(

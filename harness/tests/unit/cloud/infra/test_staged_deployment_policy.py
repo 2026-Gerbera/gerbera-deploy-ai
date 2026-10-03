@@ -139,3 +139,25 @@ def test_rolling_service_still_preserves_deployment_ownership():
     body.pop("lifecycle")
     result = static_gate(bundle(body)[0], layer="platform")
     assert not result.passed and result.detail == "ECS_DEPLOYMENT_OWNED_BY_C2"
+
+
+# 10/3 실제 AWS: 기존 rolling 서비스의 plan은 생략한 strategy를 null·""로 채운다(첫 구축 재적용).
+@pytest.mark.parametrize("strategy", [None, ""])
+@pytest.mark.parametrize("action", [["update"], ["no-op"]])
+def test_plan_null_strategy_without_bluegreen_trace_is_rolling(strategy, action):
+    body = rolling_body([{"strategy": strategy}])
+    target = b.target_body()
+    plan = [
+        resource("aws_ecs_service", "app", action, body),
+        resource("aws_lb_target_group", "app", ["no-op"], target),
+        resource("aws_lb_listener_rule", "app", ["no-op"], rolling_rule()),
+    ]
+    assert b.summarize(plan)
+
+
+@pytest.mark.parametrize("strategy", [None, ""])
+def test_plan_null_strategy_with_bluegreen_trace_is_rejected(strategy):
+    body = b.service_body()  # load_balancer.advanced_configuration(블루그린 흔적)이 있다
+    body["deployment_configuration"] = [{"strategy": strategy}]
+    with pytest.raises(PolicyViolation, match="ECS_DEPLOYMENT_STRATEGY"):
+        b.summarize([resource("aws_ecs_service", "app", ["update"], body)])

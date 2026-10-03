@@ -762,8 +762,10 @@ class InfraRuntime:
                 summary["headline"] += " · 코드 지정 ALB 공개 HTTP 예외: " + ", ".join(
                     sorted(self._waived)
                 )
-                if len(json.dumps(summary, ensure_ascii=False, sort_keys=True).encode()) > 8192:
-                    raise PolicyViolation("SUMMARY_TOO_LARGE")
+                if len(json.dumps(summary, ensure_ascii=False, sort_keys=True).encode()) > 16384:
+                    from .plan import summary_size_detail
+
+                    raise PolicyViolation(summary_size_detail(summary))
             self._unchanged()
             if digest(plan.read_bytes()) != plan_hash:
                 raise ValueError
@@ -786,7 +788,7 @@ class InfraRuntime:
             foundation = json.loads(self._foundation)
             changes = boundary_changes(self.settings, json.loads(self._boundary_snapshot or b"[]"))
             # 생성/갱신 문장은 diff에 있으므로 전체 정책을 중복 첨부하지 않는다.
-            # 변경 없는 정책의 기존 뷰는 유지하고 승인 메타의 8KiB 상한도 유지한다.
+            # 변경 없는 정책의 기존 뷰는 유지하고 승인 메타의 16KiB 상한도 유지한다.
             unchanged_views = {
                 label: _policy_view(foundation[key])
                 for label, key, change in zip(
@@ -828,9 +830,16 @@ class InfraRuntime:
                     },
                 }
             )
-            if len(canonical(summary)) > 8192:
+            if len(canonical(summary)) > 16384:
                 self._planned = None
-                raise DdakToolError(ErrorCode.CONFIG_INVALID, "기반 포함 승인 요약 크기 초과")
+                sizes = ", ".join(
+                    f"{d.get('address')}={len(canonical(d))}B" for d in summary["iam_diff"]
+                )
+                raise DdakToolError(
+                    ErrorCode.CONFIG_INVALID,
+                    f"기반 포함 승인 요약 크기 초과({len(canonical(summary))}B; "
+                    f"{summary['headline'][:120]}; IAM {sizes})"[:900],
+                )
         return summary
 
     def _record_boundary(self, row: dict[str, Any]) -> None:

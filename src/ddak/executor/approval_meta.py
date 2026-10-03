@@ -13,7 +13,8 @@ from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.contracts.release import Sha256
 from ddak.core.redact import redact_obj
 
-MAX_META_BYTES = 8192
+# 10/3 8KiB→16KiB: 첫 구축 인프라 요약(기반 확보·권한 경계 포함)이 실제 AWS에서 8KiB를 넘었다.
+MAX_META_BYTES = 16384
 Count = Annotated[int, Field(ge=0)]
 _MASKED_ARN = re.compile(r"arn:aws[a-z-]*:[a-z0-9-]+:[a-z0-9-]*:(?:\*{3,12}|●{3}):[\w/*?.:@+=-]+")
 
@@ -86,7 +87,7 @@ class _InfraSummary(_Meta):
 
 
 def encode_meta(value: dict[str, Any] | None, *, infra: bool = False) -> str:
-    """8KiB 이하 JSON을 검증하고 불변 문자열로 저장한다. 원문 오류는 노출하지 않는다."""
+    """16KiB 이하 JSON을 검증하고 불변 문자열로 저장한다. 원문 오류는 노출하지 않는다."""
     if value is None:
         return "null"
     try:

@@ -5,7 +5,7 @@
 10/2 야간: 내부 API와 `validate_infra`·`plan_infra`·`apply_infra` 레지스트리 연결을 구현했다. 실제 AWS 리허설은 하지 않았다. 최신 범위는 [C1 가이드](../../../../harness/docs/guides/C1.md)를 따른다.
 
 - `InfraRuntime.validate(files)`: 리소스 전용 HCL 정적 검사 → fmt → 자격증명 없는 init/validate → Checkov. 파일·provider 틀·lock 변경을 이후 단계에서도 검사한다.
-- `plan(session, analyzer)`: 층별 S3 backend 초기화 → 저장 plan → Checkov/Access Analyzer → 8KiB 이하 C-18 요약. 개선 배포의 삭제·교체와 앱 밖 IAM 변경을 막는다.
+- `plan(session, analyzer)`: 층별 S3 backend 초기화 → 저장 plan → Checkov/Access Analyzer → 16KiB 이하 C-18 요약. 개선 배포의 삭제·교체와 앱 밖 IAM 변경을 막는다.
 - `apply(session)`: 주입된 잠금 검사와 승인 저장소에서 run/project/infra/plan SHA를 대조한다. 시도 표식을 먼저 남기고, 실패·중단 후 자동 재실행하지 않는다. 성공 후 원본 plan을 지우고 허용 출력만 반환한다.
 - `refresh(session)`: output JSON의 이름·타입·sensitive를 검사한다. RunContext 변경은 실행기 연결부의 책임이다.
 - `foundation_template`/`apply_foundation`: S3 state 버킷 설정과 앱·CodeBuild 각각의 권한 경계. 기반 템플릿 해시를 platform plan과 함께 infra 승인에 결합하며 별도 승인 클릭은 없다. STS 대상 계정을 확인하고, 기존 버킷은 관리 태그·계정, 경계는 내용이 일치해야 한다. 자동 삭제/기존 정책 교체 없음.

@@ -13,6 +13,12 @@
     트래픽 전환 완료), STOPPED·STOP_REQUESTED·ROLLBACK_*이면 실패. 시작 전에 직전 배포가 롤백
     중이면 끝날 때까지 기다린다.
   - 롤링(그 밖): PRIMARY가 COMPLETED이고 이전 배포가 모두 빠지면 성공, FAILED면 실패.
+    대상 그룹(target_group)을 알면 트래픽 전환 시점에 먼저 성공한다(10/3 시연 시간 단축). 조건:
+    새 배포 running == desired·pending 0, 이전 배포 desired 0, 새 리비전 RUNNING 태스크 IP가
+    ALB에서 전부 healthy, 그 밖의 대상은 draining뿐(이전 태스크가 새 요청을 받지 않음). 이전
+    태스크 정리는 ECS가 뒤에서 마친다. 헬스·스모크가 release_id로 바로 다시 확인한다.
+- 시작 전 확인: 직전 성공 릴리스 이미지(expected_current)를 주면 서비스가 그 이미지(또는 이번
+  요청 이미지)로 돌고 있어야 한다. 조기 성공 뒤 회로 차단기가 되돌린 경우 같은 불일치를 막는다.
 - 새 리비전은 현재 서비스의 태스크 정의를 그대로 복사하고 지정한 컨테이너의 image를 바꾼다.
   Docker Hub repositoryCredentials·역할은 Terraform이 만든 값을 유지한다. Terraform은 컨테이너
   environment·secrets를 두지 않으므로(generate_infra 프롬프트) 런타임 설정은 이 층이
@@ -41,12 +47,18 @@ from ddak.cloud.deploy._aws import call
 from ddak.core.contracts.errors import DdakToolError, ErrorCode
 
 POLL_S = 2.0
+# 트래픽 전환 조건이 이 시간 동안 계속 맞아야 완료로 본다. ALB는 대상을 draining으로 바꾼 뒤에도
+# 몇 초 동안 일부 노드가 이전 대상으로 요청을 보낼 수 있다(10/3 실측: 전환 2초 뒤 스모크가
+# 이전 release_id를 받아 불합격).
+SWITCH_SETTLE_S = 10.0
 _BG_DONE_STAGES = frozenset({"BAKE_TIME", "CLEAN_UP"})
 _ROLLBACK_ACTIVE = ("ROLLBACK_REQUESTED", "ROLLBACK_IN_PROGRESS")
 _BG_FAILED = frozenset(
     {"STOPPED", "STOP_REQUESTED", *_ROLLBACK_ACTIVE, "ROLLBACK_SUCCESSFUL", "ROLLBACK_FAILED"}
 )
 _ACTIVE = ("PENDING", "IN_PROGRESS")
+# 새 요청을 받지 않는 ALB 대상 상태(이전 태스크가 이 상태면 트래픽 전환 완료로 본다)
+_NOT_SERVING = frozenset({"draining", "unhealthy.draining", "unused"})
 _IMAGE_REF = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
 _ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
 # describe_task_definition 결과 중 register_task_definition에 다시 넣을 수 있는 키
@@ -91,10 +103,15 @@ class EcsClient(Protocol):
     def stop_service_deployment(self, **kwargs: Any) -> dict[str, Any]: ...
 
 
+class ElbClient(Protocol):
+    def describe_target_health(self, **kwargs: Any) -> dict[str, Any]: ...
+
+
 @dataclass(frozen=True)
 class EcsService:
     cluster: str
     service: str
+    target_group: str | None = None  # ALB 대상 그룹 ARN(있으면 트래픽 전환 시점에 완료)
 
 
 @dataclass(frozen=True)
@@ -203,12 +220,30 @@ def replace_images(
     desired_count: int,
     environment: Mapping[str, Mapping[str, str]] | None = None,
     secrets: Mapping[str, Mapping[str, str]] | None = None,
+    elb: ElbClient | None = None,
+    expected_current: Mapping[str, str] | None = None,
     poll_s: float = POLL_S,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
 ) -> Revision:
-    """images로 새 리비전을 배포하고 완료까지 기다린다. 서비스가 0개면 desired_count로 올린다."""
+    """images로 새 리비전을 배포하고 완료까지 기다린다. 서비스가 0개면 desired_count로 올린다.
+
+    expected_current({컨테이너: 참조}, 직전 성공 릴리스)를 주면 서비스가 그 이미지나 이번 요청
+    이미지로 돌고 있을 때만 바꾼다(같은 run의 두 번째 tier 호출은 이미 이번 이미지다).
+    """
     revision = register_revision(client, target, images, environment=environment, secrets=secrets)
+    drifted = sorted(
+        name
+        for name, ref in (expected_current or {}).items()
+        if name in revision.previous_images
+        and revision.previous_images[name] not in (ref, images.get(name))
+    )
+    if drifted:
+        raise DdakToolError(
+            ErrorCode.PRECONDITION_FAILED,
+            "ECS가 직전 성공 기록과 다른 이미지로 실행 중이다(자동 롤백 등): "
+            f"{', '.join(drifted)}. 서비스 상태를 확인한 뒤 다시 배포한다",
+        )
     service = _service(client, target)
     stopped = service.get("desiredCount", 0) == 0
     if not revision.changed and not stopped:
@@ -235,6 +270,7 @@ def replace_images(
             target,
             revision.task_definition,
             deadline,
+            elb=elb,
             poll_s=poll_s,
             clock=clock,
             sleep=sleep,
@@ -379,11 +415,14 @@ def wait_stable(
     task_definition: str,
     deadline: float,
     *,
+    elb: ElbClient | None = None,
     poll_s: float = POLL_S,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
 ) -> None:
-    """롤링 배포가 끝날 때까지 읽기 폴링한다."""
+    """롤링 배포가 끝날 때까지 읽기 폴링한다. elb와 대상 그룹이 있으면 트래픽 전환이
+    SWITCH_SETTLE_S 동안 유지될 때 끝낸다(중간에 조건이 깨지면 처음부터 다시 잰다)."""
+    switched_at: float | None = None
     while True:
         deployments = _service(client, target).get("deployments") or []
         primary = [d for d in deployments if d.get("status") == "PRIMARY"]
@@ -394,12 +433,95 @@ def wait_stable(
             raise DdakToolError(ErrorCode.ADAPTER_FAILED, "ECS 배포가 실패했다(회로 차단기)")
         if state == "COMPLETED" and len(deployments) == 1:
             return
+        if (
+            elb is not None
+            and target.target_group
+            and _traffic_switched(client, elb, target, task_definition, deployments, primary[0])
+        ):
+            now = clock()
+            switched_at = now if switched_at is None else switched_at
+            if now - switched_at >= SWITCH_SETTLE_S:
+                return
+        else:
+            switched_at = None
         remaining = deadline - clock()
         if remaining <= 0:
             raise DdakToolError(
                 ErrorCode.ADAPTER_TIMEOUT, "ECS 배포가 제한 시간 안에 끝나지 않았다"
             )
         sleep(min(poll_s, remaining))
+
+
+def _traffic_switched(
+    client: EcsClient,
+    elb: ElbClient,
+    target: EcsService,
+    task_definition: str,
+    deployments: Sequence[Mapping[str, Any]],
+    primary: Mapping[str, Any],
+) -> bool:
+    """새 리비전만 ALB 트래픽을 받는가. ECS 수치가 맞을 때만 태스크·대상 그룹을 읽는다."""
+    desired = primary.get("desiredCount") or 0
+    if (
+        desired <= 0
+        or primary.get("runningCount") != desired
+        or primary.get("pendingCount", 0) != 0
+        or any((d.get("desiredCount") or 0) != 0 for d in deployments if d is not primary)
+    ):
+        return False
+    new_ips = _task_ips(client, target, task_definition)
+    if len(new_ips) != desired:
+        return False
+    group = target.target_group
+    health = (
+        call(
+            "ALB 대상 상태를 읽지 못했다",
+            lambda: elb.describe_target_health(TargetGroupArn=group),
+        ).get("TargetHealthDescriptions")
+        or []
+    )
+    healthy: set[str] = set()
+    for item in health:
+        address = (item.get("Target") or {}).get("Id")
+        state = (item.get("TargetHealth") or {}).get("State")
+        if address in new_ips:
+            if state != "healthy":
+                return False
+            healthy.add(address)
+        elif state not in _NOT_SERVING:
+            return False  # 이전(또는 모르는) 대상이 아직 새 요청을 받는다
+    return healthy == new_ips
+
+
+def _task_ips(client: EcsClient, target: EcsService, task_definition: str) -> set[str]:
+    """task_definition으로 RUNNING인 서비스 태스크의 사설 IP(awsvpc ENI)."""
+    arns = (
+        call(
+            "실행 중인 ECS 태스크를 읽지 못했다",
+            lambda: client.list_tasks(
+                cluster=target.cluster, serviceName=target.service, desiredStatus="RUNNING"
+            ),
+        ).get("taskArns")
+        or []
+    )
+    if not arns:
+        return set()
+    tasks = (
+        call(
+            "실행 중인 ECS 태스크를 읽지 못했다",
+            lambda: client.describe_tasks(cluster=target.cluster, tasks=arns),
+        ).get("tasks")
+        or []
+    )
+    return {
+        str(detail["value"])
+        for t in tasks
+        if t.get("taskDefinitionArn") == task_definition and t.get("lastStatus") == "RUNNING"
+        for attachment in t.get("attachments") or []
+        if attachment.get("type") == "ElasticNetworkInterface"
+        for detail in attachment.get("details") or []
+        if detail.get("name") == "privateIPv4Address" and detail.get("value")
+    }
 
 
 _ARCH = {"X86_64": "linux/amd64", "ARM64": "linux/arm64"}

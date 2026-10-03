@@ -559,8 +559,9 @@ def summarize_plan(
                         else {}
                     ),
                     "proposed_allow": added,
+                    # no-op은 before가 after와 같으므로 싣지 않는다(승인 기록 16KiB 한도).
                     "before": _policy_view(policy_json(change["before"][field]))
-                    if change.get("before") and change["before"].get(field)
+                    if action != "no-op" and change.get("before") and change["before"].get(field)
                     else [],
                     "after": _policy_view(policy),
                 }
@@ -583,11 +584,46 @@ def summarize_plan(
         "checkov": checkov,
         "sensitive_masked": True,
     }
+    if len(json.dumps(result, ensure_ascii=False, sort_keys=True).encode()) > 16384:
+        raise PolicyViolation(summary_size_detail(result) + " | " + changed_attributes(raw))
     require(
-        len(json.dumps(result, ensure_ascii=False, sort_keys=True).encode()) <= 8192,
+        len(json.dumps(result, ensure_ascii=False, sort_keys=True).encode()) <= 16384,
         "SUMMARY_TOO_LARGE",
     )
     return result
+
+
+def changed_attributes(raw: dict[str, Any]) -> str:
+    """진단용: 바뀌는 리소스와 속성 이름만(값 없음)."""
+    rows = []
+    for rc in raw.get("resource_changes", []):
+        change = rc.get("change") or {}
+        actions = change.get("actions") or []
+        if actions in (["no-op"], ["read"]):
+            continue
+        before, after = change.get("before") or {}, change.get("after") or {}
+        unknown = change.get("after_unknown") or {}
+        keys = sorted(
+            k
+            for k in set(before) | set(after) | set(unknown)
+            if before.get(k) != after.get(k) or unknown.get(k)
+        )
+        replace = change.get("replace_paths") or []
+        rows.append(
+            f"{rc.get('address')}:{'+'.join(actions)}:{','.join(keys)[:160]}"
+            + (f":replace={replace}"[:120] if replace else "")
+        )
+    return "CHANGES " + " ; ".join(rows)
+
+
+def summary_size_detail(summary: dict[str, Any]) -> str:
+    """진단용: 요약 크기와 항목별 크기만(값 없음)."""
+
+    def size(value: Any) -> int:
+        return len(json.dumps(value, ensure_ascii=False, sort_keys=True).encode())
+
+    keys = ", ".join(f"{k}={size(v)}" for k, v in sorted(summary.items()) if size(v) > 200)
+    return f"SUMMARY_TOO_LARGE({size(summary)}B; {summary.get('headline')}; {keys})"[:400]
 
 
 def filter_outputs(raw: dict[str, Any], allowed: dict[str, str]) -> dict[str, Any]:

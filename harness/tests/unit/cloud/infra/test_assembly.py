@@ -51,13 +51,13 @@ def test_plan_tool_bounds_summary_after_generation_source(monkeypatch):
     from ddak.core.contracts.tools.plan_infra import PlanInfraInput
 
     binding = SimpleNamespace(
-        runtime=SimpleNamespace(plan=lambda **kw: {"headline": "x" * 8170}),
+        runtime=SimpleNamespace(plan=lambda **kw: {"headline": "x" * 16362}),
         read_session=lambda: None,
         analyzer=lambda: None,
         generation_source=Source.FIXTURE,
         mode=AdapterMode.FAKE,
     )
     monkeypatch.setattr(bindings, "_binding", lambda *a: binding)
-    with pytest.raises(DdakToolError, match="8KiB") as exc:
+    with pytest.raises(DdakToolError, match="16KiB") as exc:
         bindings.run_plan(PlanInfraInput(run_id="size-run"), RunContext("size-run"))
     assert exc.value.code is ErrorCode.CONFIG_INVALID
