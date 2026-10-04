@@ -32,7 +32,7 @@
 {% if connection_attention %}<p class="note" data-connection-attention>연결 확인이 필요합니다 → <a href="/settings?project={{ project|urlencode }}#connection-checklist">설정</a></p>{% endif %}
 <section class="section"><h2>최근 배포</h2>
 {% if runs %}<div class="table-wrap"><table class="history"><thead><tr><th scope="col">상태</th><th scope="col">커밋 · 브랜치</th><th scope="col">대상</th><th scope="col">방식</th><th scope="col">요청(KST)</th><th scope="col">소요(승인 대기 포함)</th></tr></thead><tbody>
-{% for run in runs %}<tr><td data-label="상태"><a href="{{ run.url }}">{{ state_badge(run.status) }}</a></td><td data-label="커밋"><a href="{{ run.url }}"><code>{{ run.sha }}</code></a><small>{{ run.ref }}</small></td><td data-label="대상">{{ target(run.targets) }}</td><td data-label="방식">{{ run.trigger }}</td><td data-label="요청"><span class="numeric">{{ run.started }}</span></td><td data-label="소요(승인 대기 포함)">{{ duration(run.duration) }}</td></tr>{% endfor %}
+{% for run in runs %}<tr><td data-label="상태"><a href="{{ run.url }}">{{ state_badge(run.status) }}</a>{% if run.run_id %}<small><a href="/runs/{{ run.run_id }}/approval">계획 보기</a></small>{% endif %}</td><td data-label="커밋"><a href="{{ run.url }}"><code>{{ run.sha }}</code></a><small>{{ run.ref }}</small></td><td data-label="대상">{{ target(run.targets) }}</td><td data-label="방식">{{ run.trigger }}</td><td data-label="요청"><span class="numeric">{{ run.started }}</span></td><td data-label="소요(승인 대기 포함)">{{ duration(run.duration) }}</td></tr>{% endfor %}
 </tbody></table></div>{% else %}<p>{% if preparing %}준비가 끝나면 승인할 실행이 여기에 나타납니다.{% elif settings.repo_url %}아직 실행 기록이 없습니다. ‘지금 배포 준비’로 첫 배포를 준비하세요.{% else %}아직 실행 기록이 없습니다. 저장소를 연결한 뒤 배포를 준비하세요.{% endif %}</p>{% endif %}</section>
 {% include '_public_links.html' %}
 </div>

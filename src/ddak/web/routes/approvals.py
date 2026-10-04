@@ -1,9 +1,11 @@
+from datetime import timedelta, timezone
+
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
-from ddak.core.contracts.errors import DdakToolError
+from ddak.core.contracts.errors import DdakToolError, ErrorCode
 from ddak.core.redact import redact_obj
-from ddak.web.dependencies import deployment, public_links, templates
+from ddak.web.dependencies import TERMINAL_STATUSES, deployment, public_links, templates
 from ddak.web.form_errors import FormRoute
 from ddak.web.forms import parse_form
 from ddak.web.security import csrf_token, issue_csrf, require_safe_post
@@ -17,13 +19,23 @@ async def approval_page(request: Request, run_id: str):
     try:
         service = deployment(request)
         status = service.get_run(run_id)["status"]
-        if status not in {"AWAITING_APPROVAL", "APPROVED"}:
-            return RedirectResponse(f"/runs/{run_id}/result", status_code=303)
         view = service.approval_view(run_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="실행을 찾을 수 없습니다") from exc
-    except DdakToolError:
-        return RedirectResponse(f"/runs/{run_id}/result", status_code=303)
+    except DdakToolError as exc:
+        if exc.code == ErrorCode.PRECONDITION_FAILED:
+            return RedirectResponse(f"/runs/{run_id}/result", status_code=303)
+        raise
+    read_only = status not in {"AWAITING_APPROVAL", "APPROVED"}
+    approved_time = None
+    if read_only:
+        records = service.get_approvals(run_id)
+        approved_at = min(
+            (record.approved_at for record in records if record.decision == "approved"),
+            default=None,
+        )
+        if approved_at is not None:
+            approved_time = approved_at.astimezone(timezone(timedelta(hours=9))).strftime("%H:%M")
     view = redact_obj({**view, "patch": None})  # 원문 대신 검증된 패턴·해시·키만 표시한다.
     token = csrf_token(request)
     reviews = getattr(service, "patch_reviews", None)
@@ -43,6 +55,10 @@ async def approval_page(request: Request, run_id: str):
             "patch_review": review,
             "patch_review_enabled": reviews is not None,
             "start_retry": status == "APPROVED",
+            "read_only": read_only,
+            "run_status": status,
+            "approved_time": approved_time,
+            "run_finished": status in TERMINAL_STATUSES,
         },
     )
     issue_csrf(request, response, token)
