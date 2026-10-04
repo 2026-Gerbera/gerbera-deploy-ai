@@ -1,4 +1,4 @@
-<p align="center"><img src="docs/assets/black-cat.svg" width="100%" alt="README 위를 걸어가는 검은 고양이"></p>
+<p align="center"><img src="docs/assets/black-cat.svg" width="100%" alt="검은 고양이가 버튼을 딸깍 누르자 클라우드·서버·디바이스에 한꺼번에 배포되는 애니메이션"></p>
 
 # Gerbera Deploy AI
 
