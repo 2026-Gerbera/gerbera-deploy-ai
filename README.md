@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/softbank-hackathon-2026-banner.png" width="100%" alt="SoftBank Hackathon 2026 in Korea 예선 프로젝트">
+</p>
+
 <p align="center"><img src="docs/assets/black-cat.svg" width="100%" alt="검은 고양이가 버튼을 딸깍 누르자 클라우드·서버·디바이스에 한꺼번에 배포되는 애니메이션"></p>
 
 # Gerbera Deploy AI
@@ -8,7 +12,7 @@
 
 ![기술 스택: Python 3.13, FastAPI, Terraform, AWS ECS Fargate, Docker Hub](docs/assets/tech-stack.png)
 
-[전체 흐름](#-전체-흐름) · [안전 경계](#-ai-terraform-안전-경계) · [클라우드 이식성](#-클라우드-이식성) · [빠른 시작](#-빠른-시작) · [현재 구현 범위](#-현재-구현-범위)
+[전체 흐름](#-전체-흐름) · [안전 경계](#-ai-terraform-안전-경계) · [클라우드 이식성](#-클라우드-이식성) · [빠른 시작](#-빠른-시작) · [현재 구현 범위](#-현재-구현-범위) · [팀 구성원](#-팀-구성원)
 
 ---
 
@@ -21,11 +25,13 @@ Gerbera Deploy AI는 애플리케이션 저장소의 변경을 감지해 필요�
 |:---:|:---:|:---:|:---:|
 | 변경 분석·패치·Terraform 초안 | 소스·인프라·IAM·시크릿 승인 | 빌드·배포·검증·롤백은 코드 실행 | 공통 Control Plane과 Provider 경계 |
 
-## 👥 **Team Gerbera**
+## 👥 팀 구성원
+
+**Team Gerbera**
 
 | 김준석 | 안승환 | 양서윤 | 장민영 | 정준우 |
-| :-----: | :-----: | :-----: | :-----: | :-----: |
-| <img src="https://github.com/LyleKim.png" width=150px alt="김준석"> | <img src="https://github.com/anshwan.png" width=150px alt="안승환"> | <img src="https://github.com/seoyun0311.png" width=150px alt="양서윤"> | <img src="https://github.com/minch-070605.png" width=150px alt="장민영"> | <img src="https://github.com/JungJoonWoo.png" width=150px alt="정준우"> |
+| :---: | :---: | :---: | :---: | :---: |
+| ![김준석](docs/assets/team/lyle-kim.png) | ![안승환](docs/assets/team/anshwan.png) | ![양서윤](docs/assets/team/seoyun0311.png) | ![장민영](docs/assets/team/minch-070605.png) | ![정준우](docs/assets/team/jung-joon-woo.png) |
 | [@LyleKim](https://github.com/LyleKim) | [@anshwan](https://github.com/anshwan) | [@seoyun0311](https://github.com/seoyun0311) | [@minch-070605](https://github.com/minch-070605) | [@JungJoonWoo](https://github.com/JungJoonWoo) |
 
 ## ✨ 핵심 기능
