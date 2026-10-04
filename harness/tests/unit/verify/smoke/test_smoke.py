@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 import time
@@ -22,7 +23,7 @@ from ddak.core.contracts.tools.smoke_test import SmokeTestInput, SmokeTestOutput
 from ddak.executor.engine import Executor, RunStatus
 from ddak.verify.smoke import smoke_test
 from ddak.verify.smoke.fake import FakeFlaskr, FakeSmokeAdapter
-from ddak.verify.smoke.logic import Response, run_smoke
+from ddak.verify.smoke.logic import SMOKE_POSTS, Response, run_smoke, smoke_post
 
 RUN = "run-smoke-1"
 BASE_IDS = ["S0.version", "S0.ready", "B1", "B2.create", "B2.empty", "B2.long"]
@@ -220,7 +221,7 @@ def test_local_adapter_runs_against_real_http(app_url: str) -> None:
     create = next(s for s in out.scenarios if s.id == "B2.create")
     assert create.normalized["location"] == "/"  # 호스트를 지우고 경로만 남긴다
     assert create.normalized["cookie"] is None  # v1은 세션 쿠키가 없다
-    assert f"[smoke {RUN}]" in _App.titles
+    assert smoke_post(RUN)[0] in _App.titles
 
 
 def test_cookie_value_never_leaves_the_tool(app_url: str) -> None:
@@ -510,6 +511,74 @@ def test_page_fingerprint_catches_template_difference() -> None:
     b = _create(_run_groups(OtherTemplate(RUN, "http://a", "2026-10-03", 1), ["base"]))
     assert a["page.head"] != b["page.head"]
     assert a["page.post"] == b["page.post"]
+
+
+# ---- smoke 글(넌센스 퀴즈 풀) -----------------------------------------------------
+
+# flaskr blog.py: 앞뒤 공백을 지운 제목이 200자를 넘으면 거부한다(post.title VARCHAR(200))
+APP_TITLE_MAX = 200
+
+
+class _PostRecorder(FakeFlaskr):
+    """B2.create가 실제로 보낸 제목·본문을 남긴다."""
+
+    def __init__(self, run_id: str) -> None:
+        super().__init__(run_id)
+        self.posted: list[tuple[str, str]] = []
+
+    def request(
+        self, method: str, path: str, form: Mapping[str, str] | None, timeout: float
+    ) -> Response:
+        resp = super().request(method, path, form, timeout)
+        if method == "POST" and path == "/create" and resp.status == 302 and form is not None:
+            self.posted.append((form["title"], form["body"]))
+        return resp
+
+
+def _all_pool_titles() -> dict[str, tuple[str, str]]:
+    """풀 항목마다 그 항목을 고르는 run_id의 (제목, 본문). 모든 항목을 덮을 때까지 찾는다."""
+    found: dict[str, tuple[str, str]] = {}
+    texts = {text for text, _, _ in SMOKE_POSTS}
+    for n in range(5000):
+        title, body = smoke_post(f"run-pool-{n}")
+        found.setdefault(title.rsplit(" · ", 1)[0], (title, body))
+        if set(found) == texts:
+            return found
+    raise AssertionError("run_id로 고를 수 없는 풀 항목이 있다")
+
+
+def test_smoke_post_is_same_for_same_run_id_in_both_envs() -> None:
+    local, cloud = _PostRecorder(RUN), _PostRecorder(RUN)
+    assert _run_groups(local, ["base"]).passed is True
+    assert _run_groups(cloud, ["base"]).passed is True
+    assert local.posted == cloud.posted == [smoke_post(RUN)]
+    assert smoke_post(RUN) == smoke_post(RUN)
+    assert smoke_post("run-other") != smoke_post(RUN)
+
+
+def test_smoke_pool_has_no_html_escaped_chars() -> None:
+    assert len(SMOKE_POSTS) >= 40
+    assert len({text for text, _, _ in SMOKE_POSTS}) == len(SMOKE_POSTS)  # 중복 없음
+    for text, body, handle in SMOKE_POSTS:
+        for value in (text, body, handle):
+            assert not set(value) & set("&<>\"'"), value
+            assert value == value.strip() and value, value
+
+
+def test_every_smoke_title_is_well_under_app_limit() -> None:
+    for title, body in _all_pool_titles().values():
+        assert title == title.strip()
+        assert len(title) <= APP_TITLE_MAX // 2, title
+        assert body
+
+
+def test_smoke_title_carries_run_tag_and_body_does_not() -> None:
+    tag = hashlib.sha256(RUN.encode()).hexdigest()[8:14]
+    title, body = smoke_post(RUN)
+    assert title.endswith((f" · 익명 {tag}", f" · 匿名 {tag}"))
+    assert tag not in body and RUN not in body
+    pool = {f"{t} · {h}": b for t, b, h in SMOKE_POSTS}
+    assert pool[title.removesuffix(f" {tag}")] == body
 
 
 # ---- 클라우드 헬스와 같은 준비 판정, passed == all(ok) ---------------------------
