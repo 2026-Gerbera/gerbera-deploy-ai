@@ -4,6 +4,6 @@
   {% set matches = findings|selectattr('file','equalto',card.file)|list %}
   {% set count = namespace(value=0) %}{% for finding in matches if finding.line >= card.line and finding.line <= card.end %}{% set count.value = count.value + 1 %}{% endfor %}
   {% if count.value %}<span> · 하드코딩 {{ count.value }}곳</span>{% endif %}</header>
-  <ol>{% for row in card.rows %}<li class="{{ row.kind }}"><span class="numeric">{{ row.old or row.new }}</span><span aria-hidden="true">{{ '−' if row.kind == 'del' else '+' if row.kind == 'add' else ' ' }}</span><div><code>{{ row.text|e }}</code>{% for finding in matches if row.old == finding.line %}<small> ← 탐지 · {{ narrative_patterns.get(finding.pattern_id, ('환경 의존 설정',''))[0] }}</small>{% endfor %}</div></li>{% endfor %}</ol>
+  <ol>{% for row in card.rows %}{% if row.kind == 'gap' %}<li class="gap"><span class="numeric"></span><span aria-hidden="true"></span><div>… {{ row.count }}줄 생략</div></li>{% else %}<li class="{{ row.kind }}"><span class="numeric">{{ row.old or row.new }}</span><span aria-hidden="true">{{ '−' if row.kind == 'del' else '+' if row.kind == 'add' else ' ' }}</span><div><code>{{ row.text|code_masks|e }}</code>{% for finding in matches if row.old == finding.line %}<small> ← 탐지 · {{ narrative_patterns.get(finding.pattern_id, ('환경 의존 설정',''))[0] }}</small>{% endfor %}</div></li>{% endif %}{% endfor %}</ol>
 </article>
 {%- endmacro %}

@@ -13,7 +13,7 @@ from fastapi.templating import Jinja2Templates
 from jinja2 import BaseLoader, Environment, FileSystemLoader, pass_context
 
 from ddak.core.logging import get_logger
-from ddak.web.translations_ja import translate, translate_static
+from ddak.web.translations_ja import translate, translate_code_masks, translate_static
 
 LANG_COOKIE = "ddak_lang"
 _log = get_logger("web.i18n")
@@ -101,6 +101,8 @@ class LocalizedTemplates:
             context_processors=context_processors,
         )
         self.env = self.ko.env
+        self.env.filters["code_masks"] = lambda value: value
+        self.ja.env.filters["code_masks"] = translate_code_masks
         self.env.globals.update(
             localize_json=localize_json,
             ui_language="ko",
@@ -133,6 +135,7 @@ class LocalizedTemplates:
         if selected == "ja":
             engine.env.globals.update(self.env.globals)
             engine.env.filters.update(self.env.filters)
+            engine.env.filters["code_masks"] = translate_code_masks
             engine.env.policies.update(self.env.policies)
         context = {
             **context,
