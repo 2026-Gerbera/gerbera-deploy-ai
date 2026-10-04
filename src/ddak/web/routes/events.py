@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse, StreamingResponse
@@ -17,7 +18,9 @@ from ddak.web.dependencies import (
     public_links,
     templates,
 )
-from ddak.web.narrative import pipeline_view
+from ddak.web.i18n import language, translate_tree
+from ddak.web.js_wording import wording
+from ddak.web.narrative import pipeline_view, track_for
 from ddak.web.story import environment_cards, result_story
 
 router = APIRouter(prefix="/runs")
@@ -29,6 +32,83 @@ def _sse(event: dict) -> bytes:
     event_type = str(event["type"])
     data = json.dumps(redact_obj(event), ensure_ascii=False, separators=(",", ":"))
     return f"id: {event_id}\nevent: {event_type}\ndata: {data}\n\n".encode()
+
+
+def _event_history(events: list[dict], pipeline: dict, selected: str) -> dict:
+    """종료 화면의 기록. SSE와 같은 사전·분류·가림으로 표시 필드만 만든다."""
+    words = wording(selected)
+    texts = translate_tree(pipeline["texts"]) if selected == "ja" else pipeline["texts"]
+    types = {
+        "run.state": "event.state",
+        "step.started": "event.started",
+        "step.finished": "state.succeeded",
+        "step.skipped": "state.skipped",
+        "gate.waiting": "event.gate_waiting",
+        "gate.opened": "event.gate_opened",
+        "gate.failed": "event.gate_failed",
+        "rollback.started": "event.rollback_started",
+        "rollback.finished": "event.rollback_finished",
+        "stage.finished": "event.stage_finished",
+        "report.ready": "event.report_ready",
+        "ai.call": "event.ai_call",
+    }
+    states = {"running", "waiting", "succeeded", "failed", "check_failed", "skipped", "unrecorded"}
+    history = {track: [] for track in ("local", "cloud", "common")}
+    for event in redact_obj(events):
+        kind = event.get("type", "")
+        if kind not in types:
+            continue
+        track = track_for(event.get("step") or "", event.get("target"))
+        step = (
+            event.get("preparation_stage")
+            if kind == "stage.finished"
+            else f"rollback.{track}"
+            if kind.startswith("rollback.")
+            else event.get("step")
+        )
+        base = re.sub(r"\.(local|cloud)$", "", step or "")
+        key = pipeline["aliases"].get(
+            base,
+            "build_image"
+            if base.startswith("build.")
+            else "deploy_tier"
+            if base.startswith("deploy.")
+            else base,
+        )
+        text = texts.get(step) or texts.get(event.get("tool")) or texts.get(key) or {}
+        try:
+            timestamp = (
+                datetime.fromisoformat(event["ts"]) if event.get("ts") else datetime.now(UTC)
+            )
+            time = timestamp.astimezone(timezone(timedelta(hours=9))).strftime("%H:%M:%S")
+        except (TypeError, ValueError):
+            time = words["time.missing"]
+        elapsed = ""
+        if event.get("elapsed_s") is not None:
+            seconds = max(0, int(event["elapsed_s"]))
+            elapsed = (
+                words["time.minutes"].format(minutes=seconds // 60, seconds=seconds % 60)
+                if seconds >= 60
+                else words["time.seconds"].format(seconds=seconds)
+            )
+        status = event.get("status")
+        history[track].append(
+            {
+                "seq": event["seq"],
+                "time": time,
+                "name": text.get("name", words["task.name"]),
+                "state": words[f"state.{status}" if status in states else types[kind]],
+                "elapsed": elapsed,
+                "technical": " · ".join(
+                    part
+                    for part in (step, event.get("detail") if kind.startswith("gate.") else None)
+                    if part
+                ),
+            }
+        )
+        if kind == "run.state" and status in _FINAL:
+            break
+    return history
 
 
 @router.get("/{run_id}")
@@ -97,6 +177,9 @@ async def progress_page(request: Request, run_id: str):
             "approved": approved,
             "terminal_states": sorted(_FINAL),
             "pipeline": pipeline,
+            "event_history": _event_history(events, pipeline, language(request))
+            if run["status"] in _FINAL
+            else {},
             "environment_cards": cards,
             "cards_version": live_version([cards, run.get("result", {}).get("tracks")]),
             "story": live_story,
