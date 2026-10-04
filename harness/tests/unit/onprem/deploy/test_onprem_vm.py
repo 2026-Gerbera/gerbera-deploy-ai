@@ -593,10 +593,12 @@ def test_health_transport_errors_remain_exceptions(vm, failure):
         provider.health_check(ctx)
 
 
-def test_health_command_uses_inventory_and_readiness_argv(vm):
+@pytest.mark.parametrize("kind", ["python_http", "nginx"])
+def test_health_command_uses_inventory_and_readiness_argv(vm, kind):
     import shlex
 
     fake, provider, ctx = vm
+    ctx.platform["onprem"]["tiers"]["was"]["kind"] = kind
     ctx.platform["onprem"]["tiers"]["was"]["ready"] = {
         "port": 9001,
         "path": "/readyz",
@@ -604,10 +606,21 @@ def test_health_command_uses_inventory_and_readiness_argv(vm):
     }
     provider.deploy("was", ctx)
     create = next(a for a in fake.calls if a[:2] == ["container", "create"])
+    for flag, value in (
+        ("--health-interval", "1s"),
+        ("--health-timeout", "5s"),
+        ("--health-retries", "3"),
+        ("--health-start-period", "10s"),
+    ):
+        assert create[create.index(flag) + 1] == value
     command = shlex.split(create[create.index("--health-cmd") + 1])
-    assert command[-3:] == ["9001", "/readyz", "1"]
-    probe = next(a for a in fake.calls if a[:2] == ["container", "exec"])
-    assert probe[-3:-1] == ["9001", "/readyz"] and float(probe[-1]) <= 3
+    if kind == "python_http":
+        assert command[-3:] == ["9001", "/readyz", "1"]
+        probe = next(a for a in fake.calls if a[:2] == ["container", "exec"])
+        assert probe[-3:-1] == ["9001", "/readyz"] and float(probe[-1]) <= 3
+    else:
+        assert command == ["wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9001/readyz"]
+        assert not any(a[:2] == ["container", "exec"] for a in fake.calls)
 
 
 def test_missing_rollback_release_id_is_rejected_before_docker(vm):

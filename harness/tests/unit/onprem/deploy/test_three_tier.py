@@ -157,6 +157,13 @@ def test_new_database_copies_approved_assets_before_start(database):
         fake.calls.index(create) < fake.calls.index(c) < fake.calls.index(start) for c in copies
     )
     assert "python" not in create[create.index("--health-cmd") + 1]
+    for flag, value in (
+        ("--health-interval", "1s"),
+        ("--health-timeout", "5s"),
+        ("--health-retries", "3"),
+        ("--health-start-period", "10s"),
+    ):
+        assert create[create.index(flag) + 1] == value
     assert not any(c[:2] == ["container", "exec"] for c in fake.calls)
 
 

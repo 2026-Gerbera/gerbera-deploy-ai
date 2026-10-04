@@ -80,11 +80,11 @@ def health_args(config: _Tier) -> list[str]:
         "--health-interval",
         "1s",
         "--health-timeout",
-        "2s",
+        "5s",
         "--health-retries",
-        "1",
+        "3",
         "--health-start-period",
-        "0s",
+        "10s",
     ]
 
 
