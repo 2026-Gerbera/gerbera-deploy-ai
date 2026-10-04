@@ -50,6 +50,7 @@ from ddak.core.ai.providers import (
     validate_provider_selection,
 )
 from ddak.core.ai.status import llm_status
+from ddak.core.answer_language import request_language
 from ddak.core.app_repository import AppRepository, FakeAppRepository
 from ddak.core.config import AdapterMode, Settings, require_local_cli
 from ddak.core.contracts.context import RunContext
@@ -481,6 +482,13 @@ async def _prepare_commit_inner(
             saved.get("aws_profile") or settings.aws_profile or load_defaults()["aws_profile"]
         )
         saved = {**saved, **project_values(saved)}
+        # 수동 요청의 언어는 task가 복사한 요청 문맥에 고정한다. 자동 감시는 별도 저장값을 쓴다.
+        selected_language = request_language.get() if trigger == "manual" else None
+        saved["ai_answer_language"] = (
+            selected_language
+            if selected_language in {"ko", "ja"}
+            else service.get_answer_language(target.project)
+        )
         if saved.get("cloud_platform") is None:
             # 관리 페이지 값이 없으면 기본 파일의 프로젝트별 플랫폼 이름을 스냅샷에 고정한다.
             saved["cloud_platform"] = cloud_platform_default(target.project)
@@ -1490,6 +1498,7 @@ def _demo_reset_service(service, settings):
 
 def _code_question_service(service, settings):
     """대시보드 코드 질문. 소스 읽기는 코어, AI 답은 등록 툴 answer_code_question이 만든다."""
+    from ddak.core.answer_language import request_language
     from ddak.core.code_question import CodeQuestion
     from ddak.core.contracts.tools.answer_code_question import AnswerCodeQuestionOutput
     from ddak.core.registry import CODE_QUESTION
@@ -1497,7 +1506,7 @@ def _code_question_service(service, settings):
 
     def answer(inp, ctx, effective):
         registered = service.registry.get(CODE_QUESTION)
-        session = CodeQuestionSession(ctx.run_id, effective)
+        session = CodeQuestionSession(ctx.run_id, effective, language=request_language.get())
         with code_question_session(session), tool_context(CODE_QUESTION, ctx.run_id):
             output = registered.fn(inp, ctx)
         return AnswerCodeQuestionOutput.model_validate(output)

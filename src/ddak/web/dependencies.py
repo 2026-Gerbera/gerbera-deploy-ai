@@ -10,7 +10,6 @@ from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import HTTPException, Request
-from fastapi.templating import Jinja2Templates
 
 from ddak.core.defaults import (
     cloud_platform_default,
@@ -21,8 +20,10 @@ from ddak.core.defaults import (
 from ddak.core.project_settings import ProjectSettings
 from ddak.executor.engine import RunStatus
 from ddak.executor.service import DeploymentService
+from ddak.web.display_language import display_short_summary, generated_in_korean
 from ddak.web.form_errors import form_context, form_error_for, form_return_to
-from ddak.web.narrative import ERRORS, PATTERNS, RULES, SOURCES, explain, short_summary, wording
+from ddak.web.i18n import LocalizedTemplates
+from ddak.web.narrative import ERRORS, PATTERNS, RULES, SOURCES, explain, wording
 from ddak.web.story import approval_story
 
 ROOT = Path(__file__).resolve().parent
@@ -36,7 +37,7 @@ def navigation_context(request: Request) -> dict:
     return {"sidebar_projects": reader() if reader is not None else []}
 
 
-templates = Jinja2Templates(
+templates = LocalizedTemplates(
     directory=ROOT / "templates", context_processors=[navigation_context, form_context]
 )
 templates.env.policies["json.dumps_kwargs"] = {"sort_keys": True, "ensure_ascii": False}
@@ -46,7 +47,8 @@ templates.env.globals.update(
     approval_story=approval_story,
     step_wording=wording,
     narrative_explain=explain,
-    short_summary=short_summary,
+    short_summary=display_short_summary,
+    generated_in_korean=generated_in_korean,
     narrative_errors=ERRORS,
     narrative_patterns=PATTERNS,
     narrative_rules=RULES,

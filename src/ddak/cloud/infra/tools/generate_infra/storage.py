@@ -17,6 +17,7 @@ from ddak.cloud.infra.storage_bundle import (
     storage_request,
     storage_source,
 )
+from ddak.core.answer_language import with_answer_language
 from ddak.core.config import Settings
 from ddak.core.contracts.context import RunContext
 from ddak.core.contracts.enums import Source
@@ -76,7 +77,9 @@ def generate_storage(
             # 소스 본문·값·state·plan·다른 설정은 입력에 넣지 않는다.
             data = json.dumps({**binding, "evidence": evidence}, ensure_ascii=False)
             result = ai(
-                instruction=_PROMPT,
+                instruction=with_answer_language(
+                    _PROMPT, ctx.project_settings.get("ai_answer_language", "ko")
+                ),
                 data=_bounded_ai_data(data),
                 output_model=StorageDraft,
                 prompt_version=STORAGE_PROMPT_VERSION,

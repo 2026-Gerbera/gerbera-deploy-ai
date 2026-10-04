@@ -1,6 +1,6 @@
 {% if approval.infra_summary %}{% set infra = approval.infra_summary %}{% set counts = infra.get('counts', {}) %}
 <section class="section"><h2>클라우드 인프라 변경</h2><p>생성 {{ counts.get('create', '기록 없음') }} · 수정 {{ counts.get('update', '기록 없음') }} · 삭제 {{ counts.get('delete', '기록 없음') }} · 교체 {{ counts.get('replace', '기록 없음') }}</p>
-<h3>삭제·교체되는 리소스</h3>{% if infra.destructive %}<ul>{% for item in infra.destructive %}<li>{{ item }}</li>{% endfor %}</ul>{% else %}<p>없음</p>{% endif %}
+<h3>삭제·교체되는 리소스</h3>{% if infra.destructive %}<ul>{% for item in infra.destructive %}<li>{{ item|e }}</li>{% endfor %}</ul>{% else %}<p>없음</p>{% endif %}
 <h3>권한(IAM) 변경</h3>
 {% if infra.iam_diff %}<ul>{% for item in infra.iam_diff %}
 {% set action = item.get('action') %}

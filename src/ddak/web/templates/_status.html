@@ -16,8 +16,8 @@
 <section class="notice failure" data-form-error role="alert" tabindex="-1"{% if not error %} hidden{% endif %}>
   <p><span class="state failure"><span aria-hidden="true">✕</span><strong>오류</strong></span></p>
   <p data-error-message>{{ narrative_explain(error.code) if error else '' }}</p>
-  <details><summary>기술 정보</summary><code data-error-code>{{ error.code if error else '' }}</code><p data-error-detail>{{ error.message if error else '' }}</p></details>
-  {% if error and error.submitted and 'revision' in error.submitted and not error.inputs_restored %}<div data-stale-input><h2>이전 화면에서 보낸 입력</h2><p>아래 초안은 최신 제안에 적용하지 않았습니다. 필요한 문구를 복사해 다시 검토하세요.</p><p>선택했던 제안: {% for key, value in error.submitted.items() if key.startswith('apply_') and value == 'on' %}<code>{{ key[6:] }}</code>{% if not loop.last %}, {% endif %}{% else %}없음{% endfor %}</p>{% for key, value in error.submitted.items() if key.startswith('prompt_') and value %}<h3>{{ key[7:] }}에 보낸 요청</h3><pre>{{ value }}</pre>{% endfor %}</div>{% endif %}
+  <details><summary>기술 정보</summary><code data-error-code>{{ error.code if error else '' }}</code><p data-error-detail data-i18n-raw>{{ (error.message if error else '')|e }}</p></details>
+  {% if error and error.submitted and 'revision' in error.submitted and not error.inputs_restored %}<div data-stale-input><h2>이전 화면에서 보낸 입력</h2><p>아래 초안은 최신 제안에 적용하지 않았습니다. 필요한 문구를 복사해 다시 검토하세요.</p><p>선택했던 제안: {% for key, value in error.submitted.items() if key.startswith('apply_') and value == 'on' %}<code>{{ key[6:] }}</code>{% if not loop.last %}, {% endif %}{% else %}없음{% endfor %}</p>{% for key, value in error.submitted.items() if key.startswith('prompt_') and value %}<h3>{{ key[7:] }}에 보낸 요청</h3><pre>{{ value|e }}</pre>{% endfor %}</div>{% endif %}
 </section>
 {% endif %}
 {%- endmacro %}

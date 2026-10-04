@@ -16,6 +16,7 @@ from ddak.web.dependencies import (
 from ddak.web.domain import validate_domain_settings
 from ddak.web.form_errors import FormError, FormRoute
 from ddak.web.forms import parse_form
+from ddak.web.i18n import enqueue_localized
 from ddak.web.routes.setup import transferred_names
 from ddak.web.security import csrf_token, issue_csrf, require_safe_post
 
@@ -114,7 +115,7 @@ async def request_deploy(request: Request):
     require_safe_post(request, form.get("csrf_token", ""))
     project = selected_project(request, form.get("project", "").strip() or None)
     try:
-        deployment(request).enqueue_deployment(project)
+        enqueue_localized(request, deployment(request), project)
     except DdakToolError as exc:
         raise FormError(exc, 409) from None
     except ValueError:

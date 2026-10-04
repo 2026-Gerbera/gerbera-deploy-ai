@@ -14,14 +14,19 @@ rig = support.rig
 pytestmark = pytest.mark.anyio
 
 
-async def test_detected_commit_is_pinned_and_prepared(rig, monkeypatch):
+@pytest.mark.parametrize("language", ["ko", "ja"])
+async def test_detected_commit_is_pinned_and_prepared(rig, monkeypatch, language):
     service, source, calls = rig
     service.save_project_settings(
         "demo",
-        {"cloud_domain": "demo.example.test", "default_targets": "cloud"},
+        {
+            "cloud_domain": "demo.example.test",
+            "default_targets": "cloud",
+        },
         updated_by="operator",
         expected_version=0,
     )
+    service.remember_answer_language("demo", language)
     inventory = {"public_url": "https://onprem.example.test"}
     monkeypatch.setenv("DDAK_ONPREM_INVENTORY", "/fixture/inventory.yaml")
     monkeypatch.setattr(app, "load_inventory", lambda path: inventory)
@@ -43,6 +48,7 @@ async def test_detected_commit_is_pinned_and_prepared(rig, monkeypatch):
         policy=FetchPolicy(root=source.parent),
     )
     assert seen[0][0].ref == sha
+    assert seen[0][1]["source_context"].project_settings["ai_answer_language"] == language
     assert seen[0][1]["platform"] == {
         "onprem": inventory,
         "cloud": {"region": "ap-northeast-2"},
@@ -51,6 +57,7 @@ async def test_detected_commit_is_pinned_and_prepared(rig, monkeypatch):
     run = service.get_run(rid)
     assert run["status"] == "AWAITING_APPROVAL"
     assert run["context"]["ref"] == "prod"
+    assert run["context"]["project_settings"]["ai_answer_language"] == language
     assert run["context"]["source_sha"] == sha
     assert run["context"]["repo_url"] == "https://github.com/org/app"
     view = service.approval_view(rid)

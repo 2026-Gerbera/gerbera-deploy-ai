@@ -126,6 +126,10 @@ class MemoryService:
         assert project == PROJECT
         return project
 
+    def get_answer_language(self, project):
+        self.resolve_project(project)
+        return "ko"
+
     def get_project_settings(self, project):
         self.resolve_project(project)
         return copy.deepcopy(self.saved)
