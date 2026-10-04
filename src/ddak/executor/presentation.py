@@ -9,7 +9,22 @@ from pathlib import Path
 from ddak.core.code_mask import code_changes
 from ddak.core.code_mask import masked_code as masked_code
 from ddak.core.runlog import run_dir
-from ddak.core.runtime_values import derived_public, generated_secret
+from ddak.core.runtime_values import PIPELINE_KEYS, derived_public, generated_secret
+
+# cloud/deploy/entry.py·onprem/deploy/config.py와 같은 목록. 일치는 표시 회귀 테스트로 검사한다.
+CLOUD_DEPLOY_ENV_KEYS = frozenset(
+    {
+        "APP_BASE_URL",
+        "APP_ENV",
+        "MIGRATE_MODE",
+        "PROXY_FIX_X_FOR",
+        "PROXY_FIX_X_PROTO",
+        "SESSION_COOKIE_SECURE",
+        "RELEASE_ID",
+        "SOURCE_SHA",
+        "IMG_DIR",
+    }
+)
 
 
 def patch_preview(patch: str | None, source: Path | None = None) -> list[dict]:
@@ -81,21 +96,27 @@ def display_data(store, root: Path, run_id: str) -> dict:
         public_keys = set(local.get("tiers", {}).get("was", {}).get("public_env", {})) | set(
             derived_public(local, keys)
         )
-        if key in public_keys:
+        if key in PIPELINE_KEYS:
+            row["local"] = "배포 코드가 주입"
+        elif key in public_keys:
             row["local"] = "인벤토리"
         elif generated_secret(key):
             row["local"] = "배포 시 자동 생성·보관"
         elif local.get("tiers", {}).get("was", {}).get("env_file"):
             row["local"] = "관리 페이지 · 저장 여부는 연결 검사에서 확인"
         cloud = platforms.get("cloud", {})
-        if (
+        if key in CLOUD_DEPLOY_ENV_KEYS:
+            row["cloud"] = "배포 코드가 주입"
+        elif key == "DATABASE_URL":
+            row["cloud"] = "Secrets Manager(RDS 시크릿)"
+        elif key == "SECRET_KEY":
+            row["cloud"] = "배포 시 자동 생성·보관"
+        elif (
             key in cloud.get("env", {})
             or key in cloud.get("env_plain", {})
             or key in cloud.get("env_secret", {})
         ):
             row["cloud"] = "Terraform 출력"
-        elif key in context.get("required_env_keys", []):
-            row["cloud"] = "관리 페이지 · 저장 여부는 연결 검사에서 확인"
         mappings.append(row)
     return {
         "files": changes,
